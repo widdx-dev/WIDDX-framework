@@ -1,0 +1,61 @@
+{
+    "name": "widdx/framework",
+    "description": "Widdx - a simple PHP framework inspired by Laravel but much simpler",
+    "type": "framework",
+    "license": "MIT",
+    "keywords": ["framework", "mvc", "php", "zero-code", "crud", "sqlite", "router", "orm"],
+    "require": {
+        "php": ">=8.1",
+        "psr/container": "^2.0"
+    },
+    "require-dev": {
+        "phpstan/phpstan": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Widdx\\": "core/",
+            "App\\": "app/",
+            "Config\\": "config/"
+        },
+        "files": [
+            "core/helpers.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Widdx\\Tests\\": "tests/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Widdx Team"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/widdx/widdx_mvc_php/issues"
+    },
+    "funding": [
+        {
+            "type": "github",
+            "url": "https://github.com/widdx"
+        }
+    ],
+    "suggest": {
+        "ext-pdo_sqlite": "For SQLite (default, zero config)",
+        "ext-pdo_mysql": "For MySQL/MariaDB",
+        "ext-pdo_pgsql": "For PostgreSQL",
+        "ext-pdo_sqlsrv": "For SQL Server",
+        "ext-pdo_oci": "For Oracle"
+    },
+    "scripts": {
+        "test": "php widdx-test",
+        "serve": "php widdx serve",
+        "phpstan": "phpstan analyse --memory-limit 512M"
+    },
+    "scripts-descriptions": {
+        "test": "Run the unit + integration suites",
+        "serve": "Boot the dev server (php widdx serve)",
+        "phpstan": "Static analysis (see phpstan.dist.neon)"
+    },
+    "minimum-stability": "stable"
+}

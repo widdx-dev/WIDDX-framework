@@ -1,0 +1,15 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    # Forward all requests to public/index.php
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
+
+# Protect sensitive files
+<FilesMatch "^(composer\.json|\.env|database\.sqlite|widdx)$">
+    Require all denied
+</FilesMatch>
+
+# Protect .env explicitly
+<Files .env>
+    Require all denied
+</Files>

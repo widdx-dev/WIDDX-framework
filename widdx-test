@@ -1,0 +1,682 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Widdx test runner: php widdx test
+
+define('WIDDX_BASE_PATH', __DIR__);
+
+$autoload = __DIR__ . '/vendor/autoload.php';
+if (is_file($autoload)) {
+    require $autoload;
+} else {
+    spl_autoload_register(function ($class) {
+        $prefixes = [
+            'Widdx\\Tests\\' => __DIR__ . '/tests/',
+            'Widdx\\' => __DIR__ . '/core/',
+            'App\\' => __DIR__ . '/app/',
+            'Psr\\' => __DIR__ . '/polyfill/', // offline stand-in for psr/container
+        ];
+        foreach ($prefixes as $prefix => $dir) {
+            if (str_starts_with($class, $prefix)) {
+                $file = $dir . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+                if (is_file($file)) {
+                    require $file;
+                }
+            }
+        }
+    });
+    require __DIR__ . '/core/helpers.php';
+}
+
+// Simple test runner
+$tests = [];
+$passed = 0;
+$failed = 0;
+
+function test(string $name, callable $fn): void
+{
+    global $tests, $passed, $failed;
+    try {
+        $fn();
+        $tests[] = ['name' => $name, 'status' => 'PASS'];
+        $passed++;
+    } catch (\Throwable $e) {
+        $tests[] = ['name' => $name, 'status' => 'FAIL', 'error' => $e->getMessage()];
+        $failed++;
+    }
+}
+
+function assert_true(bool $condition, string $message = ''): void
+{
+    if (!$condition) {
+        throw new \RuntimeException($message ?: 'Assertion failed');
+    }
+}
+
+function assert_equals(mixed $expected, mixed $actual, string $message = ''): void
+{
+    if ($expected !== $actual) {
+        throw new \RuntimeException($message ?: "Expected " . var_export($expected, true) . ", got " . var_export($actual, true));
+    }
+}
+
+// ---------- Tests ----------
+
+// Container tests
+test('Container can resolve class with no dependencies', function () {
+    $c = new \Widdx\Container();
+    $obj = $c->get(\Widdx\Request::class);
+    assert_true($obj instanceof \Widdx\Request);
+});
+
+test('Container can auto-wire dependencies', function () {
+    $c = new \Widdx\Container();
+    $obj = $c->get(\Widdx\Router::class);
+    assert_true($obj instanceof \Widdx\Router);
+});
+
+test('Container singleton returns same instance', function () {
+    $c = new \Widdx\Container();
+    $c->singleton(\Widdx\Request::class);
+    $a = $c->get(\Widdx\Request::class);
+    $b = $c->get(\Widdx\Request::class);
+    assert_true($a === $b);
+});
+
+// Router tests
+test('Router matches basic route', function () {
+    \Widdx\Router::reset();
+    \Widdx\Router::get('/users', fn() => 'users');
+    $routes = \Widdx\Router::getInstance()->all();
+    assert_equals(1, count($routes));
+});
+
+test('Router matches dynamic params', function () {
+    \Widdx\Router::reset();
+    \Widdx\Router::get('/user/{id}', fn($id) => $id);
+    $route = \Widdx\Router::getInstance()->all()[0];
+    $params = $route->match('/user/42');
+    assert_equals('42', $params['id']);
+});
+
+// Model tests
+test('Model infers table name', function () {
+    assert_equals('users', \App\Models\User::inferTable());
+    assert_equals('models', \Widdx\Model::inferTable());
+});
+
+test('Model pluralizes correctly', function () {
+    // Test via reflection on a mock
+    $mock = new class extends \Widdx\Model {
+        public static function testPluralize(string $word): string {
+            return self::pluralize($word);
+        }
+    };
+    assert_equals('categories', $mock::testPluralize('category'));
+    assert_equals('users', $mock::testPluralize('user'));
+    assert_equals('boxes', $mock::testPluralize('box'));
+});
+
+// Cache tests
+test('ArrayCache stores and retrieves', function () {
+    $cache = new \Widdx\ArrayCache();
+    $cache->put('key', 'value');
+    assert_equals('value', $cache->get('key'));
+});
+
+test('ArrayCache respects TTL', function () {
+    $cache = new \Widdx\ArrayCache();
+    $cache->put('key', 'value', 1);
+    assert_equals('value', $cache->get('key'));
+    sleep(2);
+    assert_equals(null, $cache->get('key'));
+});
+
+test('ArrayCache increment/decrement', function () {
+    $cache = new \Widdx\ArrayCache();
+    $cache->put('count', 10);
+    assert_equals(15, $cache->increment('count', 5));
+    assert_equals(12, $cache->decrement('count', 3));
+});
+
+// Session tests
+test('Session stores and retrieves', function () {
+    $session = new \Widdx\Session();
+    $session->put('key', 'value');
+    assert_equals('value', $session->get('key'));
+});
+
+// Event tests
+test('Event fires listeners', function () {
+    \Widdx\Event::forget();
+    $called = false;
+    \Widdx\Event::listen('test.event', function () use (&$called) {
+        $called = true;
+    });
+    \Widdx\Event::fire('test.event');
+    assert_true($called);
+});
+
+// Auth tests
+test('Auth guest when no user', function () {
+    \Widdx\Session::flush();
+    assert_true(\Widdx\Auth::guest());
+});
+
+// QueryBuilder tests
+test('QueryBuilder generates correct SQL', function () {
+    $qb = new \Widdx\QueryBuilder('users', null, null, 'sqlite');
+    $qb->where('age', '>', 18)->orderBy('name')->limit(10);
+    [$sql, $bindings] = $qb->toSelectSql();
+    assert_true(str_contains($sql, 'WHERE'));
+    assert_true(str_contains($sql, 'ORDER BY'));
+    assert_true(str_contains($sql, 'LIMIT'));
+});
+
+// View tests
+test('View renders template', function () {
+    \Widdx\View::setBasePath(__DIR__ . '/views');
+    $html = \Widdx\View::make('welcome');
+    assert_true(str_contains($html, 'Widdx'));
+});
+
+// Response tests
+test('Response JSON encodes correctly', function () {
+    $response = \Widdx\Response::json(['key' => 'value']);
+    assert_true(
+        str_contains((string) ($response->getHeaders()['Content-Type'] ?? ''), 'application/json'),
+        'JSON response must advertise application/json Content-Type.'
+    );
+});
+
+// Request tests
+test('Request captures method', function () {
+    $request = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'POST']);
+    assert_equals('POST', $request->method());
+});
+
+test('Request spoofs method via _method', function () {
+    $request = new \Widdx\Request([], ['_method' => 'PUT'], ['REQUEST_METHOD' => 'POST']);
+    assert_equals('PUT', $request->method());
+});
+
+// Queue tests
+test('SyncQueue executes immediately', function () {
+    \Widdx\Tests\TestJob::$logFile = $file = sys_get_temp_dir() . '/widdx_job_test.txt';
+    @unlink($file);
+
+    \Widdx\Queue::setConnection(new \Widdx\SyncQueue());
+    \Widdx\Queue::push(\Widdx\Tests\TestJob::class, ['value' => 'ran']);
+
+    assert_true(is_file($file), 'Job did not execute synchronously.');
+    assert_equals('ran', file_get_contents($file));
+    @unlink($file);
+});
+
+test('Queue size is zero for sync driver', function () {
+    \Widdx\Queue::setConnection(new \Widdx\SyncQueue());
+    assert_equals(0, \Widdx\Queue::size());
+});
+
+test('Queue pop returns null when empty', function () {
+    \Widdx\Queue::setConnection(new \Widdx\SyncQueue());
+    assert_equals(null, \Widdx\Queue::pop());
+});
+
+test('Queue work returns 0 when empty', function () {
+    \Widdx\Queue::setConnection(new \Widdx\SyncQueue());
+    assert_equals(0, \Widdx\Queue::work('default', 10));
+});
+
+// Mail tests
+test('LogMail stores emails', function () {
+    $mail = new \Widdx\LogMail();
+    $mail->raw('test@example.com', 'Subject', 'Body');
+    $logged = $mail->logged();
+    assert_equals(1, count($logged));
+    assert_equals('test@example.com', $logged[0]['to']);
+});
+
+test('LogMail clear works', function () {
+    $mail = new \Widdx\LogMail();
+    $mail->raw('test@example.com', 'Subject', 'Body');
+    $mail->clear();
+    assert_equals(0, count($mail->logged()));
+});
+
+// Cache tests
+test('FileCache stores and retrieves', function () {
+    $cache = new \Widdx\FileCache();
+    $cache->put('test-key', 'test-value');
+    assert_equals('test-value', $cache->get('test-key'));
+});
+
+test('FileCache flush clears all', function () {
+    $cache = new \Widdx\FileCache();
+    $cache->put('key1', 'value1');
+    $cache->put('key2', 'value2');
+    $cache->flush();
+    assert_equals(null, $cache->get('key1'));
+    assert_equals(null, $cache->get('key2'));
+});
+
+// Storage tests
+test('LocalStorage stores and retrieves', function () {
+    $storage = new \Widdx\LocalStorage();
+    $storage->put('test.txt', 'Hello World');
+    assert_equals('Hello World', $storage->get('test.txt'));
+});
+
+test('LocalStorage exists check', function () {
+    $storage = new \Widdx\LocalStorage();
+    $storage->put('test.txt', 'Hello');
+    assert_true($storage->exists('test.txt'));
+    assert_true(!$storage->exists('nonexistent.txt'));
+});
+
+// Logger tests
+test('FileLogger creates log file', function () {
+    $logger = new \Widdx\FileLogger();
+    $logger->info('Test message');
+    $files = $logger->files();
+    assert_true(count($files) > 0);
+    $logger->clear();
+});
+
+// Lang + validation messages
+test('Lang resolves keys with fallback to en', function () {
+    \Widdx\App::basePath(WIDDX_BASE_PATH);
+    \Widdx\Lang::reset();
+    assert_true(str_contains(\Widdx\Lang::line('validation.required', ['field' => 'name']), 'name field is required'));
+    assert_equals('unknown.key', \Widdx\Lang::line('unknown.key'));
+});
+
+test('Lang::isRtl + lang_attrs() emit dir/lang html attributes', function () {
+    assert_true(\Widdx\Lang::isRtl('ar'), 'arabic is rtl');
+    assert_true(\Widdx\Lang::isRtl('he-IL'), 'base tag before region decides');
+    assert_true(\Widdx\Lang::isRtl('ar_EG'), 'underscore locale tag');
+    assert_true(!\Widdx\Lang::isRtl('en'), 'english is ltr');
+    assert_equals('lang="ar" dir="rtl"', lang_attrs('ar'));
+    assert_equals('lang="en" dir="ltr"', lang_attrs('en'));
+    // current locale is 'en' in the unit environment (no app.locale config)
+    assert_true(str_contains(lang_attrs(), 'dir="ltr"'), 'default locale is ltr');
+});
+
+test('validate() confirmed rule + custom messages', function () {
+    \Widdx\App::basePath(WIDDX_BASE_PATH);
+    $request = new \Widdx\Request([], ['password' => 'secret', 'password_confirmation' => 'different'], ['REQUEST_METHOD' => 'POST']);
+    $threw = false;
+    try {
+        $request->validate(['password' => 'required|confirmed']);
+    } catch (\Widdx\Exceptions\ValidationException $e) {
+        $threw = true;
+        assert_true(str_contains($e->errors['password'][0], 'confirmation does not match'));
+    }
+    assert_true($threw, 'confirmed mismatch must fail');
+
+    $request2 = new \Widdx\Request([], ['token' => ''], ['REQUEST_METHOD' => 'POST']);
+    try {
+        $request2->validate(['token' => 'required'], ['token.required' => 'CUSTOM :field msg']);
+        assert_true(false, 'required token should fail');
+    } catch (\Widdx\Exceptions\ValidationException $e) {
+        assert_equals('CUSTOM token msg', $e->errors['token'][0]);
+    }
+});
+
+test('validate() empty array fails required', function () {
+    $request = new \Widdx\Request([], ['tags' => []], ['REQUEST_METHOD' => 'POST']);
+    try {
+        $request->validate(['tags' => 'required']);
+        assert_true(false, 'empty array should fail required');
+    } catch (\Widdx\Exceptions\ValidationException $e) {
+        assert_true(isset($e->errors['tags']));
+    }
+});
+
+test('allowColumns rejects off-list column', function () {
+    $qb = new \Widdx\QueryBuilder('users', null, null, 'sqlite');
+    $qb->allowColumns(['id', 'name']);
+    $threw = false;
+    try {
+        $qb->where('secret', 1)->toSelectSql();
+    } catch (\Widdx\Exceptions\DatabaseException $e) {
+        $threw = true;
+    }
+    assert_true($threw, 'off-list column must throw');
+});
+
+test('QueryBuilder count() is real (aggregate not identifier-wrapped)', function () {
+    $file = sys_get_temp_dir() . '/widdx-count-' . getmypid() . '.sqlite';
+    @unlink($file);
+    $pdo = new \PDO('sqlite:' . $file);
+    $pdo->exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)');
+    $pdo->exec("INSERT INTO items (name) VALUES ('a'), ('b'), ('c')");
+    $qb = new \Widdx\QueryBuilder('items', null, $pdo, 'sqlite');
+    assert_equals(3, $qb->count());
+    assert_true($qb->where('name', 'b')->exists(), 'exists() must find a real row');
+    assert_true(!$qb->where('name', 'zzz')->exists());
+    @unlink($file);
+});
+
+// ---------- Zero-code inference ----------
+
+test('singular() helper', function () {
+    assert_equals('post', singular('posts'));
+    assert_equals('category', singular('categories'));
+    assert_equals('address', singular('addresses'));
+    assert_equals('user', singular('users'));
+});
+
+test('empty CrudController subclass infers its model', function () {
+    $ctrl = new \Widdx\Tests\UserController();
+    $m = new \ReflectionMethod($ctrl, 'model');
+    $m->setAccessible(true);
+    assert_equals(\App\Models\User::class, $m->invoke($ctrl));
+});
+
+test('empty ApiCrudController subclass infers its model', function () {
+    $ctrl = new \Widdx\Tests\UserApiController();
+    $m = new \ReflectionMethod($ctrl, 'model');
+    $m->setAccessible(true);
+    assert_equals(\App\Models\User::class, $m->invoke($ctrl));
+});
+
+test('resource() without controller registers 7 model-driven routes', function () {
+    \Widdx\Router::reset();
+    resource('users');
+    assert_equals(7, count(\Widdx\Router::getInstance()->all()));
+});
+
+test('resource() without any class fails with a helpful message', function () {
+    \Widdx\Router::reset();
+    try {
+        resource('unicorns');
+        assert_true(false, 'should have thrown');
+    } catch (\Widdx\Exceptions\BindingException $e) {
+        assert_true(str_contains($e->getMessage(), 'App\\Models\\Unicorn'));
+    }
+});
+
+test('Model::columns() reads real table columns', function () {
+    $file = sys_get_temp_dir() . '/widdx-cols-' . getmypid() . '.sqlite';
+    @unlink($file);
+    $pdo = new \PDO('sqlite:' . $file);
+    $pdo->exec('CREATE TABLE widgets (id INTEGER PRIMARY KEY, title TEXT, secret TEXT)');
+    $conn = new \Widdx\Database(['driver' => 'sqlite', 'database' => $file]);
+    assert_equals(['id', 'title', 'secret'], $conn->tableColumns('widgets'));
+    @unlink($file);
+});
+
+test('ORM relations: lazy access, eager loading, pivot, nested chains', function () {
+    $pdo = \Widdx\Database::connection()->pdo();
+    $pdo->exec('CREATE TABLE IF NOT EXISTS teams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS players (id INTEGER PRIMARY KEY AUTOINCREMENT, team_id INTEGER, name TEXT)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS roles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS permissions (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS permission_role (id INTEGER PRIMARY KEY AUTOINCREMENT, role_id INTEGER, permission_id INTEGER)');
+    foreach (['players', 'teams', 'permission_role', 'roles', 'permissions'] as $t) {
+        $pdo->exec("DELETE FROM {$t}");
+    }
+
+    $alpha = \Widdx\Tests\Team::create(['name' => 'Alpha']);
+    \Widdx\Tests\Player::create(['name' => 'P1', 'team_id' => $alpha->id]);
+    \Widdx\Tests\Player::create(['name' => 'P2', 'team_id' => $alpha->id]);
+    $beta = \Widdx\Tests\Team::create(['name' => 'Beta']);
+    \Widdx\Tests\Player::create(['name' => 'P3', 'team_id' => $beta->id]);
+
+    // Lazy magic property: $team->players with no definition beyond hasMany(X::class)
+    $fresh = \Widdx\Tests\Team::find($alpha->id);
+    assert_equals(2, count($fresh->players), 'hasMany lazy');
+
+    // hasOne returns at most one child (regression: HasOne must extend Relation,
+    // not HasMany — mixed vs array return covariance is a load-time fatal).
+    assert_equals('P1', $fresh->captain->name, 'hasOne lazy');
+
+    // Eager hasMany + belongsTo
+    $teams = \Widdx\Tests\Team::with('players')->get();
+    assert_true($teams[0]->relationLoaded('players'), 'eager must mark loaded');
+    assert_equals(2, count($teams[0]->players));
+    assert_equals(1, count($teams[1]->players));
+
+    $teamsOne = \Widdx\Tests\Team::with('captain')->get();
+    assert_true($teamsOne[0]->relationLoaded('captain'), 'hasOne eager marks loaded');
+    assert_equals('P1', $teamsOne[0]->captain->name, 'hasOne eager first wins');
+
+    $players = \Widdx\Tests\Player::with('team')->get();
+    assert_equals('Alpha', $players[0]->team->name, 'belongsTo eager');
+
+    // Nested chain: players.team.players
+    $deep = \Widdx\Tests\Player::with('team.players')->get();
+    assert_true($deep[0]->team->relationLoaded('players'), 'nested eager');
+    assert_equals(2, count($deep[0]->team->players));
+
+    // Pivot belongsToMany both directions
+    $role = \Widdx\Tests\Role::create(['name' => 'admin']);
+    $perm = \Widdx\Tests\Permission::create(['name' => 'edit']);
+    $pdo->exec("INSERT INTO permission_role (role_id, permission_id) VALUES ({$role->id}, {$perm->id})");
+    $roles = \Widdx\Tests\Role::with('permissions')->get();
+    assert_equals(1, count($roles[0]->permissions), 'pivot eager');
+    assert_equals('edit', $roles[0]->permissions[0]->name);
+    assert_equals('admin', \Widdx\Tests\Permission::with('roles')->get()[0]->roles[0]->name, 'pivot inverse');
+
+    // Unknown relation fails loudly with guidance
+    try {
+        \Widdx\Tests\Team::with('ghosts')->get();
+        assert_true(false, 'unknown relation must throw');
+    } catch (\Widdx\Exceptions\ModelException $e) {
+        assert_true(str_contains($e->getMessage(), 'hasMany'));
+    }
+
+    foreach (['players', 'teams', 'permission_role', 'roles', 'permissions'] as $t) {
+        $pdo->exec("DROP TABLE IF EXISTS {$t}");
+    }
+});
+
+test('UploadedFile: file/image/mimes/max rules + store() to the disk', function () {
+    $gif = base64_decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
+    $src = tempnam(sys_get_temp_dir(), 'widdx-up');
+    file_put_contents($src, $gif);
+    $raw = ['cover' => ['name' => 'sea.gif', 'type' => 'image/gif', 'tmp_name' => $src, 'error' => 0, 'size' => strlen($gif)]];
+
+    $req = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'POST'], $raw);
+    assert_true($req->file('cover') instanceof \Widdx\UploadedFile, 'file() normalizes');
+    assert_true($req->file('cover')->isImage(), 'real gif detected');
+
+    $data = $req->validate(['cover' => 'required|image|mimes:gif,png|max:10']);
+    assert_true($data['cover'] instanceof \Widdx\UploadedFile, 'upload passes file rules');
+
+    // Missing upload fails 'required'
+    $req2 = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'POST']);
+    try {
+        $req2->validate(['cover' => 'required|image']);
+        assert_true(false, 'missing upload must fail required');
+    } catch (\Widdx\Exceptions\ValidationException $e) {
+        assert_true(str_contains($e->errors['cover'][0], 'required'));
+    }
+
+    // An already-stored PATH string passes upload rules (create re-validation)
+    $req4 = new \Widdx\Request([], ['cover' => 'photos/20260113_ab_sea.gif'], ['REQUEST_METHOD' => 'POST']);
+    $revalidated = $req4->validate(['cover' => 'required|image|mimes:png']);
+    assert_equals('photos/20260113_ab_sea.gif', $revalidated['cover'], 'stored path must survive upload rules');
+
+    // Wrong extension fails 'mimes' with the values placeholder
+    $req3 = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'POST'], [
+        'cover' => ['name' => 'a.jpg', 'type' => 'image/jpeg', 'tmp_name' => $src, 'error' => 0, 'size' => strlen($gif)],
+    ]);
+    try {
+        $req3->validate(['cover' => 'image|mimes:png']);
+        assert_true(false, 'mimes must reject jpg');
+    } catch (\Widdx\Exceptions\ValidationException $e) {
+        assert_true(str_contains($e->errors['cover'][0], 'type: png'), $e->errors['cover'][0] ?? '');
+    }
+
+    // Too big fails 'max' (kilobytes)
+    try {
+        $req->validate(['cover' => 'max:0']);
+        assert_true(false, 'max must reject');
+    } catch (\Widdx\Exceptions\ValidationException $e) {
+        assert_true(str_contains($e->errors['cover'][0], 'kilobytes'), $e->errors['cover'][0] ?? '');
+    }
+
+    // store() persists to the disk and returns a relative path
+    $rel = $req->file('cover')->store('unittest');
+    $abs = WIDDX_BASE_PATH . '/storage/app/' . $rel;
+    assert_true(str_starts_with($rel, 'unittest/') && is_file($abs), 'stored at ' . $rel);
+    @unlink($abs);
+    @unlink($src);
+});
+
+test('Request::ip(): X-Forwarded-For honored only for trusted proxies', function () {
+    \Widdx\Request::setTrustedProxies(null); // no trusted list (unit env)
+    $req = new \Widdx\Request([], [], ['REMOTE_ADDR' => '198.51.100.5', 'HTTP_X_FORWARDED_FOR' => '9.9.9.9']);
+    assert_equals('198.51.100.5', $req->ip(), 'untrusted peer cannot spoof via XFF');
+
+    \Widdx\Request::setTrustedProxies(['198.51.100.5']);
+    $req2 = new \Widdx\Request([], [], ['REMOTE_ADDR' => '198.51.100.5', 'HTTP_X_FORWARDED_FOR' => '1.1.1.1, 2.2.2.2']);
+    assert_equals('2.2.2.2', $req2->ip(), 'right-most hop from the trusted proxy');
+    \Widdx\Request::setTrustedProxies(null);
+});
+
+test('DatabaseQueue: retry with backoff, then failed_jobs, then queue:retry', function () {
+    $q = new \Widdx\DatabaseQueue();
+    $pdo = \Widdx\Database::connection()->pdo();
+    $pdo->exec('DELETE FROM jobs');
+    $pdo->exec('DELETE FROM failed_jobs');
+
+    $q->push(\Widdx\Tests\FailingJob::class, ['n' => 1]);
+    $row = $q->pop();
+    assert_true($row !== null);
+    assert_equals(1, (int) $row['attempts'], 'pop reports the NEW attempt number');
+    assert_equals(2, (int) $row['payload']['tries'], 'job $tries embedded at push time');
+    $q->failed($row['id'], 'planned failure');
+    assert_equals(1, $q->size(), 'first failure stays queued (backoff 0s)');
+
+    $row2 = $q->pop();
+    assert_equals(2, (int) $row2['attempts']);
+    $q->failed($row2['id'], 'planned failure');
+    assert_equals(0, $q->size(), 'exhausted job leaves the hot table');
+    $failed = $q->failedJobs();
+    assert_equals(1, count($failed));
+    assert_true(str_contains((string) $failed[0]['reason'], 'planned failure'));
+
+    assert_true($q->retryFailed((int) $failed[0]['id']), 'queue:retry works');
+    assert_equals(1, $q->size(), 'retried job is back on jobs');
+    assert_equals(0, count($q->failedJobs()));
+
+    $pdo->exec('DELETE FROM jobs');
+    $pdo->exec('DELETE FROM failed_jobs');
+});
+
+test('Schedule: time buckets, when-gate and identity keys', function () {
+    \Widdx\Schedule::flush();
+    $t = \Widdx\Schedule::command('queue:work')->everyFiveMinutes();
+    assert_true($t->due(-1), 'never run = due');
+    assert_equals(false, $t->due($t->bucket()), 'same bucket = not due again');
+    assert_true($t->due($t->bucket() - 1), 'previous bucket = due');
+    $gated = \Widdx\Schedule::call(fn() => null)->hourly()->when(fn() => false);
+    assert_equals(false, $gated->due(-1), 'when(false) blocks forever');
+    assert_true($t->key() !== $gated->key(), 'distinct tasks → distinct keys');
+    assert_equals(2, count(\Widdx\Schedule::events()));
+    \Widdx\Schedule::flush();
+});
+
+test('Gate: abilities, authorize() 403, and policy convention', function () {
+    \Widdx\Gate::flush();
+    \Widdx\Gate::define('publish', fn(mixed $user) => $user !== null);
+    assert_true(\Widdx\Gate::has('publish'), 'defined ability is a guard');
+    assert_equals(false, \Widdx\Gate::allows('publish'), 'guest denied by default logic');
+    \Widdx\Gate::define('publish', fn(mixed $user) => true);
+    assert_true(\Widdx\Gate::allows('publish'));
+
+    \Widdx\Gate::policy(\Widdx\Tests\Team::class, \Widdx\Tests\TeamPolicy::class);
+    assert_true(\Widdx\Gate::allows('viewAny', \Widdx\Tests\Team::class), 'policy allows viewAny');
+    assert_equals(false, \Widdx\Gate::allows('delete', new \Widdx\Tests\Team()), 'policy denies delete');
+    assert_equals(false, \Widdx\Gate::allows('unknownAbility', new \Widdx\Tests\Team()), 'policy without method = deny');
+
+    try {
+        \authorize('never.defined');
+        assert_true(false, 'authorize must 403 undefined abilities');
+    } catch (\Widdx\Exceptions\HttpException $e) {
+        assert_equals(403, $e->status);
+    }
+    \Widdx\Gate::flush();
+});
+
+test('Auth: register + email verification + password reset lifecycle', function () {
+    $pdo = \Widdx\Database::connection()->pdo();
+    $pdo->exec('CREATE TABLE IF NOT EXISTS auth_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT UNIQUE, password TEXT, email_verified_at TEXT, created_at TEXT, updated_at TEXT)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS auth_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT, type TEXT, token_hash TEXT, created_at TEXT)');
+    $pdo->exec('DELETE FROM auth_users');
+    $pdo->exec('DELETE FROM auth_tokens');
+
+    $mail = new \Widdx\LogMail();
+    \Widdx\Mail::setConnection($mail);
+    \Widdx\Auth::useModel(\Widdx\Tests\AuthUser::class);
+
+    $user = \Widdx\Auth::register([
+        'name' => 'Sara', 'email' => 'sara@widdx.test',
+        'password' => 'supersecret1', 'password_confirmation' => 'supersecret1',
+    ], false);
+    assert_true(!empty($user->id), 'registered');
+    assert_true(str_starts_with((string) $user->password, '$2y$'), 'password hashed');
+
+    // verification mail went out automatically (column exists)
+    $body = (string) ($mail->logged()[0]['body'] ?? '');
+    preg_match('#/verify-email/([a-f0-9]{64})\?email=#', $body, $m);
+    assert_true(!empty($m[1]), 'verify token present in mail body');
+    assert_equals(false, \Widdx\Auth::verifyEmail('sara@widdx.test', 'deadbeef'), 'wrong token rejected');
+    assert_true(\Widdx\Auth::verifyEmail('sara@widdx.test', $m[1]), 'valid token verifies');
+    assert_true(!empty(\Widdx\Tests\AuthUser::find($user->id)->email_verified_at), 'flag stored');
+
+    // password reset: unknown email → false; known → mailed token link
+    assert_equals(false, \Widdx\Auth::sendResetLink('ghost@nowhere.test'));
+    assert_true(\Widdx\Auth::sendResetLink('sara@widdx.test'));
+    $resetBody = (string) ($mail->logged()[1]['body'] ?? '');
+    preg_match('#/reset-password/([a-f0-9]{64})\?email=#', $resetBody, $m2);
+    assert_true(!empty($m2[1]), 'reset token present');
+    assert_equals(false, \Widdx\Auth::resetPassword('sara@widdx.test', $m2[1] . 'x', 'brandnewpass9'), 'tampered token rejected');
+    assert_true(\Widdx\Auth::resetPassword('sara@widdx.test', $m2[1], 'brandnewpass9'));
+    assert_true(password_verify('brandnewpass9', (string) \Widdx\Tests\AuthUser::find($user->id)->password), 'new password active');
+    assert_equals(false, \Widdx\Auth::resetPassword('sara@widdx.test', $m2[1], 'thirdpass123'), 'tokens are single-use');
+
+    $pdo->exec('DROP TABLE auth_users');
+    $pdo->exec('DROP TABLE auth_tokens');
+    \Widdx\Auth::useModel(null);
+});
+
+// ---------- Integration suite (real HTTP, scaffold, SMTP) ----------
+
+echo "\n===== Running integration suite (this boots real servers) =====\n";
+$integrationExit = 0;
+passthru(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/tests/integration.php'), $integrationExit);
+if ($integrationExit === 0) {
+    $tests[] = ['name' => 'Integration suite (HTTP/CSRF/auth/SMTP/CLI)', 'status' => 'PASS'];
+    $passed++;
+} else {
+    $tests[] = ['name' => 'Integration suite (HTTP/CSRF/auth/SMTP/CLI)', 'status' => 'FAIL', 'error' => 'exit ' . $integrationExit . ' — see output above'];
+    $failed++;
+}
+
+// ---------- Results ----------
+
+echo "\n";
+echo str_repeat('=', 60) . "\n";
+echo "Widdx Test Results\n";
+echo str_repeat('=', 60) . "\n\n";
+
+foreach ($tests as $t) {
+    $status = $t['status'] === 'PASS' ? '✅' : '❌';
+    echo "{$status} {$t['name']}\n";
+    if (isset($t['error'])) {
+        echo "   Error: {$t['error']}\n";
+    }
+}
+
+echo "\n";
+echo str_repeat('=', 60) . "\n";
+echo "Total: " . count($tests) . " | Passed: {$passed} | Failed: {$failed}\n";
+echo str_repeat('=', 60) . "\n";
+
+exit($failed > 0 ? 1 : 0);

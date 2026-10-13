@@ -1,0 +1,26 @@
+# Dependencies
+/vendor/
+
+# Environment & local data
+/.env
+/database.sqlite
+
+# Generated storage (keep the folders)
+/storage/cache/*
+/storage/logs/*
+/storage/app/*
+/storage/sessions/*
+/storage/framework/*
+!/storage/cache/.gitkeep
+!/storage/logs/.gitkeep
+!/storage/app/.gitkeep
+!/storage/sessions/.gitkeep
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Composer lock is not committed for libraries
+/composer.lock

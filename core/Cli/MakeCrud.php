@@ -1,0 +1,176 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Widdx\Cli;
+
+/**
+ * Implements `php widdx make:crud Post title:string body:text?`
+ *
+ * The zero-code generator: model + migration + route line in one command.
+ * No controller, no view files — resource() + built-in CRUD templates do
+ * the rest.
+ */
+class MakeCrud
+{
+    /** @var array<string,string> column type → SQL type */
+    protected const TYPE_SQL = [
+        'string' => 'VARCHAR(255)',
+        'text' => 'TEXT',
+        'integer' => 'INTEGER',
+        'int' => 'INTEGER',
+        'float' => 'DOUBLE',
+        'number' => 'DOUBLE',
+        'bool' => 'INTEGER DEFAULT 0',
+        'boolean' => 'INTEGER DEFAULT 0',
+        'date' => 'VARCHAR(20)',
+        'email' => 'VARCHAR(255)',
+        'url' => 'VARCHAR(500)',
+        'file' => 'VARCHAR(255)',
+        'image' => 'VARCHAR(255)',
+    ];
+
+    /** @var array<string,string> column type → validation rule */
+    protected const TYPE_RULE = [
+        'string' => 'required|string|max:255',
+        'text' => 'required|text|string',
+        'integer' => 'required|int',
+        'int' => 'required|int',
+        'float' => 'required|numeric',
+        'number' => 'required|numeric',
+        'bool' => 'bool',
+        'boolean' => 'bool',
+        'date' => 'required|string',
+        'email' => 'required|email',
+        'url' => 'required|url',
+        // uploads default to nullable: editing a record without re-uploading
+        // must keep the existing stored path instead of failing 'required'.
+        'file' => 'nullable|file',
+        'image' => 'nullable|image|mimes:jpg,jpeg,png,gif,webp|max:4096',
+    ];
+
+    /**
+     * @param string[] $args everything after the command name (name, fields...)
+     */
+    public static function run(array $args): void
+    {
+        $rawName = $args[0] ?? null;
+        $fieldArgs = array_slice($args, 1);
+        if (!$rawName || $fieldArgs === []) {
+            fwrite(STDERR, "Usage: php widdx make:crud Post title:string body:text?\n");
+            fwrite(STDERR, "Types: string text integer float bool date email url file image fk(Model) ('?' suffix = optional)\n");
+            fwrite(STDERR, "Example: php widdx make:crud Invoice amount:float company:fk(Company)\n");
+            exit(1);
+        }
+
+        $base = defined('WIDDX_BASE_PATH') ? WIDDX_BASE_PATH : dirname(__DIR__, 2);
+        $model = self::studly($rawName);
+        $snake = strtolower((string) preg_replace('/(?<!^)[A-Z]/', '_$0', $model));
+        $table = self::pluralize($snake);
+
+        $columns = [];
+        $fillable = [];
+        $rulesLines = [];
+        foreach ($fieldArgs as $f) {
+            $optional = str_ends_with($f, '?');
+            $f = $optional ? substr($f, 0, -1) : $f;
+            if (!str_contains($f, ':')) {
+                fwrite(STDERR, "Field '{$f}' must look like name:type (e.g. title:string)\n");
+                exit(1);
+            }
+            [$col, $type] = array_map('strtolower', explode(':', $f, 2));
+            if (!preg_match('/^[a-z][a-z0-9_]*$/', $col)) {
+                fwrite(STDERR, "Unsupported field: '{$f}'\n");
+                exit(1);
+            }
+            // fk(Author): real FOREIGN KEY column + 'exists' rule + the
+            // column name convention (author → author_id) for free.
+            $refTable = null;
+            if (preg_match('/^fk\(([a-z][a-z0-9_]*)\)$/', $type, $mf)) {
+                $refSnake = $mf[1];
+                $refTable = self::pluralize($refSnake);
+                $col = $refSnake;
+                if (!str_ends_with($col, '_id')) {
+                    $col .= '_id';
+                }
+                $type = 'fk';
+            } elseif (!isset(self::TYPE_SQL[$type])) {
+                fwrite(STDERR, "Unsupported field: '{$f}'\n");
+                exit(1);
+            }
+            if ($type === 'fk') {
+                $sql = 'INTEGER';
+                $suffix = ($optional ? ' NULL' : ' NOT NULL') . " REFERENCES {$refTable}(id)";
+                $rule = ($optional ? '' : 'required|') . "int|exists:{$refTable},id";
+            } else {
+                $sql = self::TYPE_SQL[$type];
+                $suffix = $type === 'bool' ? '' : ($optional ? ' NULL' : ' NOT NULL');
+                $rule = self::TYPE_RULE[$type];
+                if ($optional) {
+                    $rule = ltrim(str_replace('required|', '', $rule), '|');
+                }
+            }
+            $columns[] = "            {$col} {$sql}" . $suffix;
+            $fillable[] = $col;
+            $rulesLines[] = "        '{$col}' => '{$rule}',";
+        }
+
+        // ---- Model ----
+        $modelDir = $base . '/app/Models';
+        if (!is_dir($modelDir)) {
+            mkdir($modelDir, 0777, true);
+        }
+        $fillableStr = "'" . implode("', '", $fillable) . "'";
+        $rulesStr = implode("\n", $rulesLines);
+        $modelStub = "<?php\n\ndeclare(strict_types=1);\n\nnamespace App\\Models;\n\nuse Widdx\\Model;\n\n"
+            . "/**\n * {$model} — generated by make:crud. Full CRUD is live at /{$table}\n"
+            . " * (built-in templates; add views/{$table}/*.php files to customize).\n */\n"
+            . "class {$model} extends Model\n{\n"
+            . "    protected array \$fillable = [{$fillableStr}];\n\n"
+            . "    protected array \$rules = [\n{$rulesStr}\n    ];\n}\n";
+        file_put_contents("{$modelDir}/{$model}.php", $modelStub);
+
+        // ---- Migration ----
+        $migDir = $base . '/database/migrations';
+        if (!is_dir($migDir)) {
+            mkdir($migDir, 0777, true);
+        }
+        $colSql = implode(",\n", $columns);
+        $migStub = "<?php\n\ndeclare(strict_types=1);\n\nreturn new class {\n"
+            . "    public function up(\\PDO \$pdo): void\n    {\n"
+            . "        \$pdo->exec(\"CREATE TABLE IF NOT EXISTS {$table} (\n"
+            . "            id INTEGER PRIMARY KEY AUTOINCREMENT,\n{$colSql},\n"
+            . "            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n"
+            . "            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n        )\");\n    }\n\n"
+            . "    public function down(\\PDO \$pdo): void\n    {\n"
+            . "        \$pdo->exec(\"DROP TABLE IF EXISTS {$table}\");\n    }\n};\n";
+        file_put_contents("{$migDir}/" . date('Y_m_d_His') . "_create_{$table}_table.php", $migStub);
+
+        // ---- Route (append once) ----
+        $routesFile = $base . '/routes/web.php';
+        $routes = is_file($routesFile) ? (string) file_get_contents($routesFile) : '';
+        if (!str_contains($routes, "resource('{$table}')")) {
+            file_put_contents($routesFile, "\nresource('{$table}');\n", FILE_APPEND);
+        }
+
+        echo "Created: App\\Models\\{$model} + create_{$table}_table migration + resource('{$table}')\n";
+        echo "Next:    php widdx migrate — then open /{$table}. Zero hand-written code.\n";
+    }
+
+    protected static function studly(string $value): string
+    {
+        return str_replace(' ', '', ucwords(str_replace(['-', '_'], ' ', $value)));
+    }
+
+    /** Same rules as Widdx\Model::pluralize() */
+    protected static function pluralize(string $word): string
+    {
+        if (str_ends_with($word, 'y') && !preg_match('/[aeiou]y$/', $word)) {
+            return substr($word, 0, -1) . 'ies';
+        }
+        if (preg_match('/(s|x|z|ch|sh)$/', $word)) {
+            return $word . 'es';
+        }
+        return $word . 's';
+    }
+}

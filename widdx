@@ -1,0 +1,1424 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Widdx CLI tool: php widdx new <project-name>
+
+define('WIDDX_BASE_PATH', __DIR__);
+
+$autoload = __DIR__ . '/vendor/autoload.php';
+if (is_file($autoload)) {
+    require $autoload;
+} else {
+    spl_autoload_register(function ($class) {
+        foreach (['Widdx\\' => __DIR__ . '/core/', 'App\\' => __DIR__ . '/app/', 'Psr\\' => __DIR__ . '/polyfill/'] as $prefix => $dir) {
+            if (str_starts_with($class, $prefix)) {
+                $file = $dir . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+                if (is_file($file)) {
+                    require $file;
+                }
+            }
+        }
+    });
+    require __DIR__ . '/core/helpers.php';
+}
+
+$argv = $_SERVER['argv'];
+array_shift($argv);
+$command = $argv[0] ?? 'help';
+
+function widdx_help(): void
+{
+    echo <<<HELP
+Widdx CLI
+
+Usage:
+  php widdx <command> [options]
+
+Project:
+  new <name>                Create a new project (one command, full app)
+  new:api <name>            Create a new API project
+
+Code Generation:
+  make:controller <Name>    Create a controller in app/Controllers
+                           Example: php widdx make:controller UserController
+                           Option: --resource  (generates seven CRUD methods)
+
+  make:model <Name>          Create a model in app/Models
+                           Example: php widdx make:model Post
+
+  make:middleware <Name>     Create a middleware in app/Middleware
+                           Example: php widdx make:middleware Auth
+
+  make:migration <Name>      Create a migration in database/migrations
+                           Example: php widdx make:migration create_users_table
+
+  make:seeder <Name>         Create a seeder in database/seeders
+                           Example: php widdx make:seeder UserSeeder
+
+  make:resource <Name>       Create model + controller + migration + views
+                           Example: php widdx make:resource Post
+
+  make:crud <Name> field:type...  ZERO-CODE: model + migration + route, no controller/views
+                           Example: php widdx make:crud Post title:string body:text?
+                           Types: string text integer float bool date email url ('?' = optional)
+
+  make:auth                  ZERO-CODE full auth: login/register/logout/reset/verify
+
+  make:view <Name>           Create a view in views/
+                           Example: php widdx make:view users/index
+
+Database:
+  migrate                    Run all pending migrations
+  migrate:rollback           Rollback the last batch of migrations
+  db:seed                    Run all seeders
+  db:wipe                    Drop all tables and re-run migrations
+
+Queue:
+  queue:work [--queue=default] [--max=0]  Process pending jobs
+  queue:push <JobClass> ['{json}']  Dispatch a job onto the queue
+  queue:failed                    List jobs that exhausted their retries
+  queue:retry <id>|all            Put failed jobs back on the queue
+
+Scheduler (one crontab entry for everything):
+  schedule:run                    Run due tasks from routes/console.php
+
+Routes:
+  route:list                 List all registered routes
+
+Server:
+  serve [--port=8000]        Start development server
+
+Testing:
+  test                       Run framework tests
+
+HELP;
+}
+
+function studly(string $name): string
+{
+    $name = str_replace(['-', '_'], ' ', trim($name));
+    $name = str_replace(' ', '', ucwords($name));
+    return $name;
+}
+
+function write_file(string $path, string $content): void
+{
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        mkdir($dir, 0777, true);
+    }
+    if (is_file($path)) {
+        fwrite(STDERR, "File already exists, skipping: {$path}\n");
+        exit(1);
+    }
+    file_put_contents($path, $content);
+    echo "  Created: {$path}\n";
+}
+
+// ---------- Project Scaffolding ----------
+
+function create_project(string $name, bool $isApi = false): void
+{
+    $base = getcwd() . '/' . $name;
+    if (is_dir($base)) {
+        fwrite(STDERR, "Directory already exists: {$base}\n");
+        exit(1);
+    }
+
+    echo "Creating Widdx project: {$name}\n\n";
+
+    // Create directory structure
+    $dirs = [
+        'app/Controllers', 'app/Models', 'app/Middleware',
+        'config', 'database/migrations', 'database/seeders',
+        'routes', 'views', 'views/errors', 'views/layouts',
+        'lang', 'public', 'storage', 'storage/logs', 'storage/cache',
+        'storage/sessions',
+    ];
+    foreach ($dirs as $dir) {
+        mkdir("{$base}/{$dir}", 0777, true);
+    }
+
+    // Copy core framework
+    $coreSource = WIDDX_BASE_PATH . '/core';
+    $coreDest = "{$base}/core";
+    recursive_copy($coreSource, $coreDest);
+
+    // Copy PSR polyfill (used by the no-Composer fallback autoloader)
+    if (is_dir(WIDDX_BASE_PATH . '/polyfill')) {
+        recursive_copy(WIDDX_BASE_PATH . '/polyfill', "{$base}/polyfill");
+    }
+
+    // Copy framework language files (validation messages etc.)
+    if (is_dir(WIDDX_BASE_PATH . '/lang')) {
+        recursive_copy(WIDDX_BASE_PATH . '/lang', "{$base}/lang");
+    }
+
+    // Copy widdx CLI
+    copy(WIDDX_BASE_PATH . '/widdx', "{$base}/widdx");
+    chmod("{$base}/widdx", 0755);
+
+    // Copy test runner when present (so 'php widdx test' works in the new project)
+    if (is_file(WIDDX_BASE_PATH . '/widdx-test')) {
+        copy(WIDDX_BASE_PATH . '/widdx-test', "{$base}/widdx-test");
+        chmod("{$base}/widdx-test", 0755);
+        if (is_dir(WIDDX_BASE_PATH . '/tests')) {
+            recursive_copy(WIDDX_BASE_PATH . '/tests', "{$base}/tests");
+        }
+    }
+
+    // composer.json
+    write_file("{$base}/composer.json", json_encode([
+        'name' => "widdx/{$name}",
+        'description' => "Widdx project: {$name}",
+        'type' => 'project',
+        'license' => 'MIT',
+        'require' => ['php' => '>=8.1', 'psr/container' => '^2.0'],
+        'autoload' => [
+            'psr-4' => ['Widdx\\' => 'core/', 'App\\' => 'app/'],
+            'files' => ['core/helpers.php'],
+        ],
+        'minimum-stability' => 'stable',
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+    // .htaccess
+    write_file("{$base}/.htaccess", <<<'HTACCESS'
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
+
+<FilesMatch "^(composer\.json|\.env|database\.sqlite|widdx)$">
+    Require all denied
+</FilesMatch>
+
+<Files .env>
+    Require all denied
+</Files>
+HTACCESS);
+
+    // public/.htaccess
+    write_file("{$base}/public/.htaccess", <<<'HTACCESS'
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ index.php [QSA,L]
+</IfModule>
+HTACCESS);
+
+    // public/index.php
+    write_file("{$base}/public/index.php", <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+define('WIDDX_BASE_PATH', dirname(__DIR__));
+
+$autoload = WIDDX_BASE_PATH . '/vendor/autoload.php';
+if (is_file($autoload)) {
+    require $autoload;
+}
+
+if (!class_exists('Widdx\App')) {
+    spl_autoload_register(function ($class) {
+        $prefixes = [
+            'Widdx\\' => WIDDX_BASE_PATH . '/core/',
+            'App\\' => WIDDX_BASE_PATH . '/app/',
+            'Psr\\' => WIDDX_BASE_PATH . '/polyfill/', // offline stand-in for psr/container
+        ];
+        foreach ($prefixes as $prefix => $dir) {
+            if (str_starts_with($class, $prefix)) {
+                $file = $dir . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+                if (is_file($file)) {
+                    require $file;
+                }
+            }
+        }
+    });
+    require WIDDX_BASE_PATH . '/core/helpers.php';
+}
+
+Widdx\App::run(WIDDX_BASE_PATH);
+PHP);
+
+    // config/app.php
+    write_file("{$base}/config/app.php", <<<PHP
+<?php
+return [
+    'name' => '{$name}',
+    'debug' => filter_var(env('APP_DEBUG', 'true'), FILTER_VALIDATE_BOOLEAN),
+    'locale' => env('APP_LOCALE', 'en'),
+    'url' => 'http://localhost:8000',
+    'trusted_proxies' => array_values(array_filter(array_map('trim', explode(',', (string) env('TRUSTED_PROXIES', ''))))),
+    'security' => [
+        'frame_options' => env('SECURITY_FRAME_OPTIONS', 'SAMEORIGIN'),
+        'referrer_policy' => env('SECURITY_REFERRER_POLICY', 'strict-origin-when-cross-origin'),
+        'csp' => env('SECURITY_CSP', ''),
+    ],
+];
+PHP);
+
+    // config/database.php
+    write_file("{$base}/config/database.php", <<<PHP
+<?php
+return [
+    'default' => env('DB_CONNECTION', 'sqlite'),
+    'connections' => [
+        'sqlite' => [
+            'driver' => 'sqlite',
+            'database' => env('DB_DATABASE', dirname(__DIR__) . '/database.sqlite'),
+        ],
+        'mysql' => [
+            'driver' => 'mysql',
+            'host' => env('DB_HOST', '127.0.0.1'),
+            'port' => env('DB_PORT', 3306),
+            'database' => env('DB_DATABASE', '{$name}'),
+            'username' => env('DB_USERNAME', 'root'),
+            'password' => env('DB_PASSWORD', ''),
+            'charset' => 'utf8mb4',
+        ],
+        'pgsql' => [
+            'driver' => 'pgsql',
+            'host' => env('DB_HOST', '127.0.0.1'),
+            'port' => env('DB_PORT', 5432),
+            'database' => env('DB_DATABASE', '{$name}'),
+            'username' => env('DB_USERNAME', 'postgres'),
+            'password' => env('DB_PASSWORD', ''),
+        ],
+    ],
+];
+PHP);
+
+    // Remaining config templates (auth/cache/logging/mail/queue) are copied
+    // verbatim from the source repo — keep scaffold and framework in step.
+    foreach (['auth.php', 'cache.php', 'logging.php', 'mail.php', 'queue.php'] as $cfgFile) {
+        $cfgSrc = __DIR__ . '/config/' . $cfgFile;
+        if (is_file($cfgSrc) && !is_file("{$base}/config/{$cfgFile}")) {
+            copy($cfgSrc, "{$base}/config/{$cfgFile}");
+        }
+    }
+
+    // .env.example
+    write_file("{$base}/.env.example", <<<ENV
+DB_CONNECTION=sqlite
+DB_DATABASE=./database.sqlite
+DB_HOST=127.0.0.1
+#DB_PORT=3306
+#DB_USERNAME=root
+#DB_PASSWORD=
+ENV);
+
+    // routes/web.php
+    if ($isApi) {
+        write_file("{$base}/routes/web.php", <<<'PHP'
+<?php
+
+// API routes — arrays are returned as JSON automatically.
+
+get('/', fn() => ['app' => config('app.name'), 'status' => 'ok']);
+
+// ZERO-CODE JSON CRUD — one line, no controller (needs 'php widdx migrate').
+apiResource('users');
+PHP);
+    } else {
+        write_file("{$base}/routes/web.php", <<<'PHP'
+<?php
+
+// Routes file — write minimal code, the framework handles the rest.
+
+// Home page
+get('/', fn() => view('welcome'));
+
+// ZERO-CODE demo — one line, no controller, no view files.
+// Full CRUD (list/create/show/edit/delete) on App\Models\User using the
+// framework's built-in templates. Run 'php widdx migrate' first.
+resource('users');
+
+// Customize later by adding views/users/*.php or a controller class —
+// the framework prefers your files automatically.
+PHP);
+    }
+
+    // routes/console.php — cron schedule declarations (php widdx schedule:run)
+    write_file("{$base}/routes/console.php", <<<'PHP'
+<?php
+
+// Cron made trivial: add ONE crontab entry for the whole project:
+//   * * * * * cd /path/to/project && php widdx schedule:run
+// Then declare what should run here. Nothing executes until you add lines.
+
+// \Widdx\Schedule::command('queue:work --max=100')->everyMinute();
+// \Widdx\Schedule::call(fn() => logger('info', 'heartbeat'))->daily();
+PHP);
+
+    // views/welcome.php
+    write_file("{$base}/views/welcome.php", <<<PHP
+<!DOCTYPE html>
+<html <?= lang_attrs() ?>>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title><?= e(config('app.name', 'Widdx')) ?></title>
+    <style>
+        body { font-family: system-ui, Tahoma, sans-serif; background: #f8fafc; margin: 0; padding: 60px 20px; text-align: center; color: #1e293b; }
+        .box { max-width: 640px; margin: auto; background: #fff; padding: 48px; border-radius: 16px; box-shadow: 0 8px 32px rgba(0,0,0,.08); }
+        h1 { font-size: 2.5rem; margin: 0 0 8px; }
+        code { background: #f1f5f9; padding: 2px 8px; border-radius: 6px; }
+        a.btn { display: inline-block; margin-top: 20px; background: #4f46e5; color: #fff; padding: 12px 28px; border-radius: 10px; text-decoration: none; }
+    </style>
+</head>
+<body>
+<div class="box">
+    <h1>🚀 <?= e(config('app.name', 'Widdx')) ?></h1>
+    <p>Your project is ready! Start from <code>routes/web.php</code></p>
+    <p>One line creates full CRUD: <code>resource('users', UserController::class)</code></p>
+</div>
+</body>
+</html>
+PHP);
+
+    // views/errors/404.php
+    write_file("{$base}/views/errors/404.php", <<<PHP
+<!DOCTYPE html>
+<html <?= lang_attrs() ?>>
+<head><meta charset="utf-8"><title>404 - Not Found</title>
+<style>body{font-family:system-ui,Tahoma,sans-serif;text-align:center;padding:60px;color:#1e293b}a{color:#4f46e5}</style>
+</head>
+<body>
+    <h1>🔍 Page Not Found (404)</h1>
+    <p>The URL you requested is not registered in <code>routes/web.php</code>.</p>
+    <p><a href="/">← Back to Home</a></p>
+</body>
+</html>
+PHP);
+
+    // views/errors/500.php
+    write_file("{$base}/views/errors/500.php", <<<PHP
+<!DOCTYPE html>
+<html <?= lang_attrs() ?>>
+<head><meta charset="utf-8"><title>500 - Error</title>
+<style>body{font-family:system-ui,Tahoma,sans-serif;text-align:center;padding:60px;color:#1e293b}a{color:#4f46e5}</style>
+</head>
+<body>
+    <h1>😅 Something Went Wrong (500)</h1>
+    <p>Sorry! An unexpected error occurred. Please try again or check the logs.</p>
+    <p><a href="/">← Back to Home</a></p>
+</body>
+</html>
+PHP);
+
+    // views/layouts/app.php
+    write_file("{$base}/views/layouts/app.php", <<<'PHP'
+<!DOCTYPE html>
+<html <?= lang_attrs() ?>>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title><?= e($title ?? config('app.name', 'Widdx')) ?></title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui, Tahoma, sans-serif; background: #f8fafc; color: #1e293b; line-height: 1.6; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+        nav { background: #fff; border-bottom: 1px solid #e2e8f0; padding: 16px 0; margin-bottom: 32px; }
+        nav a { color: #4f46e5; text-decoration: none; margin-right: 20px; font-weight: 500; }
+        nav a:hover { text-decoration: underline; }
+        .card { background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,.1); margin-bottom: 20px; }
+        .btn { display: inline-block; background: #4f46e5; color: #fff; padding: 10px 20px; border-radius: 8px; text-decoration: none; border: none; cursor: pointer; font-size: 14px; }
+        .btn-danger { background: #dc2626; }
+        .btn-success { background: #16a34a; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f8fafc; font-weight: 600; }
+        input, textarea, select { width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; margin-bottom: 12px; font-size: 14px; }
+        label { display: block; margin-bottom: 4px; font-weight: 500; }
+        .alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; }
+        .alert-success { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+        .alert-error { background: #fef2f2; color: #991b1b; border: 1px solid #fca5a5; }
+    </style>
+</head>
+<body>
+    <nav>
+        <div class="container">
+            <a href="/"><?= e(config('app.name', 'Widdx')) ?></a>
+            <a href="/">Home</a>
+        </div>
+    </nav>
+    <div class="container">
+        <?= $content ?? '' ?>
+    </div>
+</body>
+</html>
+PHP);
+
+    // database/migrations/0001_01_01_000000_create_users_table.php
+    write_file("{$base}/database/migrations/0001_01_01_000000_create_users_table.php", <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return new class {
+    public function up(\PDO $pdo): void
+    {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name VARCHAR(255) NOT NULL,
+            email VARCHAR(255) NOT NULL UNIQUE,
+            password VARCHAR(255),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+    }
+
+    public function down(\PDO $pdo): void
+    {
+        $pdo->exec("DROP TABLE IF EXISTS users");
+    }
+};
+PHP);
+
+    // database/seeders/UserSeeder.php
+    write_file("{$base}/database/seeders/UserSeeder.php", <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return new class {
+    public function run(\PDO $pdo): void
+    {
+        $stmt = $pdo->prepare("INSERT INTO users (name, email, password) VALUES (?, ?, ?)");
+        $stmt->execute(['Admin User', 'admin@example.com', password_hash('password', PASSWORD_DEFAULT)]);
+        $stmt->execute(['John Doe', 'john@example.com', password_hash('password', PASSWORD_DEFAULT)]);
+        $stmt->execute(['Jane Smith', 'jane@example.com', password_hash('password', PASSWORD_DEFAULT)]);
+    }
+};
+PHP);
+
+    // app/Models/User.php — powers the scaffold's zero-code resource('users')
+    write_file("{$base}/app/Models/User.php", <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+namespace App\Models;
+
+use Widdx\Model;
+
+class User extends Model
+{
+    protected array $fillable = ['name', 'email'];
+
+    protected array $hidden = ['password'];
+
+    protected array $rules = [
+        'name' => 'required|string|max:255',
+        'email' => 'required|email|max:255',
+    ];
+}
+PHP);
+
+    // README.md
+    write_file("{$base}/README.md", <<<MD
+# {$name}
+
+A Widdx project.
+
+## Quick Start
+
+```bash
+cd {$name}
+composer install
+cp .env.example .env
+php widdx migrate
+php widdx db:seed
+php widdx serve
+```
+
+## One-Line CRUD
+
+In `routes/web.php`:
+
+```php
+resource('users', UserController::class);
+```
+
+This creates:
+- GET    /users          → index
+- GET    /users/create   → create
+- POST   /users          → store
+- GET    /users/{id}     → show
+- GET    /users/{id}/edit → edit
+- PUT    /users/{id}     → update
+- DELETE /users/{id}     → destroy
+
+## API Resource
+
+```php
+apiResource('posts', PostController::class);
+```
+
+Returns JSON for all CRUD operations.
+
+## Helpers
+
+| Function | Description |
+|---|---|
+| `resource('name')` | Full CRUD routes — zero code (controller optional) |
+| `apiResource('name')` | JSON CRUD routes — zero code (controller optional) |
+| `view('name', \$data)` | Render template |
+| `redirect('/url')` | Redirect |
+| `request('key')` | Read input |
+| `db('table')` | Query Builder |
+| `route('name', \$params)` | Generate URL |
+| `csrf_field()` | CSRF hidden input |
+| `transaction(fn() => ...)` | DB transaction |
+| `event('name', ...\$args)` | Fire event |
+MD);
+
+    echo "\n✅ Project '{$name}' created successfully!\n\n";
+    echo "Next steps:\n";
+    echo "  cd {$name}\n";
+    echo "  composer install\n";
+    echo "  cp .env.example .env\n";
+    echo "  php widdx migrate\n";
+    echo "  php widdx db:seed\n";
+    echo "  php widdx serve        # /users is already full CRUD — zero code written\n";
+    echo "  php widdx make:crud Post title:string body:text?  # add more, still zero code\n";
+}
+
+function recursive_copy(string $src, string $dst): void
+{
+    $dir = opendir($src);
+    @mkdir($dst, 0777, true);
+    while (($file = readdir($dir)) !== false) {
+        if ($file === '.' || $file === '..') continue;
+        if (is_dir("{$src}/{$file}")) {
+            recursive_copy("{$src}/{$file}", "{$dst}/{$file}");
+        } else {
+            copy("{$src}/{$file}", "{$dst}/{$file}");
+        }
+    }
+    closedir($dir);
+}
+
+// ---------- Resource Route Helpers ----------
+
+function make_resource_routes(string $name, string $controller): void
+{
+    $studly = studly($name);
+    $controllerClass = "App\\Controllers\\{$studly}Controller";
+
+    get("/{$name}", [$controllerClass, 'index'])->name("{$name}.index");
+    get("/{$name}/create", [$controllerClass, 'create'])->name("{$name}.create");
+    post("/{$name}", [$controllerClass, 'store'])->name("{$name}.store");
+    get("/{$name}/{id}", [$controllerClass, 'show'])->name("{$name}.show");
+    get("/{$name}/{id}/edit", [$controllerClass, 'edit'])->name("{$name}.edit");
+    put("/{$name}/{id}", [$controllerClass, 'update'])->name("{$name}.update");
+    delete("/{$name}/{id}", [$controllerClass, 'destroy'])->name("{$name}.destroy");
+}
+
+function make_api_resource_routes(string $name, string $controller): void
+{
+    $studly = studly($name);
+    $controllerClass = "App\\Controllers\\{$studly}Controller";
+
+    get("/api/{$name}", [$controllerClass, 'index'])->name("api.{$name}.index");
+    post("/api/{$name}", [$controllerClass, 'store'])->name("api.{$name}.store");
+    get("/api/{$name}/{id}", [$controllerClass, 'show'])->name("api.{$name}.show");
+    put("/api/{$name}/{id}", [$controllerClass, 'update'])->name("api.{$name}.update");
+    delete("/api/{$name}/{id}", [$controllerClass, 'destroy'])->name("api.{$name}.destroy");
+}
+
+// ---------- Main Command Handler ----------
+
+// ---------- Live Application Bootstrapping for CLI Commands ----------
+
+// queue/schedule/serve-style commands read config + .env so the driver
+// chosen in the project's .env (e.g. QUEUE_DRIVER=database) is respected
+// in the CLI process, not just in HTTP requests.
+if ($command !== 'new') {
+    Widdx\App::loadEnv(WIDDX_BASE_PATH);
+    Widdx\App::loadConfig(WIDDX_BASE_PATH . '/config');
+}
+
+switch ($command) {
+    case 'new': {
+        $name = $argv[1] ?? null;
+        if (!$name) {
+            fwrite(STDERR, "Specify project name. Example: php widdx new my-app\n");
+            exit(1);
+        }
+        create_project($name, false);
+        break;
+    }
+
+    case 'new:api': {
+        $name = $argv[1] ?? null;
+        if (!$name) {
+            fwrite(STDERR, "Specify project name. Example: php widdx new:api my-api\n");
+            exit(1);
+        }
+        create_project($name, true);
+        break;
+    }
+
+    case 'make:controller': {
+        $raw = $argv[1] ?? null;
+        if (!$raw) {
+            fwrite(STDERR, "Specify controller name. Example: php widdx make:controller UserController\n");
+            exit(1);
+        }
+        $name = studly($raw);
+        $name = str_ends_with($name, 'Controller') ? $name : $name . 'Controller';
+        $resource = in_array('--resource', $argv, true);
+
+        $methods = $resource ? <<<'PHP'
+
+    public function index()
+    {
+        $items = REPLACE::all();
+        return view('REPLACE.index', ['items' => $items]);
+    }
+
+    public function create()
+    {
+        return view('REPLACE.create');
+    }
+
+    public function store()
+    {
+        $validated = request()->validate([REPLACE_RULES]);
+        REPLACE::create($validated);
+        return redirect('/REPLACE');
+    }
+
+    public function show($id)
+    {
+        $item = REPLACE::findOrFail($id);
+        return view('REPLACE.show', compact('item'));
+    }
+
+    public function edit($id)
+    {
+        $item = REPLACE::findOrFail($id);
+        return view('REPLACE.edit', compact('item'));
+    }
+
+    public function update($id)
+    {
+        $item = REPLACE::findOrFail($id);
+        $validated = request()->validate([REPLACE_RULES]);
+        $item->fill($validated);
+        $item->save();
+        return redirect('/REPLACE');
+    }
+
+    public function destroy($id)
+    {
+        $item = REPLACE::findOrFail($id);
+        $item->delete();
+        return redirect('/REPLACE');
+    }
+PHP : <<<'PHP'
+
+    public function index()
+    {
+        return view('REPLACE.index');
+    }
+PHP;
+
+        $viewBase = strtolower(str_replace('Controller', '', $name));
+        // Model class must be StudlyCase — lowercase breaks PSR-4 autoload on
+        // case-sensitive filesystems (App\Models\user vs app/Models/User.php).
+        $modelName = studly(rtrim($viewBase, 's'));
+        // Longest placeholders first: 'REPLACE' is a prefix of 'REPLACE_RULES',
+        // and 'REPLACE::' marks model class references.
+        $methods = str_replace('REPLACE_RULES', "'name' => 'required|string'", $methods);
+        $methods = str_replace('REPLACE::', $modelName . '::', $methods);
+        $methods = str_replace('REPLACE', $viewBase, $methods);
+
+        $stub = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace App\Controllers;
+
+use App\Models\\{$modelName};
+
+class {$name}
+{
+{$methods}
+}
+PHP;
+        write_file(WIDDX_BASE_PATH . "/app/Controllers/{$name}.php", $stub);
+        break;
+    }
+
+    case 'make:model': {
+        $raw = $argv[1] ?? null;
+        if (!$raw) {
+            fwrite(STDERR, "Specify model name. Example: php widdx make:model Post\n");
+            exit(1);
+        }
+        $name = studly($raw);
+        $stub = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace App\Models;
+
+use Widdx\Model;
+
+/**
+ * {$name} model — the framework infers the table name automatically.
+ */
+class {$name} extends Model
+{
+    //
+}
+PHP;
+        write_file(WIDDX_BASE_PATH . "/app/Models/{$name}.php", $stub);
+        break;
+    }
+
+    case 'make:middleware': {
+        $raw = $argv[1] ?? null;
+        if (!$raw) {
+            fwrite(STDERR, "Specify middleware name. Example: php widdx make:middleware Auth\n");
+            exit(1);
+        }
+        $name = studly($raw);
+        $stub = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace App\Middleware;
+
+use Widdx\Request;
+use Widdx\Response;
+
+class {$name}
+{
+    public function handle(Request \$request, callable \$next): Response
+    {
+        // Your logic here...
+        return \$next(\$request);
+    }
+}
+PHP;
+        write_file(WIDDX_BASE_PATH . "/app/Middleware/{$name}.php", $stub);
+        break;
+    }
+
+    case 'make:migration': {
+        $raw = $argv[1] ?? null;
+        if (!$raw) {
+            fwrite(STDERR, "Specify migration name. Example: php widdx make:migration create_users_table\n");
+            exit(1);
+        }
+        $name = studly($raw);
+        // Convert back to snake_case BEFORE stripping the verb prefix, then
+        // drop a trailing '_table' (e.g. CreateUsersTable → users).
+        $snake = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $name));
+        $tableName = (string) preg_replace('/^(create|drop|add|remove|delete|update)_/', '', $snake);
+        $tableName = (string) preg_replace('/_table$/', '', $tableName);
+        if ($tableName === '') {
+            $tableName = 'table_name';
+        }
+        $stub = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Migration: {$name}
+ * Table: {$tableName}
+ */
+return new class {
+    public function up(\PDO \$pdo): void
+    {
+        \$pdo->exec("CREATE TABLE IF NOT EXISTS {$tableName} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+    }
+
+    public function down(\PDO \$pdo): void
+    {
+        \$pdo->exec("DROP TABLE IF EXISTS {$tableName}");
+    }
+};
+PHP;
+        $dir = WIDDX_BASE_PATH . '/database/migrations';
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+        $filename = date('Y_m_d_His') . "_{$name}.php";
+        write_file("{$dir}/{$filename}", $stub);
+        break;
+    }
+
+    case 'make:crud': {
+        \Widdx\Cli\MakeCrud::run(array_slice($argv, 1));
+        break;
+    }
+
+    case 'make:seeder': {
+        $raw = $argv[1] ?? null;
+        if (!$raw) {
+            fwrite(STDERR, "Specify seeder name. Example: php widdx make:seeder UserSeeder\n");
+            exit(1);
+        }
+        $name = studly($raw);
+        $stub = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Seeder: {$name}
+ */
+return new class {
+    public function run(\PDO \$pdo): void
+    {
+        // \$stmt = \$pdo->prepare("INSERT INTO users (name, email) VALUES (?, ?)");
+        // \$stmt->execute(['User Name', 'user@example.com']);
+    }
+};
+PHP;
+        $dir = WIDDX_BASE_PATH . '/database/seeders';
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+        write_file("{$dir}/{$name}.php", $stub);
+        break;
+    }
+
+    case 'make:resource': {
+        $raw = $argv[1] ?? null;
+        if (!$raw) {
+            fwrite(STDERR, "Specify resource name. Example: php widdx make:resource Post\n");
+            exit(1);
+        }
+        $name = studly($raw);
+        $table = strtolower($name) . 's';
+
+        // Create model
+        $modelStub = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace App\Models;
+
+use Widdx\Model;
+
+class {$name} extends Model
+{
+    //
+}
+PHP;
+        write_file(WIDDX_BASE_PATH . "/app/Models/{$name}.php", $modelStub);
+
+        // Create controller
+        $controllerStub = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+namespace App\Controllers;
+
+use App\Models\\{$name};
+
+class {$name}Controller
+{
+    public function index()
+    {
+        \$items = {$name}::all();
+        return view('{$table}.index', ['items' => \$items]);
+    }
+
+    public function create()
+    {
+        return view('{$table}.create');
+    }
+
+    public function store()
+    {
+        \$validated = request()->validate(['name' => 'required|string']);
+        {$name}::create(\$validated);
+        return redirect('/{$table}');
+    }
+
+    public function show(\$id)
+    {
+        \$item = {$name}::findOrFail(\$id);
+        return view('{$table}.show', compact('item'));
+    }
+
+    public function edit(\$id)
+    {
+        \$item = {$name}::findOrFail(\$id);
+        return view('{$table}.edit', compact('item'));
+    }
+
+    public function update(\$id)
+    {
+        \$item = {$name}::findOrFail(\$id);
+        \$validated = request()->validate(['name' => 'required|string']);
+        \$item->fill(\$validated);
+        \$item->save();
+        return redirect('/{$table}');
+    }
+
+    public function destroy(\$id)
+    {
+        \$item = {$name}::findOrFail(\$id);
+        \$item->delete();
+        return redirect('/{$table}');
+    }
+}
+PHP;
+        write_file(WIDDX_BASE_PATH . "/app/Controllers/{$name}Controller.php", $controllerStub);
+
+        // Create migration
+        $migrationStub = <<<PHP
+<?php
+
+declare(strict_types=1);
+
+return new class {
+    public function up(\PDO \$pdo): void
+    {
+        \$pdo->exec("CREATE TABLE IF NOT EXISTS {$table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+    }
+
+    public function down(\PDO \$pdo): void
+    {
+        \$pdo->exec("DROP TABLE IF EXISTS {$table}");
+    }
+};
+PHP;
+        $dir = WIDDX_BASE_PATH . '/database/migrations';
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+        $filename = date('Y_m_d_His') . "_create_{$table}_table.php";
+        write_file("{$dir}/{$filename}", $migrationStub);
+
+        // Create views (index, create, show, edit)
+        $viewsDir = WIDDX_BASE_PATH . "/views/{$table}";
+        if (!is_dir($viewsDir)) {
+            mkdir($viewsDir, 0777, true);
+        }
+        write_file("{$viewsDir}/index.php", <<<PHP
+<!DOCTYPE html>
+<html <?= lang_attrs() ?>>
+<head><meta charset="utf-8"><title>{$name} List</title>
+<style>body{font-family:system-ui,Tahoma,sans-serif;max-width:700px;margin:40px auto;padding:0 16px}li{margin:6px 0}a{color:#4f46e5}.btn{display:inline-block;background:#4f46e5;color:#fff;padding:8px 18px;border-radius:8px;text-decoration:none;margin-bottom:16px}</style>
+</head>
+<body>
+    <h1>{$name} List</h1>
+    <a class="btn" href="/{$table}/create">+ New</a>
+    <ul>
+        <?php foreach (\$items as \$item): ?>
+            <li><a href="/{$table}/<?= e(\$item->id) ?>"><?= e(\$item->name ?? \$item->id) ?></a></li>
+        <?php endforeach; ?>
+    </ul>
+    <p><a href="/">← Home</a></p>
+</body>
+</html>
+PHP);
+        write_file("{$viewsDir}/create.php", <<<PHP
+<!DOCTYPE html>
+<html <?= lang_attrs() ?>>
+<head><meta charset="utf-8"><title>New {$name}</title>
+<style>body{font-family:system-ui,Tahoma,sans-serif;max-width:500px;margin:40px auto;padding:0 16px}input{display:block;width:100%;margin:8px 0 16px;padding:10px;border:1px solid #cbd5e1;border-radius:8px}button{background:#4f46e5;color:#fff;padding:10px 24px;border:none;border-radius:8px}</style>
+</head>
+<body>
+    <h1>New {$name}</h1>
+    <form method="POST" action="/{$table}">
+        <?= csrf_field() ?>
+        <label>Name<input type="text" name="name" value="<?= e(old('name')) ?>" required></label>
+        <button type="submit">Save</button>
+    </form>
+    <p><a href="/{$table}">← List</a></p>
+</body>
+</html>
+PHP);
+        write_file("{$viewsDir}/show.php", <<<PHP
+<!DOCTYPE html>
+<html <?= lang_attrs() ?>>
+<head><meta charset="utf-8"><title><?= e(\$item->name ?? '{$name}') ?></title>
+<style>body{font-family:system-ui,Tahoma,sans-serif;max-width:600px;margin:40px auto;padding:0 16px}</style>
+</head>
+<body>
+    <h1><?= e(\$item->name ?? '{$name} #' . \$item->id) ?></h1>
+    <p><a href="/{$table}/<?= e(\$item->id) ?>/edit">Edit</a> | <a href="/{$table}">← List</a></p>
+    <form method="POST" action="/{$table}/<?= e(\$item->id) ?>" onsubmit="return confirm('Delete?')">
+        <input type="hidden" name="_method" value="DELETE">
+        <button type="submit">Delete</button>
+    </form>
+</body>
+</html>
+PHP);
+        write_file("{$viewsDir}/edit.php", <<<PHP
+<!DOCTYPE html>
+<html <?= lang_attrs() ?>>
+<head><meta charset="utf-8"><title>Edit</title>
+<style>body{font-family:system-ui,Tahoma,sans-serif;max-width:500px;margin:40px auto;padding:0 16px}input{display:block;width:100%;margin:8px 0 16px;padding:10px;border:1px solid #cbd5e1;border-radius:8px}button{background:#4f46e5;color:#fff;padding:10px 24px;border:none;border-radius:8px}</style>
+</head>
+<body>
+    <h1>Edit {$name}</h1>
+    <form method="POST" action="/{$table}/<?= e(\$item->id) ?>">
+        <input type="hidden" name="_method" value="PUT">
+        <?= csrf_field() ?>
+        <label>Name<input type="text" name="name" value="<?= e(old('name', \$item->name)) ?>" required></label>
+        <button type="submit">Update</button>
+    </form>
+    <p><a href="/{$table}">← List</a></p>
+</body>
+</html>
+PHP);
+
+        echo "Created resource: {$name}\n";
+        echo "  - Model: app/Models/{$name}.php\n";
+        echo "  - Controller: app/Controllers/{$name}Controller.php\n";
+        echo "  - Migration: database/migrations/{$filename}\n";
+        echo "  - Views: views/{$table}/{index,create,show,edit}.php\n";
+        echo "\nAdd to routes/web.php:\n";
+        echo "  resource('{$table}', {$name}Controller::class);\n";
+        break;
+    }
+
+    case 'make:auth': {
+        // Full auth flow in ONE command — still zero hand-written code.
+        // Migrations + authRoutes(); every screen (login/register/reset/
+        // verify) ships inside the framework and is overridable via
+        // views/auth/<name>.php in the project.
+        write_file(WIDDX_BASE_PATH . '/database/migrations/' . date('Y_m_d_His') . '_create_auth_tokens_table.php', <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return new class {
+    public function up(\PDO $pdo): void
+    {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS auth_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email VARCHAR(255) NOT NULL,
+            type VARCHAR(20) NOT NULL,
+            token_hash VARCHAR(64) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
+    }
+
+    public function down(\PDO $pdo): void
+    {
+        $pdo->exec('DROP TABLE IF EXISTS auth_tokens');
+    }
+};
+PHP);
+
+        write_file(WIDDX_BASE_PATH . '/database/migrations/' . date('Y_m_d_His') . '_add_email_verified_at_to_users.php', <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return new class {
+    public function up(\PDO $pdo): void
+    {
+        try {
+            $pdo->exec('ALTER TABLE users ADD COLUMN email_verified_at TIMESTAMP NULL');
+        } catch (\PDOException) {
+            // column already exists — nothing to do
+        }
+    }
+
+    public function down(\PDO $pdo): void
+    {
+        try {
+            $pdo->exec('ALTER TABLE users DROP COLUMN email_verified_at');
+        } catch (\PDOException) {
+            // older engines without DROP COLUMN — leave it in place
+        }
+    }
+};
+PHP);
+
+        // User model ONLY when absent — never overwrite customizations.
+        if (!is_file(WIDDX_BASE_PATH . '/app/Models/User.php')) {
+            write_file(WIDDX_BASE_PATH . '/app/Models/User.php', <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+namespace App\Models;
+
+use Widdx\Model;
+
+class User extends Model
+{
+    protected array $fillable = ['name', 'email', 'password', 'email_verified_at'];
+
+    protected array $hidden = ['password'];
+
+    protected array $rules = [
+        'name' => 'required|string|min:2|max:100',
+        'email' => 'required|email|max:255',
+        'password' => 'required|string|min:8',
+    ];
+}
+PHP);
+        }
+
+        $routesFile = WIDDX_BASE_PATH . '/routes/web.php';
+        $routes = is_file($routesFile) ? (string) file_get_contents($routesFile) : '';
+        if (!str_contains($routes, 'authRoutes(')) {
+            file_put_contents($routesFile, "\nauthRoutes();\n", FILE_APPEND);
+        }
+
+        echo "Auth installed (zero code written):\n";
+        echo "  - migrations: auth_tokens + users.email_verified_at\n";
+        echo "  - routes/web.php: authRoutes()  (login/register/logout/reset/verify)\n";
+        echo "Next: php widdx migrate — then open /register\n";
+        echo "Built-in views live in the framework; override any with views/auth/<name>.php\n";
+        break;
+    }
+
+    case 'make:view': {
+        $raw = $argv[1] ?? null;
+        if (!$raw) {
+            fwrite(STDERR, "Specify view name. Example: php widdx make:view users/index\n");
+            exit(1);
+        }
+        $stub = <<<'PHP'
+<!DOCTYPE html>
+<html <?= lang_attrs() ?>>
+<head><meta charset="utf-8"><title><?= e($title ?? 'Page') ?></title>
+<style>body{font-family:system-ui,Tahoma,sans-serif;max-width:800px;margin:40px auto;padding:0 16px}</style>
+</head>
+<body>
+    <h1><?= e($title ?? 'Page') ?></h1>
+    <p>Content goes here...</p>
+</body>
+</html>
+PHP;
+        write_file(WIDDX_BASE_PATH . "/views/{$raw}.php", $stub);
+        break;
+    }
+
+    case 'migrate': {
+        $migrator = new Widdx\Migration();
+        $executed = $migrator->run();
+        if (empty($executed)) {
+            echo "No pending migrations.\n";
+        } else {
+            echo "Migrated: " . implode(', ', $executed) . "\n";
+        }
+        break;
+    }
+
+    case 'migrate:rollback': {
+        $migrator = new Widdx\Migration();
+        $rolledBack = $migrator->rollback();
+        if (empty($rolledBack)) {
+            echo "Nothing to rollback.\n";
+        } else {
+            echo "Rolled back: " . implode(', ', $rolledBack) . "\n";
+        }
+        break;
+    }
+
+    case 'db:seed': {
+        $seedersPath = WIDDX_BASE_PATH . '/database/seeders';
+        if (!is_dir($seedersPath)) {
+            echo "No seeders directory.\n";
+            break;
+        }
+        $files = glob($seedersPath . '/*.php') ?: [];
+        sort($files);
+        $pdo = Widdx\Database::connection()->pdo();
+        foreach ($files as $file) {
+            $seeder = require $file;
+            if (is_object($seeder) && method_exists($seeder, 'run')) {
+                $seeder->run($pdo);
+                echo "Seeded: " . basename($file, '.php') . "\n";
+            }
+        }
+        break;
+    }
+
+    case 'db:wipe': {
+        $db = Widdx\Database::connection();
+        $pdo = $db->pdo();
+        $driver = $db->driver();
+        $tablesQuery = match ($driver) {
+            'sqlite' => "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            'mysql' => 'SELECT TABLE_NAME AS name FROM information_schema.tables WHERE TABLE_SCHEMA = DATABASE()',
+            'pgsql', 'postgres', 'postgresql' => "SELECT tablename AS name FROM pg_tables WHERE schemaname = 'public'",
+            'sqlsrv', 'mssql' => "SELECT TABLE_NAME AS name FROM information_schema.tables WHERE TABLE_TYPE = 'BASE TABLE'",
+            'oci', 'oracle' => 'SELECT table_name AS name FROM user_tables',
+            default => throw new Widdx\Exceptions\DatabaseException("db:wipe does not support driver [{$driver}] directly."),
+        };
+        foreach ($pdo->query($tablesQuery)->fetchAll() as $table) {
+            $name = (string) $table['name'];
+            $pdo->exec("DROP TABLE IF EXISTS \"{$name}\"");
+            echo "Dropped: {$name}\n";
+        }
+        echo "All tables dropped. Run 'php widdx migrate' to recreate.\n";
+        break;
+    }
+
+    case 'route:list': {
+        Widdx\App::loadEnv(WIDDX_BASE_PATH);
+        Widdx\App::loadConfig(WIDDX_BASE_PATH . '/config');
+        Widdx\View::setBasePath(WIDDX_BASE_PATH . '/views');
+        require WIDDX_BASE_PATH . '/routes/web.php';
+        $routes = Widdx\Router::getInstance()->all();
+        if (empty($routes)) {
+            echo "No routes registered.\n";
+            break;
+        }
+        printf("%-22s %-28s %s\n", 'Method', 'URI', 'Action');
+        echo str_repeat('-', 80) . "\n";
+        foreach ($routes as $r) {
+            $action = is_array($r->action)
+                ? (is_object($r->action[0]) ? get_class($r->action[0]) : $r->action[0]) . '@' . $r->action[1]
+                : (is_string($r->action) ? $r->action : 'Closure');
+            printf("%-22s %-28s %s\n", implode('|', $r->methods), $r->uri, $action);
+        }
+        break;
+    }
+
+    case 'serve': {
+        $port = 8000;
+        foreach ($argv as $a) {
+            if (str_starts_with($a, '--port=')) {
+                $port = (int) substr($a, 7);
+            }
+        }
+        // Some images (e.g. php:cli) ship with an empty session.save_path,
+        // which silently breaks sessions. Self-heal to storage/sessions.
+        $iniSavePath = (string) ini_get('session.save_path');
+        $phpOpts = '';
+        if ($iniSavePath === '' || !is_dir($iniSavePath)) {
+            $sessions = WIDDX_BASE_PATH . '/storage/sessions';
+            if (!is_dir($sessions)) {
+                @mkdir($sessions, 0777, true);
+            }
+            if (is_dir($sessions) && is_writable($sessions)) {
+                $phpOpts = ' -d session.save_path=' . escapeshellarg($sessions);
+            }
+        }
+        echo "Widdx running at http://localhost:{$port}\n";
+        passthru(PHP_BINARY . $phpOpts . " -S localhost:{$port} -t " . escapeshellarg(WIDDX_BASE_PATH . '/public'));
+        break;
+    }
+
+    case 'test': {
+        $testCode = 0;
+        passthru(PHP_BINARY . " " . escapeshellarg(__DIR__ . '/widdx-test'), $testCode);
+        exit($testCode);
+    }
+
+    case 'queue:work': {
+        $queue = 'default';
+        $max = 0;
+        foreach ($argv as $a) {
+            if (str_starts_with($a, '--queue=')) {
+                $queue = substr($a, 8);
+            }
+            if (str_starts_with($a, '--max=')) {
+                $max = (int) substr($a, 6);
+            }
+        }
+        $processed = \Widdx\Queue::work($queue, $max);
+        echo "Processed {$processed} job(s).\n";
+        break;
+    }
+
+    case 'queue:push': {
+        $class = $argv[1] ?? '';
+        if ($class === '') {
+            fwrite(STDERR, "Usage: php widdx queue:push App\\Jobs\\MyJob '{\"key\":\"value\"}'\n");
+            exit(1);
+        }
+        if (!class_exists($class)) {
+            fwrite(STDERR, "Job class [{$class}] not found.\n");
+            exit(1);
+        }
+        $data = json_decode((string) ($argv[2] ?? '{}'), true) ?: [];
+        $id = \Widdx\Queue::push($class, $data);
+        echo "Pushed job #{$id}\n";
+        break;
+    }
+
+    case 'queue:failed': {
+        $conn = \Widdx\Queue::connection();
+        if (!$conn instanceof \Widdx\DatabaseQueue) {
+            fwrite(STDERR, "queue:failed needs the 'database' queue driver (QUEUE_DRIVER=database in .env)\n");
+            exit(1);
+        }
+        $rows = $conn->failedJobs();
+        if ($rows === []) {
+            echo "No failed jobs.\n";
+            break;
+        }
+        foreach ($rows as $row) {
+            $p = json_decode((string) $row['payload'], true) ?: [];
+            echo "#{$row['id']} [{$row['queue']}] " . ($p['job'] ?? '?') . " — {$row['reason']} @ {$row['failed_at']}\n";
+        }
+        break;
+    }
+
+    case 'queue:retry': {
+        $target = $argv[1] ?? '';
+        $conn = \Widdx\Queue::connection();
+        if (!$conn instanceof \Widdx\DatabaseQueue) {
+            fwrite(STDERR, "queue:retry needs the 'database' queue driver (QUEUE_DRIVER=database in .env)\n");
+            exit(1);
+        }
+        if ($target === 'all' || $target === '*') {
+            $ids = array_map(fn($r) => (int) $r['id'], $conn->failedJobs());
+        } elseif (ctype_digit($target)) {
+            $ids = [(int) $target];
+        } else {
+            fwrite(STDERR, "Usage: php widdx queue:retry <id>|all\n");
+            exit(1);
+        }
+        $n = 0;
+        foreach ($ids as $id) {
+            if ($conn->retryFailed($id)) {
+                $n++;
+            }
+        }
+        echo "Re-queued {$n} job(s).\n";
+        break;
+    }
+
+    case 'schedule:run': {
+        $ran = \Widdx\Schedule::run(WIDDX_BASE_PATH, false);
+        echo $ran === [] ? "Nothing due.\n" : 'Ran ' . count($ran) . " scheduled task(s).\n";
+        break;
+    }
+
+    case 'help':
+    case '--help':
+    case '-h':
+    default:
+        if ($command !== 'help' && !in_array($command, ['--help', '-h'], true)) {
+            fwrite(STDERR, "Unknown command: {$command}\n\n");
+        }
+        widdx_help();
+        break;
+}

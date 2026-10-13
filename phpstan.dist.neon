@@ -1,0 +1,27 @@
+parameters:
+    level: 1
+    # Framework supports PHP >= 8.1 — analyse against the oldest supported line.
+    phpVersion: 80100
+    paths:
+        - core
+        - app
+        - config
+        - routes
+        - public
+        - tests
+    # Templates get their variables injected at runtime by View::make()
+    # (extract), so "variable might not be defined" is always a false alarm.
+    excludePaths:
+        analyse:
+            - core/views
+    ignoreErrors:
+        # Model::query()/newFromTruncated() and Job factories MUST late-static-bind
+        # to the called class — `new static()` is the intended pattern here.
+        -
+            message: '#Unsafe usage of new static\(\)#'
+            paths:
+                - core/Model.php
+                - core/Job.php
+    treatPhpDocTypesAsCertain: false
+    bootstrapFiles:
+        - core/helpers.php
