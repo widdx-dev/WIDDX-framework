@@ -304,6 +304,66 @@ test('Lang::isRtl + lang_attrs() emit dir/lang html attributes', function () {
     assert_true(str_contains(lang_attrs(), 'dir="ltr"'), 'default locale is ltr');
 });
 
+// Shared-hosting web installer logic (no server needed — pure functions)
+test('Installer: buildEnv + lock + requirements + testConnection', function () {
+    $base = WIDDX_BASE_PATH . '/storage/app/unittest-inst';
+    foreach (['storage/cache', 'storage/logs', 'storage/sessions'] as $d) {
+        @mkdir($base . '/' . $d, 0777, true);
+    }
+
+    // buildEnv: only provided keys, quoting for awkward values
+    $env = \Widdx\Installer::buildEnv([
+        'DB_CONNECTION' => 'mysql', 'DB_HOST' => 'db.example.com', 'DB_PORT' => '',
+        'DB_DATABASE' => 'app_db', 'DB_USERNAME' => 'user', 'DB_PASSWORD' => 'a b=c',
+        'APP_DEBUG' => '1',
+    ]);
+    assert_true(str_contains($env, "DB_CONNECTION=mysql\n"));
+    assert_true(str_contains($env, 'DB_HOST=db.example.com'));
+    assert_true(!str_contains($env, 'DB_PORT='), 'empty values are skipped');
+    assert_true(str_contains($env, 'DB_PASSWORD="a b=c"'), 'space/= must be quoted');
+    assert_true(str_contains($env, 'APP_DEBUG=true'));
+
+    // sqlite connection test creates the file relative to base
+    $err = \Widdx\Installer::testConnection($base, ['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => './t.sqlite']);
+    assert_equals(null, $err, 'sqlite testConnection: ' . (string) $err);
+    assert_true(is_file($base . '/t.sqlite'), 'sqlite file created under base');
+
+    // unknown driver + missing pdo extension both surface as string errors
+    assert_true(is_string(\Widdx\Installer::testConnection($base, ['DB_CONNECTION' => 'nope'])));
+    $mysqlErr = \Widdx\Installer::testConnection($base, ['DB_CONNECTION' => 'mysql', 'DB_HOST' => '127.0.0.1', 'DB_PORT' => '1']);
+    assert_true(is_string($mysqlErr), 'mysql failure must return a message');
+
+    // lock lifecycle
+    assert_true(!\Widdx\Installer::installed($base), 'not installed yet');
+    assert_true(!\Widdx\Installer::configured($base), 'no .env yet');
+    \Widdx\Installer::lock($base);
+    assert_true(\Widdx\Installer::installed($base), 'lock makes it installed');
+
+    // requirements checklist shape
+    $req = \Widdx\Installer::requirements($base);
+    assert_true(count($req) >= 5, 'five checks minimum');
+    foreach ($req as $c) {
+        assert_true(isset($c['label'], $c['hint']) && is_bool($c['ok']), 'check shape');
+    }
+
+    // cleanup (recursive, warning-safe)
+    $rrm = function (string $dir) use (&$rrm): void {
+        foreach (scandir($dir) ?: [] as $f) {
+            if ($f === '.' || $f === '..') {
+                continue;
+            }
+            $p = $dir . '/' . $f;
+            if (is_dir($p)) {
+                $rrm($p);
+            } else {
+                @unlink($p);
+            }
+        }
+        @rmdir($dir);
+    };
+    $rrm($base);
+});
+
 test('validate() confirmed rule + custom messages', function () {
     \Widdx\App::basePath(WIDDX_BASE_PATH);
     $request = new \Widdx\Request([], ['password' => 'secret', 'password_confirmation' => 'different'], ['REQUEST_METHOD' => 'POST']);

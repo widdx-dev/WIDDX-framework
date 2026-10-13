@@ -244,6 +244,13 @@ if (!class_exists('Widdx\App')) {
 Widdx\App::run(WIDDX_BASE_PATH);
 PHP);
 
+    // public/install.php — copied verbatim from the framework source (no
+    // heredoc drift, see the config-copy lesson): shared-hosting owners
+    // get the web installer without ever touching a terminal.
+    if (is_file(WIDDX_BASE_PATH . '/public/install.php')) {
+        copy(WIDDX_BASE_PATH . '/public/install.php', "{$base}/public/install.php");
+    }
+
     // config/app.php
     write_file("{$base}/config/app.php", <<<PHP
 <?php
@@ -536,6 +543,9 @@ php widdx db:seed
 php widdx serve
 ```
 
+No terminal / shared hosting? Upload the folder as-is and open `/install.php`
+in the browser — it writes .env, runs the migrations and locks itself.
+
 ## One-Line CRUD
 
 In `routes/web.php`:
@@ -586,6 +596,7 @@ MD);
     echo "  php widdx db:seed\n";
     echo "  php widdx serve        # /users is already full CRUD — zero code written\n";
     echo "  php widdx make:crud Post title:string body:text?  # add more, still zero code\n";
+    echo "  (shared hosting without terminal? upload the folder + open /install.php in the browser)\n";
 }
 
 function recursive_copy(string $src, string $dst): void

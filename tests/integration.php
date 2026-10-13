@@ -1087,6 +1087,69 @@ if (!is_resource($proc) || !$GLOBALS['main_env_created']) {
     ok('unreachable server surfaces MailException', $caught);
 }
 
+// --------------------------------------------- 9. Shared hosting: web installer
+
+sec('Shared hosting style: fresh project + /install.php, no terminal, no .env');
+
+// Simulate "download zip + FTP upload": a bare `widdx new` scaffold that
+// still has NO .env (only .env.example) — exactly what a shared-hosting
+// user uploads. One local command pre-generates a CRUD migration, the way
+// a developer would before uploading (or via a teammate).
+[$code, $out] = shell('cd ' . escapeshellarg($TMP) . ' && ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($ROOT . '/widdx') . ' new hostapp');
+ok('widdx new hostapp exits 0', $code === 0, $out);
+$proj2 = $TMP . '/hostapp';
+ok('scaffold ships public/install.php', is_file($proj2 . '/public/install.php'));
+ok('scaffold ships core/Installer.php', is_file($proj2 . '/core/Installer.php'));
+ok('fresh project has NO .env (installer stays available)', !is_file($proj2 . '/.env'));
+
+[$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Note title:string');
+ok('make:crud in hostapp exits 0', $code === 0, $out);
+
+$port2 = pick_port();
+$pid2 = start_server($proj2, $port2);
+$jar2 = [];
+
+$r = http($port2, 'GET', '/install.php', null, $jar2);
+ok('install.php serves the Arabic form', $r['status'] === 200 && str_contains($r['body'], 'تنصيب') && str_contains($r['body'], 'dir="rtl"'), substr($r['body'], 0, 200));
+
+$r = http($port2, 'GET', '/', null, $jar2);
+ok('welcome page reachable pre-install', $r['status'] === 200);
+
+// Fill the installer form (sqlite, absolute path so php -S CWD cannot matter).
+$r = http($port2, 'POST', '/install.php', [
+    'action' => 'install',
+    'DB_CONNECTION' => 'sqlite',
+    'DB_SQLITE_PATH' => $proj2 . '/host.sqlite',
+    'APP_LOCALE' => 'ar',
+    'APP_DEBUG' => '1',
+], $jar2);
+ok('install POST succeeds', $r['status'] === 200 && str_contains($r['body'], 'تم التنصيب'), substr($r['body'], 0, 300));
+ok('.env was created', is_file($proj2 . '/.env'));
+$env2 = (string) @file_get_contents($proj2 . '/.env');
+ok('.env carries the chosen settings', str_contains($env2, 'DB_CONNECTION=sqlite') && str_contains($env2, 'APP_LOCALE=ar') && str_contains($env2, 'host.sqlite'));
+ok('migration ran from the browser', is_file($proj2 . '/host.sqlite'));
+ok('installer self-locked', is_file($proj2 . '/storage/app/installed.lock'));
+
+$r = http($port2, 'GET', '/install.php', null, $jar2);
+ok('install.php is 404 after install (one-shot)', $r['status'] === 404, substr($r['body'], 0, 150));
+$r = http($port2, 'POST', '/install.php', ['action' => 'install', 'DB_CONNECTION' => 'sqlite'], $jar2);
+ok('POST cannot bypass the lock either', $r['status'] === 404);
+
+// The app itself runs with zero terminal involvement.
+$r = http($port2, 'GET', '/notes', null, $jar2);
+ok('CRUD page works after web install', $r['status'] === 200 && str_contains($r['body'], 'lang="ar" dir="rtl"'), substr($r['body'], 0, 200));
+
+$r = http($port2, 'GET', '/notes/create', null, $jar2);
+$tok2 = null;
+if (preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $m)) {
+    $tok2 = $m[1];
+}
+$r = http($port2, 'POST', '/notes', ['csrf_token' => (string) $tok2, 'title' => 'FTP-only note'], $jar2);
+$r = http($port2, 'GET', '/notes', null, $jar2);
+ok('record inserted through the web-installed app', $r['status'] === 200 && str_contains($r['body'], 'FTP-only note'), substr($r['body'], 0, 300));
+
+stop_server($pid2);
+
 // ------------------------------------------------------------------ summary
 
 echo "\n===== Integration: {$pass} passed, {$fail} failed =====\n";

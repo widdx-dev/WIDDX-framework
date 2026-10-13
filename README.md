@@ -832,3 +832,41 @@ Packaging decision: the repository is **library + skeleton in one** — `widdx/f
 is publishable on Packagist (PSR-4 `Widdx\` → `core/`), while `php widdx new` ships the
 app skeleton (no separate template repo to keep in sync). `composer.lock` is not
 committed, per library convention.
+
+---
+
+## Deploy on Shared Hosting (no terminal needed)
+
+Widdx runs natively on Apache/LiteSpeed shared hosting (cPanel, Hostinger, Namecheap…):
+
+- **Composer is optional** — `public/index.php` falls back to a built-in PSR-4
+  autoloader plus the `polyfill/` stand-in for `psr/container`, so a plain file
+  upload is enough (no `vendor/` required).
+- **The web installer** does everything a terminal would: upload the project
+  (zip → Extract in cPanel File Manager), open `https://your-site.com/install.php`,
+  fill in the database form. It checks PHP/PDO/storage permissions, **tests the DB
+  connection first**, writes `.env`, runs every pending migration, then locks itself
+  forever (`install.php` returns 404 afterwards; it also refuses to overwrite an
+  existing `.env`).
+- **Cron jobs** (cPanel → Cron Jobs) replace the scheduler daemon:
+
+  ```
+  * * * * * php /home/USER/public_html/widdx schedule:run
+  ```
+
+- **Queues without a daemon**: `widdx queue:work` already processes everything
+  available and exits when the queue is empty — perfect for cron:
+
+  ```
+  * * * * * php /home/USER/public_html/widdx queue:work --max=50
+  ```
+
+Typical no-terminal flow:
+
+1. `php widdx new my-app` + `make:crud ...` locally (or receive the folder from a teammate).
+2. Edit nothing — upload the whole folder to `public_html/` via FTP/File Manager.
+3. Create the MySQL database + user in cPanel.
+4. Open `/install.php`, submit the form, done. Delete `install.php` if you like —
+   the lock already neutralizes it.
+
+If you DO have SSH, everything also works through the usual `php widdx migrate` CLI.
