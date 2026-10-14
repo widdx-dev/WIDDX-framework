@@ -1,0 +1,26 @@
+# Widdx Framework
+
+> A zero-code PHP 8.1+ MVC framework: the programmer writes the fewest possible
+> lines. One line `resource('posts')` produces a complete CRUD web app; `authRoutes()`
+> produces full authentication; `make:crud` produces model + migration + route from
+> one shell command. Runs on shared hosting without composer or a terminal.
+
+- [AGENTS.md](AGENTS.md): the complete AI-agent handbook — conventions, inference
+  rules, API reference, CLI, pitfalls. THIS IS THE PRIMARY DOCUMENT for any LLM.
+- [README.md](README.md): human-oriented guide with full worked examples.
+- [core/helpers.php](core/helpers.php): every global helper function, documented inline.
+- [routes/web.php](routes/web.php): smallest possible working app (study it first).
+- [app/Models/User.php](app/Models/User.php): canonical model shape (fillable + rules).
+- [tests/integration.php](tests/integration.php): executable specification of all
+  framework behavior over real HTTP.
+
+## Key facts for LLMs
+
+- Project = framework folder. No build step, composer optional (fallback autoloader).
+- Conventions over configuration: table names, FKs, form fields, selects, pivots,
+  policies, and view overrides are all INFERRED from names (full table in AGENTS.md §6).
+- Templates execute in the GLOBAL namespace — use helpers (`auth()`, `e()`), never bare classes.
+- Validation rules drive both server-side checks and the auto-generated HTML form.
+- `php widdx test` = 50 unit + 144 integration assertions.
+- Deployment: VPS (`php widdx migrate`) or shared hosting without terminal
+  (`/install.php` one-shot web installer).

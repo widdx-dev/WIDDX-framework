@@ -1,0 +1,1 @@
+Read AGENTS.md at the repository root. It is the complete, authoritative handbook for working with the Widdx PHP framework: zero-code conventions, API surface, CLI, and known pitfalls. Follow its §19 pitfalls list and §6 inference table before writing any boilerplate.

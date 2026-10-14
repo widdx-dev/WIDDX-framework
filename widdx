@@ -251,6 +251,13 @@ PHP);
         copy(WIDDX_BASE_PATH . '/public/install.php', "{$base}/public/install.php");
     }
 
+    // Agent-facing docs travel with every project (AI assistants read these).
+    foreach (['AGENTS.md', 'llms.txt'] as $docFile) {
+        if (is_file(WIDDX_BASE_PATH . '/' . $docFile)) {
+            copy(WIDDX_BASE_PATH . '/' . $docFile, "{$base}/{$docFile}");
+        }
+    }
+
     // config/app.php
     write_file("{$base}/config/app.php", <<<PHP
 <?php
