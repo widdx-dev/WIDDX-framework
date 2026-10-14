@@ -5,6 +5,37 @@ One line = one fact. Follow the lines in order. Do not skip sections.
 
 ---
 
+## PART 0 — Small model? Do EXACTLY these five lines
+
+You (a 3B model) only need this part for a basic project. Type, one by one:
+
+```
+cd <the-unzipped-widdx-folder>
+php widdx new myapp
+cd myapp
+php widdx migrate
+php widdx serve
+```
+
+Then open http://localhost:8000 — it works (demo users CRUD is live).
+
+To add any list of records (run INSIDE the myapp folder) — ALWAYS two commands:
+
+```
+php widdx make:crud Product name:string price:float
+php widdx migrate
+```
+
+The second command is NOT optional. `make:crud` creates the table file; `migrate` applies it.
+Then restart nothing — the running `php widdx serve` picks it up on the next request.
+
+The pages live at `/products` — plural. Always plural.
+
+If a step fails: read its error, fix THAT step, run it again. Do not rewrite
+earlier steps. If you need more than a list of records, read PART 4 + PART 22.
+
+---
+
 ## PART 1 — What is Widdx
 
 - Widdx is a PHP framework that lives inside your project folder.
@@ -33,6 +64,8 @@ One line = one fact. Follow the lines in order. Do not skip sections.
 ---
 
 ## PART 3 — Start a project (one step per line)
+
+The framework folder is the tool. All `php widdx …` commands need you to be INSIDE it (or inside a project made from it).
 
 Have PHP on your machine? Type:
 
@@ -112,7 +145,7 @@ Step 2 — run the migration:
 php widdx migrate
 ```
 
-Step 3 — open the app. Done. `/product` already does list/create/show/edit/delete.
+Step 3 — open the app. Done. `/products` already does list/create/show/edit/delete. (URL is ALWAYS the plural name.)
 
 Step 4 — only if the user asked for custom design:
 

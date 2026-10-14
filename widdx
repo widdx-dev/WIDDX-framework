@@ -121,7 +121,9 @@ function write_file(string $path, string $content): void
 
 function create_project(string $name, bool $isApi = false): void
 {
-    $base = getcwd() . '/' . $name;
+    // Accept both relative ("myapp") and absolute ("/tmp/myapp") names.
+    $absolute = preg_match('#^(/|[a-zA-Z]:[\\\\/])#', $name) === 1;
+    $base = $absolute ? rtrim($name, '/') : getcwd() . '/' . $name;
     if (is_dir($base)) {
         fwrite(STDERR, "Directory already exists: {$base}\n");
         exit(1);
