@@ -1,451 +1,507 @@
-# Widdx Framework — AI Agent Handbook
+# Widdx — AI Agent Handbook
 
-> **Audience**: AI coding assistants (Claude, GPT, Gemini, Cursor, Copilot, Codex…) and humans.
-> **Mission of Widdx**: the programmer writes the *fewest possible lines of code* for any project.
-> When you build with Widdx, prefer the framework's conventions over hand-written code.
-> If you find yourself writing boilerplate that Widdx can infer — stop, and delete it.
-
-Version documented: **v0.2.0** (tagged). PHP **>= 8.1**. Zero required external packages.
+Read this file before writing any code in a Widdx project.
+One line = one fact. Follow the lines in order. Do not skip sections.
 
 ---
 
-## 1. What Widdx is (30 seconds)
+## PART 1 — What is Widdx
 
-Widdx is a self-contained PHP MVC micro-framework that lives in `core/`. It is NOT a
-composer library you install into a project — **the project IS the framework folder**:
-download/clone the repo (or run `php widdx new my-app`) and you have a complete
-application skeleton with router, ORM, auth, queues, scheduler, views, CLI, and a
-web installer. There is no build step, no npm, and composer is optional (a built-in
-PSR-4 fallback autoloader ships in `public/index.php`).
-
-Its defining feature is **zero-code CRUD**: one line `resource('posts');` in
-`routes/web.php` gives a fully working list/create/show/edit/delete web UI (and
-`apiResource('posts');` gives a JSON API) driven by the `App\Models\Post` model and
-the framework's own templates — with **no controller, no view files, no routes**.
-
----
-
-## 2. Hard facts an agent must respect
-
-| Fact | Detail |
-|---|---|
-| Language level | PHP >= 8.1, `declare(strict_types=1)` in every core file |
-| Autoload | PSR-4: `Widdx\` → `core/`, `App\` → `app/`; helpers autoload from `core/helpers.php` |
-| Entry point | `public/index.php` only. `.htaccess` routes everything through it |
-| Namespaces in views | **Templates run in the GLOBAL namespace.** In any `.php` view use global helpers (`auth()`, `e()`, `errors()`, `old()`, `csrf_field()`, `lang_attrs()`) — NEVER bare class names like `Auth::user()` (this is a real fatal-error trap) |
-| CLI | `php widdx <command>` from the project root (extension-less file, valid PHP) |
-| Tests | `php widdx test` runs unit (`widdx-test`) + integration (`tests/integration.php`) |
-| Database | PDO; drivers sqlite (default), mysql, pgsql, sqlsrv, oci, or a raw `DB_DSN` |
-| Shared hosting | Fully supported; `/install.php` web installer exists for terminal-less deploy |
+- Widdx is a PHP framework that lives inside your project folder.
+- Your project IS this folder. There is nothing to install.
+- PHP version needed: 8.1 or newer.
+- Composer is optional. The autoloader works without it.
+- There is no npm. There is no build step. There is no config file to edit.
+- The idea of Widdx: you write almost nothing. The framework infers the rest from names.
+- One line `resource('posts')` = a full working CRUD website for posts.
+- One line `authRoutes()` = register + login + logout + password reset + email verify.
+- One command `make:crud` = model + database table + routes, all at once.
+- Version: v0.2.x. All behavior below is tested (50 unit + 144 integration).
 
 ---
 
-## 3. Project structure
+## PART 2 — The five golden rules
+
+1. Before writing code, check if the framework already does it (PART 4 list).
+2. Prefer one model file + one route line over a controller + views.
+3. Every template (.php file in views/) runs in the GLOBAL namespace.
+   - RIGHT: `<?= e(auth()->name) ?>`
+   - WRONG: `<?= \Widdx\Auth::user()->name ?>` (this is a fatal error)
+4. Escape all user data: `<?= e($value) ?>`. Always. In every template.
+5. When unsure, run `php widdx test` — the answer is inside the test files.
+
+---
+
+## PART 3 — Start a project (one step per line)
+
+Have PHP on your machine? Type:
 
 ```
-app/Controllers/     your controllers (often NONE needed)
-app/Middleware/      your middleware
-app/Models/          your models — usually the only code you write
-config/              app, auth, cache, database, logging, mail, queue  (each .env-driven)
-core/                THE FRAMEWORK (router, ORM, auth, queue, view, CLI classes…)
-core/Contracts/      interfaces for swappable drivers (cache, mail, queue, logger…)
-core/views/crud/     built-in CRUD templates (index/create/edit/show/form)
-core/views/auth/     built-in auth templates (login/register/forgot/reset/verify)
-database/migrations/ timestamped migration classes
-database/seeders/    seeders (php widdx db:seed)
-lang/                validation/auth messages per locale (en, ar included)
-public/              web root: index.php, install.php, .htaccess, your css/js
-routes/web.php       ALL routes (web + api — same file)
-routes/console.php   schedule definitions (Schedule::command/call)
-storage/             cache/ logs/ app/ sessions/ (writable; runtime state)
-views/               YOUR templates — overrides core/views automatically
-views/errors/        404.php / 500.php error pages
-widdx                CLI entry point (php widdx help)
-widdx-test           unit suite
+php widdx new myapp
 ```
 
-**Override rule**: any file you add under `views/<resource>/` with the same name as a
-core template (`index, create, edit, show, form`) replaces the built-in one. Same for
-`views/errors/*.php`.
+No PHP on your machine? Download/zip this folder and unzip it. Same result.
+
+Then inside the new folder:
+
+```
+cd myapp
+```
+
+SQLite is the default database. It needs zero setup. The file appears by itself.
+
+To run the app:
+
+```
+php widdx serve
+```
+
+Open http://localhost:8000 — it already works (demo user CRUD exists).
+
+To put data in the database for the first time:
+
+```
+php widdx migrate
+```
+
+No terminal at all (shared hosting)? Upload the folder, open `https://yoursite/install.php` in the browser, fill the form. Done.
 
 ---
 
-## 4. Request lifecycle (mental model)
+## PART 4 — Inference: what Widdx guesses from names
 
-```
-HTTP request
-  └─ public/index.php            define WIDDX_BASE_PATH, autoload
-      └─ App::run(base)
-          ├─ App::loadEnv(base)  read .env (no vendor needed)
-          ├─ App::loadConfig()   require config/*.php into a static array
-          ├─ Session::start()    file sessions under storage/sessions
-          ├─ Router::dispatch(Request)
-          │    ├─ match GET/POST/PUT/PATCH/DELETE on uri (PUT/DELETE via
-          │    │   _method spoofing in forms)
-          │    ├─ run global middleware  (Router::use(X::class))
-          │    ├─ run route middleware   (->middleware(X::class))
-          │    └─ invoke action: closure / [Controller::class, 'method']
-          │        Controller instances are auto-wired by Container (DI by type-hint)
-          └─ Response::send()    json / html / redirect / 404/419/500 pages
-```
+Each item: "if you do X" → "Widdx does Y". Memorize these; they replace all config.
 
-Errors: `ValidationException` auto-redirects back with `errors()` + `old()` flash
-(no controller code needed). Unmatched route → `views/errors/404.php`. Exception →
-`views/errors/500.php` (with details when `APP_DEBUG=true`).
-
----
-
-## 5. The golden path — build a full app in ONE command
-
-```bash
-php widdx new shop && cd shop           # scaffold (or just clone/zip-upload the folder)
-php widdx make:crud Product name:string price:float photo:image? category:fk(Category)
-php widdx make:crud Category name:string
-php widdx migrate                        # or open /install.php in the browser — same thing
-php widdx serve                          # http://localhost:8000/product  ← full CRUD
-```
-
-That produces: 2 models with validation rules, 2 migrations (with a REAL
-`REFERENCES categories(id)` foreign key), 2 `resource(...)` route lines — and NOTHING
-else. List/form/show/edit/delete pages, upload handling, and a `<select>` for
-`category_id` all work because the framework infers them (see §6).
+1. You write `resource('posts')` → 7 routes + 5 pages work, no controller needed.
+2. You write `apiResource('posts')` → JSON API at `/api/posts`, no controller needed.
+3. The framework looks for `App\Controllers\PostController` first. Not found? It uses `App\Models\Post` + built-in pages.
+4. Class `Post` with no `$table` property → table name `posts`.
+5. Class `OrderItem` → table `order_items` (snake_case + plural).
+6. Model has `$rules` array → the create/edit form is BUILT from it automatically.
+7. Rule contains `string` → form shows a text input.
+8. Rule contains `text` → form shows a textarea.
+9. Rule contains `bool` → form shows a checkbox.
+10. Column name ends with `_id` and model `User` exists for `user_id` → form shows a dropdown filled from users. No code from you.
+11. Rule contains `file` or `image` → form shows a file input and the upload is saved.
+12. `$fillable = ['title']` → mass assignment allowed only for those columns.
+13. You create a file `views/posts/index.php` → your file replaces the built-in page. Same for create/edit/show/form.
+14. A migration file exists in `database/migrations/` → `php widdx migrate` runs it (name order, tracked in `migrations` table).
+15. Class `Book` + method `author()` returning `belongsTo(Author::class)` → foreign key column `author_id` on books.
+16. `Team` + `hasMany(Player::class)` → foreign key `team_id` on players.
+17. `belongsToMany(Permission::class)` on Role → pivot table named alphabetically: `permission_role`.
+18. File `App/Policies/BookPolicy.php` for model `App\Models\Book` → Gate finds it automatically.
+19. A route action returns an array → client gets JSON. No Response object needed.
+20. Forms POST `_method=PUT` or `_method=DELETE` → the real PUT/DELETE route runs.
+21. `APP_LOCALE=ar` (or he/fa/ur/ps/sd/ug/yi/ku/dv) → every built-in page renders `dir="rtl"`. Zero extra work.
 
 ---
 
-## 6. Inference conventions (READ THIS — it is the framework's brain)
+## PART 5 — Build a CRUD feature (exact recipe, 4 steps)
 
-Widdx replaces configuration with naming conventions. Every rule below is enforced by
-code, and knowing them lets you write zero boilerplate:
+Task: "add products with a name, a price, and a photo".
 
-| If you… | The framework infers… |
-|---|---|
-| `resource('posts')` with no controller | model `App\Models\Post`; if `PostController` exists it is used instead |
-| class `Post` (no `$table`) | table `posts` (snake + pluralize); class `OrderItem` → `order_items` |
-| model has `protected array $rules` | the create/edit **form fields, labels, and types** (string→text, text→textarea, bool→checkbox, `*_id`→select of related model, `file`/`image`→file input) |
-| column name ends `_id` and `App\Models\{Studly}id` exists | select options loaded from that model automatically |
-| `make:crud x.y:fk(Model)` | column `model_id INTEGER NOT NULL REFERENCES models(id)` + rule `exists:models,id` |
-| field type suffix `?` (`body:text?`) | nullable column + `nullable` rule (uploads default to nullable on purpose) |
-| model property `$fillable` | mass-assignment whitelist for `Model::create($data)` and `fill()` |
-| `hasMany/hasOne(Player::class)` on `Team` | FK `team_id` on players, local key = parent primary key |
-| `belongsTo(Author::class)` on `Book` | FK `author_id` on books, owner key `id` |
-| `belongsToMany(Permission::class)` | pivot table name = two models joined **alphabetically**: `permission_role` |
-| policy class named `App\Policies\BookPolicy` for `App\Models\Book` | Gate auto-discovers it by convention (no registration call) |
-| form POSTs `_method=PUT|DELETE` | real PUT/DELETE routing |
-| route action returns **array** | JSON response automatically (very useful in API closures) |
-| file `views/posts/index.php` exists | your template is used, core template is skipped |
-| locale is `ar/he/fa/ur/ps/sd/ug/yi/ku/dv` | templates render `dir="rtl"` via `lang_attrs()` |
-| migration file `database/migrations/*_create_*_table.php` | `php widdx migrate` runs all pending in filename order |
+Step 1 — make the model + table + routes in one command:
 
-Migrations are plain PHP classes returning `new class { public function up(\PDO $pdo): void {…} }`
-stored in `database/migrations/` — the `migrate` command records executed names in a
-`migrations` table; `migrate:rollback` reverses the last batch.
+```
+php widdx make:crud Product name:string price:float photo:image?
+```
+
+Step 2 — run the migration:
+
+```
+php widdx migrate
+```
+
+Step 3 — open the app. Done. `/product` already does list/create/show/edit/delete.
+
+Step 4 — only if the user asked for custom design:
+
+- copy `core/views/crud/index.php` to `views/product/index.php` and edit it.
+
+That is the whole job. Never write a controller for plain CRUD.
+
+What `make:crud` produced:
+
+- `app/Models/Product.php` (with `$fillable` and `$rules` filled in)
+- `database/migrations/...create_products_table.php`
+- one line `resource('products');` added to `routes/web.php`
+
+Field types you may use: `string text integer float bool date email url file image fk(Model)` and a `?` suffix means optional. Example:
+
+```
+php widdx make:crud Invoice amount:float company:fk(Company) note:text?
+```
+
+`fk(Company)` creates a REAL foreign key + a dropdown + `exists:companies,id` validation. All free.
 
 ---
 
-## 7. Routes (`routes/web.php`)
+## PART 6 — Routes (one line per form)
+
+- `get('/x', fn() => 'hi')` — returns HTML.
+- `get('/x', fn() => ['a' => 1])` — returns JSON (array = JSON, always).
+- `post('/x', fn() => …)` — same idea for POST.
+- `put('/x/{id}', fn(string $id) => …)` — `{id}` becomes a function argument.
+- `patch`, `delete` — exist and work like put.
+- `->name('x.y')` — names a route. `route('x.y', ['id' => 2])` builds its URL.
+- `resource('x')` — the 7 CRUD routes (GET /x, GET /x/create, POST /x, GET /x/{id}, GET /x/{id}/edit, PUT /x/{id}, DELETE /x/{id}).
+- `apiResource('x')` — JSON CRUD under `/api/x` (no create/edit pages).
+- `authRoutes()` — the whole login system (see PART 10).
+
+Routes file: `routes/web.php`. API and web share this one file.
+
+---
+
+## PART 7 — Middleware (it is opt-in, one line to enable)
+
+- Global CSRF: `\Widdx\Router::use(\Widdx\CsrfMiddleware::class);`
+- Global security headers: `\Widdx\Router::use(\Widdx\SecurityHeaders::class);`
+- Protect one route with login: `->middleware(\Widdx\AuthMiddleware::class)`
+- Rate limit: `->middleware(new \Widdx\ThrottleMiddleware(60, 60))` — 60 requests per 60 seconds per IP.
+- IP behind proxy: set `TRUSTED_PROXIES` in `.env` or throttling counts the proxy, not visitors.
+
+CSRF warning: once CsrfMiddleware is on, EVERY POST form needs:
+
+```
+<?= csrf_field() ?>
+```
+
+Missing it gives status 419. This breaks the site silently — add it to all forms.
+
+---
+
+## PART 8 — Models
+
+The smallest legal model (this is usually the ONLY file you write):
+
+```
+php widdx make:model Post
+```
+
+The file needs just:
 
 ```php
-get('/', fn() => view('welcome'));                    // HTML
-get('/health', fn() => ['status' => 'ok']);           // arrays auto-JSON
-post('/pay', [PaymentController::class, 'store']);    // controller action
-put('/books/{id}', fn(string $id) => …);              // params {name} → positional closure args
-delete('/books/{id}', …)->name('books.destroy');      // named routes → route('books.destroy', ['id'=>1])
-
-resource('posts');                    // full HTML CRUD (7 routes, names posts.index … posts.destroy)
-resource('users', UserController::class);  // explicit controller
-apiResource('books');                 // JSON CRUD under /api/books (+PATCH)
-authRoutes();                         // register/login/logout/forgot/reset/verify — 1 line, full flow
+protected array $fillable = ['title', 'body'];
+protected array $rules = ['title' => 'required|string|max:255', 'body' => 'required'];
 ```
 
-Middleware — **opt-in**, two levels:
+Reading data:
 
-```php
-\Widdx\Router::use(\Widdx\CsrfMiddleware::class);    // global (all non-GET requests)
-\Widdx\Router::use(\Widdx\SecurityHeaders::class);   // global security headers
-get('/admin', …)->middleware(\Widdx\AuthMiddleware::class);          // login required
-get('/api/x', …)->middleware(new \Widdx\ThrottleMiddleware(60, 60)); // 60 req/min per IP
-```
+- `Post::all()` — every row.
+- `Post::find(3)` — row id 3 or null.
+- `Post::findOrFail(3)` — row or a 404 page.
+- `Post::where('title', 'like', '%a%')->get()` — filter. (also `!= < <= > >= IN NOT IN BETWEEN`)
+- `Post::query()->orderBy('id', 'DESC')->limit(5)->get()` — chainable.
+- `Post::count()`, `Post::where(...)->exists()`.
 
-CSRF rule: once `CsrfMiddleware` is enabled, every POST form must include
-`<?= csrf_field() ?>` (reads token from session; also accepts `X-CSRF-TOKEN` header).
-Missing/mismatched → **419**.
+Writing data:
 
-A controller is just a class in `app/Controllers/`; constructor parameters are
-auto-resolved from the container. Returning a string sends HTML, returning an array
-sends JSON, returning a `Response` passes through.
+- `Post::create(['title' => 'x', 'body' => 'y'])` — validates `$rules`, honors `$fillable`, sets timestamps.
+- `$p->save()` after changing attributes. `$p->delete()` to remove.
+
+Columns exist at runtime: `Post::columns()` from the live DB — forms and selects use them.
 
 ---
 
-## 8. Models & ORM
+## PART 9 — Relations (4 kinds, names are all that matter)
+
+Inside the model, one method per relation:
+
+- `return $this->hasMany(Comment::class);` → `$post->comments` (array). FK `post_id` on comments.
+- `return $this->hasOne(Profile::class);` → `$user->profile` (one or null). FK `user_id`.
+- `return $this->belongsTo(Author::class);` → `$book->author`. FK `author_id` on books.
+- `return $this->belongsToMany(Tag::class);` → `$post->tags`. Pivot table `post_tag` (alphabetical!).
+
+Lazy access is free: `$post->comments` runs one query, only once, then caches.
+
+Eager (kills N+1):
+
+```
+Post::with('comments.author')->get()
+```
+
+- Dots = depth. 3 relations = 3 total queries, not hundreds.
+- After `with(...)`, `$post->comments` runs ZERO queries.
+
+---
+
+## PART 10 — Auth (the full system in one line)
+
+```
+authRoutes();
+```
+
+Routes this creates: `/register /login /logout /forgot-password /reset-password /email/verification` — with built-in templates, validation, hashed passwords, session regeneration, reset tokens, email verification tokens.
+
+Needs a `User` model with `email` + `password` columns. Easiest:
+
+```
+php widdx make:auth
+```
+
+(it adds the migrations + route line + User model for you).
+
+In PHP code:
+
+- `Auth::attempt(['email' => …, 'password' => …])` — logs in, true/false.
+- `auth()` helper — the logged-in user or null. USE THIS IN VIEWS, not `Auth::user()`.
+- `Auth::check()` — logged in?
+- `Auth::register(['name'…,'email'…,'password'…])` — hashes the password itself.
+- `Auth::logout()`.
+
+Permissions (Gate):
+
+- `Widdx\Gate::define('publish', fn($u) => $u->is_admin);`
+- `authorize('publish');` — throws a 403 page if false (JSON 403 in apiResource).
+- Policy file: `app/Policies/BookPolicy.php` for model `Book`. Methods: `viewAny view create update delete`.
+- A method the policy does NOT define = DENIED. Write all five or the feature 403s. (This is intended, like Laravel.)
+- If a policy exists, the built-in CRUD pages for that model are guarded automatically.
+
+---
+
+## PART 11 — Validation
+
+One call checks everything and redirects back with the errors shown:
+
+```
+request()->validate(['email' => 'required|email|unique:users,email']);
+```
+
+Models do it automatically inside `create()` and `update()` using `$rules`.
+
+Every rule, one line each:
+
+- `required` — must be present and not empty.
+- `nullable` — may be absent; other rules skipped when empty.
+- `string` `int` `float` `bool` `numeric` `array` — type checks.
+- `email` `url` — format checks.
+- `min:5` `max:255` — length for text, value for numbers, KILOBYTES for files.
+- `in:a,b,c` — must be one of the listed.
+- `confirmed` — needs a matching `field_confirmation` input (passwords).
+- `same:other` / `different:other` — compare two fields.
+- `exists:users,id` — value must be a real row (used by fk dropdowns).
+- `unique:users,email` — not taken. Optional 3rd part: `unique:users,email,5` ignores id 5.
+- `file` — a real uploaded file.
+- `image` — an uploaded image.
+- `mimes:jpg,png` — uploaded extension check.
+
+Important upload fact: `file/image/mimes` also PASS when the value is a stored path string.
+Reason: update forms re-validate old records that have no new file. Do not change this.
+
+Error output: HTML forms get redirected back; use `errors()` and `old('field')` in views.
+Custom message: `validate($rules, ['email.required' => 'Email needed!'])`.
+Default messages are translated by `APP_LOCALE` (en, ar included).
+
+---
+
+## PART 12 — Views (templates)
+
+- `view('welcome')` renders `views/welcome.php`.
+- `view('admin.panel')` renders `views/admin/panel.php`.
+- Pass data: `return view('post', ['title' => $t]);` — then use `$title` in the file.
+- Return it from a route or controller. Strings/arrays return directly too.
+- ALWAYS escape: `<?= e($title) ?>`.
+- Available helpers in views: `e()` `csrf_field()` `old()` `errors()` `session()` `auth()` `lang_attrs()`.
+- Remember: views are GLOBAL namespace. `use` statements do not exist there. Class calls fail.
+- Built-in pages live in `core/views/` (crud + auth). Copy one into `views/<name>/` to restyle it. Your file wins automatically.
+
+---
+
+## PART 13 — File uploads
+
+You add ONE rule and get the whole feature:
 
 ```php
-namespace App\Models;
-use Widdx\Model;
+protected array $rules = ['cover' => 'nullable|image|mimes:jpg,png|max:2048'];
+```
 
-class Post extends Model
-{
-    protected array $fillable = ['title', 'body', 'user_id'];   // mass-assignment whitelist
-    protected array $rules = [                                   // drives validate() AND the auto-form
-        'title' => 'required|string|max:255',
-        'body'  => 'required|string',
-        'user_id' => 'required|int|exists:users,id',
-    ];
+- The built-in form shows a file input (because the rule says `image`).
+- On submit, the file is stored under `storage/app/` and the DB column keeps the path.
+- Reading it yourself: `$f = request()->file('cover'); $f->store('covers');`
+- `$f->originalName() $f->extension() $f->mimeType() $f->isImage() $f->sizeKb()` all exist.
+- Editing a record and submitting WITHOUT a new file keeps the old path. Intended.
 
-    public function comments() { return $this->hasMany(Comment::class); }   // comments.post_id
-    public function author()   { return $this->belongsTo(User::class); }    // posts.user_id
-    public function profile()  { return $this->hasOne(Profile::class); }
-    public function tags()     { return $this->belongsToMany(Tag::class); } // pivot tag_post
+---
+
+## PART 14 — Queues and jobs
+
+A job is a class with `handle()`:
+
+```php
+class SendReceipt extends Widdx\Job {
+    public function handle(array $data): void { … }
 }
 ```
 
-Static API: `Post::all()`, `Post::find($id)`, `Post::findOrFail($id)`,
-`Post::create($data)` (validates `$rules`, respects `$fillable`),
-`Post::where($col, $op, $val)` → QueryBuilder, `Post::query()`, `Post::with('a.b')`.
-Instance API: `$post->save()`, `$post->delete()`, `$post->fill($data)`,
-lazy relation access `$post->comments` (cached), `$post->relationLoaded('comments')`.
+Push it:
 
-QueryBuilder: `select() allowColumns() where(col,op,val) orWhere() orderBy() limit()
-offset() with() get() first() find() insert() update() delete() count() exists()`.
-`where` supports `=, !=, <, <=, >, >=, LIKE, NOT LIKE, IN, NOT IN, BETWEEN`.
-`db('table')` helper gives a QueryBuilder without a model.
-Timestamps `created_at/updated_at` are set automatically on save.
-
-**Eager loading kills N+1**: `Post::with('comments.author')->get()` runs 3 bulk
-queries total, and dot-chains work to any depth.
-
----
-
-## 9. Validation
-
-Anywhere: `request()->validate($rules, $customMessages)` → throws
-`ValidationException` (HTTP: redirect back with `errors()`; API adjust per your route).
-In models it is automatic on `create()`/`update()`.
-
-Available rules:
-`required, nullable, string, int|integer, float|double, bool|boolean, email, url,
-numeric, array, in:a,b,c, min:N, max:N, confirmed, same:field, different:field,
-exists:table,column, unique:table,column[,ignoreId], file, image, mimes:jpg,png`
-
-Semantics notes an agent MUST know:
-- `min/max`: string length OR numeric value; **for `file`/`image` they are kilobytes**.
-- `file/image/mimes` accept an **already-stored path string** (a record re-validated
-  on update passes when no new upload is sent) — this is deliberate; do not "fix" it.
-- `unique` third parameter ignores an id (used by edit forms automatically? no — pass it yourself when needed).
-- Custom message keys: `['email.required' => 'We need :field!', …]` with `:field`, `:min`, `:max`, `:values` placeholders; defaults come from `lang/{locale}.php`.
-
----
-
-## 10. Views
-
-`view('welcome')` → `views/welcome.php`; `view('users.index')` → `views/users/index.php`.
-Data: `view('posts.show', ['post' => $p])` → variables by key, already escaped with
-`e($x)` — **always escape** user data in templates.
-
-Helpers inside templates (global namespace!):
-`e() csrf_field() old('name') errors() session('key') auth() lang_attrs() asset via plain /paths`.
-
-`layout('app', ['title' => …], $content)` renders `views/app.php` (or any view name)
-with `$content` available as a `$content` variable; `component('shared/alert', $data)`
-is an alias of `view()` for reusable partials.
-
-Built-in CRUD UI: never create controllers/views to customize CRUD unless asked —
-either drop a file in `views/{resource}/{index|create|edit|show|form}.php` (it wins
-over the core template) or subclass `Widdx\CrudController` / `ResourceController`.
-
----
-
-## 11. Auth & authorization
-
-`authRoutes();` in routes/web.php ships the ENTIRE flow with framework templates:
-`/register /login /logout /forgot-password /reset-password /email/verification`.
-Requirements: `App\Models\User` with `email` + `password` columns; run migrations
-(the `make:auth` CLI adds `auth_tokens` + `email_verified_at` migrations for you).
-
-Programmatic API (all static, `Widdx\Auth`):
-```php
-Auth::attempt(['email' => …, 'password' => …]);   // sets session, regenerates id
-Auth::user(); Auth::id(); Auth::check(); Auth::guest(); Auth::logout();
-Auth::register(['name'…,'email'…,'password'…]);   // hashes password itself (bypasses fillable — deliberate)
-Auth::sendResetLink($email); Auth::resetPassword($email, $token, $new);
-Auth::sendVerification($user); Auth::verifyEmail($email, $token);
 ```
-In views/controllers use the **helper** `auth()` (never `Auth::user()` inside a .php template).
-
-Authorization — Gate + policies, **deny-by-default**:
-```php
-Widdx\Gate::define('publish', fn($user) => $user->is_admin);
-// or convention policy: App\Models\Book → App\Policies\BookPolicy
-class BookPolicy {
-    public function viewAny($user): bool { … }
-    public function create($user): bool  { … }   // abilities: viewAny view create update delete
-}
-authorize('create', Book::class);     // throws HttpException 403 (HTML page or JSON per route type)
+queue(SendReceipt::class, ['id' => 7]);
 ```
-If a policy exists for a model used by `resource()`, the built-in CRUD controller
-guards all seven actions automatically; abilities the policy doesn't define are DENIED.
+
+- Default driver `sync` runs the job immediately (fine for dev and shared hosting).
+- Set `QUEUE_DRIVER=database` in `.env` for real background processing.
+- Jobs retry: `$tries = 3` default, wait = `$backoff * 2^(attempt-1)` seconds.
+- After all tries fail the job moves to `failed_jobs`.
+
+Cron-friendly commands (no daemon needed):
+
+```
+php widdx queue:work --max=50
+```
+
+- `queue:work` STOPS when the queue is empty. This is by design (shared-hosting safe).
+- `php widdx queue:failed` lists dead jobs; `php widdx queue:retry all` revives them.
 
 ---
 
-## 12. File uploads
+## PART 15 — Scheduler (one crontab line total)
 
-- Model rule `file`/`image` + `make:crud cover:image?` = full multipart upload handled:
-  the file lands in `storage/app/uploads/…` and **the relative path string is stored
-  in the DB column**. `$request->file('cover')` → `Widdx\UploadedFile`
-  (`store(), move(), originalName(), extension(), mimeType(), isImage(), sizeKb()`).
-- `storage()` helper: `storage()->put('x.json', …)`, `storage()->get/exists/delete/url`.
-- Editing a record without re-uploading keeps the stored path (see §9 upload semantics).
-
----
-
-## 13. Queues, jobs & scheduler
+Declare tasks in `routes/console.php`:
 
 ```php
-class SendWelcomeEmail extends Widdx\Job            // app/Jobs/ or any autoloaded class
-{
-    protected int $tries = 3;      // retries with exponential backoff (backoff * 2^(n-1) s)
-    protected int $backoff = 5;    // seconds
-    protected string $queue = 'default';
-    public function handle(array $data): void { … } // throw to fail/retry
-}
-
-queue(SendWelcomeEmail::class, ['user_id' => 7]);   // push via helper
-Queue::later(3600, MyJob::class, $data);            // delayed
+Widdx\Schedule::command('queue:work --max=50')->everyMinute();
 ```
 
-Drivers (`QUEUE_DRIVER` in .env): `sync` (default, inline), `database` (jobs table
-+ failed_jobs, retries/backoff handled by the driver). CLI:
+Available frequencies: `everyMinute everyFiveMinutes everyTenMinutes everyFifteenMinutes everyThirtyMinutes hourly daily monthly` and `interval(seconds)`. Add a condition with `->when(fn() => …)`. Run due tasks:
 
-```bash
-php widdx queue:push 'App\Jobs\MyJob' '{"k":1}'   # enqueue
-php widdx queue:work [--queue=name] [--max=N]     # processes, EXITS when empty → cron-safe
-php widdx queue:failed                            # list dead jobs (database driver)
-php widdx queue:retry <id>|all                    # re-queue
+```
+php widdx schedule:run
 ```
 
-Scheduler — ONE crontab line for everything, `routes/console.php`:
+cPanel/crontab entry — the ONLY one you need:
 
-```php
-\Widdx\Schedule::command('queue:work --max=50')->everyMinute();
-\Widdx\Schedule::call(fn() => logger('info', 'heartbeat'))->everyFiveMinutes()
-    ->when(fn() => env('APP_ENV') === 'production');
 ```
+* * * * * php /full/path/widdx schedule:run
 ```
-* * * * * php /path/to/project/widdx schedule:run
-```
-Due-task state lives in `storage/app/schedule.json` (time-bucket model, safe for
-cron-driven repeat). Frequency methods on `ScheduledTask`:
-`everyMinute() everyFiveMinutes() everyTenMinutes() everyFifteenMinutes()
-everyThirtyMinutes() hourly() daily() monthly() interval($seconds)` + gate with
-`when(fn() => bool)`.
+
+State is remembered in `storage/app/schedule.json`, so repeated cron runs are safe.
 
 ---
 
-## 14. Other subsystems (helpers first — they cover 95% of use)
+## PART 16 — Mail
 
-```php
-config('app.locale');  env('DB_HOST', '127.0.0.1');
-cache('key'); cache(['key' => $val], 3600); cache()->forget('key');   // CACHE_DRIVER=file|array
-logger('error', 'msg', $context);  // LOG_CHANNEL=file, daily-ish
-storage()->put($rel, $contents); storage('sub/dir');                  // LocalStorage disk
-mail($to, $subject, $template, $data); mail()->attach($path)->raw(…); // MAIL_DRIVER=log|smtp
-event('order.paid', $order);  listen('order.paid', fn($o) => …);      // Event + Event::flush() on shutdown
-app(SomeClass::class);  Container::getInstance()->bind(Interface::class, Impl::class);
-paginate($queryBuilder, 20)  → ['items','total','page','pages'] for list views
-transaction(fn() => …);   abort(403, 'no');   redirect('/x');   back();
+```
+mail('to@site.com', 'Subject', 'welcome-template', ['name' => 'Ali']);
 ```
 
-Swappable drivers implement `core/Contracts/*Interface` (Cache, Mail, Queue, Logger,
-Session, Storage, Auth, Event). Bind your own in the container to replace them.
+- Default driver `log` writes the mail to storage/logs (perfect for dev/tests).
+- Set `MAIL_DRIVER=smtp` + `MAIL_HOST/PORT/USERNAME/PASSWORD/ENCRYPTION` for real delivery.
+- The SMTP client is hand-written (sockets) — no external library, works on shared hosting.
+- `mail()->attach('/path/file.pdf')->raw($to, $subject, $body);`
+- Header injection into subjects/emails throws a MailException. Good.
 
 ---
 
-## 15. Configuration — every `.env` key
+## PART 17 — Other helpers (one line each)
 
-```
-APP_DEBUG=true|false   APP_LOCALE=en|ar|…   APP_URL=…
-DB_CONNECTION=sqlite|mysql|pgsql|sqlsrv|oci   DB_DATABASE=… (sqlite: file path)
-DB_HOST=… DB_PORT=… DB_USERNAME=… DB_PASSWORD=… DB_SERVICE=… DB_DSN=… (custom PDO)
-CACHE_DRIVER=file|array   LOG_CHANNEL=file   QUEUE_DRIVER=sync|database
-MAIL_DRIVER=log|smtp  MAIL_FROM=…  MAIL_FROM_NAME=…
-MAIL_HOST=… MAIL_PORT=587 MAIL_USERNAME=… MAIL_PASSWORD=…
-MAIL_ENCRYPTION=|tls|ssl  MAIL_TIMEOUT=30  MAIL_VERIFY_PEER=true
-SECURITY_FRAME_OPTIONS=…  SECURITY_REFERRER_POLICY=…  SECURITY_CSP=…
-TRUSTED_PROXIES=127.0.0.1,10.0.0.2   (or '*' behind one edge proxy)
-```
-
-`Request::ip()` only trusts `X-Forwarded-For` when the peer is listed — keep it set
-behind any proxy/CDN or rate-limiting will see the proxy's IP.
+- `config('app.locale')` — read config files.
+- `env('DB_HOST', 'default')` — read .env.
+- `db('users')->where(...)->get()` — query without a model.
+- `cache('key')` read; `cache(['key' => $v], 3600)` store with TTL; `cache()->forget('key')`.
+- `logger('error', 'text', $context)` — writes to storage/logs.
+- `storage()->put('a/b.txt', $data)` / `storage()->get(...)` — files on the disk.
+- `event('name', $data)` + `listen('name', fn…)` — app events, flushed at shutdown.
+- `paginate(Post::query(), 20)` — array with items/total/page/pages/perPage/hasMore.
+- `redirect('/x')` `back()` `abort(404)` `transaction(fn() => …)`.
+- `response('text', 200)` `Response::json($data)` `Response::redirect('/x')`.
 
 ---
 
-## 16. CLI reference (`php widdx …`)
+## PART 18 — Every .env key (copy this block, delete what you don't need)
 
-| Command | What it does |
+```
+DB_CONNECTION=sqlite
+DB_DATABASE=./database.sqlite
+DB_HOST= DB_PORT= DB_USERNAME= DB_PASSWORD=
+APP_DEBUG=true
+APP_LOCALE=en
+APP_URL=
+CACHE_DRIVER=file
+LOG_CHANNEL=file
+QUEUE_DRIVER=sync
+MAIL_DRIVER=log
+MAIL_FROM= MAIL_HOST= MAIL_PORT=587 MAIL_USERNAME= MAIL_PASSWORD= MAIL_ENCRYPTION=tls
+SECURITY_FRAME_OPTIONS=SAMEORIGIN
+TRUSTED_PROXIES=
+```
+
+- Production checklist: set `APP_DEBUG=false`, `TRUSTED_PROXIES` behind any proxy, real DB credentials.
+- Full key list with comments also lives in `.env.example`.
+
+---
+
+## PART 19 — CLI commands (what each one does)
+
+- `php widdx new folder` — create a project. `new:api` — JSON-flavored one.
+- `php widdx serve --port=8000` — dev server.
+- `php widdx migrate` / `migrate:rollback` — run/undo table changes.
+- `php widdx db:seed` / `db:wipe` — fill test data / drop tables.
+- `php widdx make:crud Name field:type…` — THE main tool (PART 5).
+- `php widdx make:model|controller|middleware|migration|seeder|view Name` — single generators.
+- `php widdx make:resource Name` — model+controller+migration+views the classic way.
+- `php widdx make:auth` — installs the whole login system.
+- `php widdx route:list` — show every route.
+- `php widdx test` — run all framework tests.
+- `php widdx queue:work|push|failed|retry` — PART 14.
+- `php widdx schedule:run` — PART 15.
+
+---
+
+## PART 20 — Deploy
+
+**Server with SSH:** point the web root to `public/`, run `php widdx migrate`, add one cron line for `schedule:run`, set `APP_DEBUG=false`.
+
+**Shared hosting, NO terminal:**
+1. Upload the project folder to `public_html/` (zip + extract is fine).
+2. Create the MySQL database + user in cPanel.
+3. Open `https://yoursite/install.php`.
+4. Fill the form. It tests the DB first, writes `.env`, runs migrations, then locks forever.
+5. `install.php` now returns 404. It can never overwrite your `.env`. That is security, not a bug.
+
+Notes:
+- Composer NOT required (fallback autoloader ships in `public/index.php`).
+- `storage/` and its 4 subfolders must be writable (usually 755, sometimes 775).
+- Cron: same `php widdx …` commands work from cPanel Cron Jobs.
+
+---
+
+## PART 21 — Pitfalls (each: the wrong thing, then the right thing)
+
+1. WRONG: `Auth::user()` inside a view. RIGHT: `auth()` inside a view. Always.
+2. WRONG: hand-writing a controller + 4 views for CRUD. RIGHT: `resource('x')`.
+3. WRONG: expecting `create()` to save a field. RIGHT: put the field in `$fillable` first.
+4. WRONG: tightening `file/image` rules to reject path strings. RIGHT: leave them — re-validation on update needs this.
+5. WRONG: a policy with only `viewAny` and wondering why create is 403. RIGHT: define every ability you use; undefined = denied.
+6. WRONG: running the framework repo's `php widdx make:crud …` on ANOTHER project. RIGHT: `cd` into the target project and use its own `widdx` file.
+7. WRONG: two form inputs with the same name in hidden/shown sections. RIGHT: unique names per section (PHP keeps the last value).
+8. WRONG: editing `widdx` and trusting normal lint. RIGHT: `php -l widdx` (it has no .php extension; CI covers it).
+9. WRONG: "fixing" `queue:work` to run forever. RIGHT: cron it with `--max` — it exits when empty on purpose.
+10. WRONG: enabling `CsrfMiddleware` without `<?= csrf_field() ?>` in every form. RIGHT: add the field first, or 419 everywhere.
+11. WRONG: trusting `X-Forwarded-For` implicitly. RIGHT: set `TRUSTED_PROXIES`; until then `Request::ip()` uses the real peer.
+12. WRONG: inventing new config files. RIGHT: `config()` only loads `config/*.php`; extend those or use `.env`.
+
+---
+
+## PART 22 — "User asks for X → you write Y" cheat sheet
+
+| Asked feature | Your move |
 |---|---|
-| `new <dir>` / `new:api <dir>` | scaffold a project (api flavor = JSON routes) |
-| `serve [--port=8000]` | dev server (php -S on public/) |
-| `migrate` / `migrate:rollback` | run / undo migrations |
-| `db:seed` / `db:wipe` | seeders / drop all tables |
-| `make:crud <Name> field:type…` | model + migration + `resource()` line. Types: `string text integer float bool date email url file image fk(Model)` + `?` suffix = optional |
-| `make:model/middleware/migration/seeder/view/controller <Name>` | classic generators |
-| `make:resource <Name>` | model + controller + migration + views (opinionated full stack) |
-| `make:auth` | adds users table + auth_tokens + email_verified_at migrations, `authRoutes()`, User model |
-| `route:list` | table of routes |
-| `test` | unit + integration suites |
-| `queue:work/push/failed/retry` | see §13 |
-| `schedule:run` | run due scheduled tasks (put this in crontab) |
-| `help` | full list |
+| A website with any list of records | `make:crud` (PART 5) |
+| Search / filter / sort on a list | `resource('posts', PostController::class)` + your `index()` using `Post::where(…)` and `view('crud.index', $data)` — built-in pages are reusable |
+| Login / accounts / password reset | `authRoutes()` once + `make:auth` |
+| "Only admins can delete" | a policy (PART 10) |
+| Attach a PDF / photo upload | one `file`/`image` rule (PART 13) |
+| Send email after signup | `listen('user.registered', …)` or a queued job |
+| Slow report generation | a Job + `queue()` (PART 14) |
+| Nightly cleanup | `Schedule::command(...)` + one cron line (PART 15) |
+| Public JSON API | `apiResource('x')` |
+| Multi-language site | `lang/{code}.php` + `APP_LOCALE` (RTL free for ar/he/…) |
+| Custom error page | `views/errors/404.php` / `500.php` |
+| File download / storage | `storage()` helper |
+| Caching | `cache()` helper |
+| Rate limiting | `ThrottleMiddleware` on the route |
+| Deploy to shared hosting | upload + `/install.php` (PART 20) |
 
----
-
-## 17. Testing an app built with Widdx
-
-Framework self-test: `php widdx test` (needs `pdo_sqlite`; CI uses PHP 8.1–8.4).
-For YOUR app, the zero-code defaults are the test surface:
-- hit `GET /{resource}` for the list, `POST /{resource}` with `csrf_token` for create;
-- invalid POST redirects 302 back and `session('_errors')` holds messages;
-- API: same payloads return JSON with validation errors keyed by field.
-Integration suite (`tests/integration.php`) is a worked example of end-to-end HTTP
-testing with raw sockets + cookie jar — copy its style for app-level e2e tests.
-
----
-
-## 18. Deployment
-
-**VPS/SSH**: point the vhost `DocumentRoot` at `public/`, `php widdx migrate`,
-cron `schedule:run` (+ `queue:work` under supervisor or cron `--max`). Set
-`APP_DEBUG=false`.
-
-**Shared hosting (no terminal)**: upload the project folder to `public_html/`,
-create the MySQL DB in cPanel, open `https://site/install.php` — the one-shot web
-installer checks PHP/PDO/permissions, tests the DB connection, writes `.env`, runs
-migrations, then locks itself (404 afterwards; it never overwrites an existing
-`.env`). Composer is NOT required: `public/index.php` has a built-in PSR-4 autoloader
-plus `polyfill/` for `psr/container`. Cron entries use the same `widdx` file.
-
----
-
-## 19. Pitfalls for agents (real bugs we found — do not reintroduce)
-
-1. **Templates are global-namespace PHP.** `Auth::user()` in a view = fatal. Use `auth()`.
-2. **Never hand-write what inference gives** — a controller+4 views for CRUD of a model is ~200 wasted lines; `resource('x')` does it.
-3. **`Model::create()` respects `$fillable`** — a field missing from `$fillable` is silently dropped. `Auth::register` bypasses mass assignment ON PURPOSE (password hashing).
-4. **Upload rules accept stored-path strings** so edit-forms without re-upload pass; do not "tighten" `file/image/mimes` to reject strings.
-5. **Policies deny undefined abilities** — `viewAny` alone does NOT permit create; define all needed methods.
-6. **`php widdx` CLI must be run inside the target project** (it uses its own folder as the base path) — running the framework-repo CLI against another project writes into the repo.
-7. **Hidden form inputs still submit**; two same-named inputs → last wins. Conditional UI sections must use distinct field names.
-8. **Extension-less files (`widdx`) are PHP** — lint them (`php -l widdx`); CI does.
-9. **`queue:work` exits when the queue is empty** by design (cron-safe). Don't "fix" it to block forever.
-10. **CSRF/SecurityHeaders are opt-in**; enabling `CsrfMiddleware` without adding `csrf_field()` to every form breaks the whole site (419).
-
-## 20. Anti-goals — things Widdx deliberately is NOT
-
-- Not Laravel: no facades beyond static helpers, no service-provider boot pyramid, no Eloquent magic beyond documented inference.
-- No ORM relations beyond the four (`hasMany/hasOne/belongsTo/belongsToMany`).
-- No Blade/Twig — plain PHP templates, escape with `e()`.
-- No built-in admin panel/dashboard; scaffolded CRUD IS the admin.
-- No npm/vite pipeline; put CSS in `public/css/` and reference `/css/app.css`.
-
-When an AI agent is asked to "add a feature" in a Widdx project, the correct first
-move is always: **create the model (+ rules), add ONE route line, run migrate — then
-check whether the framework already handles what was requested.**
+When in doubt: make the model, add ONE route line, run `php widdx migrate`, open the page.
+The framework probably already built what you were about to code.

@@ -18,7 +18,7 @@
 
 - Project = framework folder. No build step, composer optional (fallback autoloader).
 - Conventions over configuration: table names, FKs, form fields, selects, pivots,
-  policies, and view overrides are all INFERRED from names (full table in AGENTS.md §6).
+  policies, and view overrides are all INFERRED from names (full list in AGENTS.md PART 4).
 - Templates execute in the GLOBAL namespace — use helpers (`auth()`, `e()`), never bare classes.
 - Validation rules drive both server-side checks and the auto-generated HTML form.
 - `php widdx test` = 50 unit + 144 integration assertions.
