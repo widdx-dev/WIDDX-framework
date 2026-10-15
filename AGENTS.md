@@ -58,7 +58,7 @@ earlier steps. If you need more than a list of records, read PART 4 + PART 22.
 - One line `resource('posts')->public()` = a full working CRUD website for posts.
 - One line `authRoutes()` = register + login + logout + password reset + email verify.
 - One command `make:crud` = model + database table + routes, all at once.
-- Version: v0.3.2. All behavior below is tested (the unit suite + the integration suite; the runner prints its own totals).
+- Version: v0.3.3. All behavior below is tested (the unit suite + the integration suite; the runner prints its own totals).
 
 ---
 
@@ -142,6 +142,9 @@ Each item: "if you do X" → "Widdx does Y". Memorize these; they replace all co
     a guest is redirected to `/login`, a logged-in user gets 403. Deny is the default.
 23. You write `resource('posts')->public()` → the whole group is open to visitors. `make:crud`
     and `authRoutes()` scaffolding already emit `->public()` for you; hand-written lines do not.
+24. Your table has `created_at` + `updated_at` → `save()` fills them by itself. Every generator
+    adds those columns, so you never set anything. Override with `protected ?bool $timestamps`
+    (`false` = never, `true` = always) only when you mean it.
 
 ---
 
@@ -226,6 +229,8 @@ CSRF warning: since CSRF is on for web routes from the first request, EVERY POST
 
 Missing it gives status 419. This breaks the site silently — add it to all forms.
 (The built-in CRUD/auth forms already carry it.)
+The field it prints is named `csrf_token`, NOT Laravel's `_token` — hand-writing
+`<input name="_token">` also gives 419. Use the helper; never type the field by hand.
 
 ---
 
@@ -255,7 +260,8 @@ Reading data:
 
 Writing data:
 
-- `Post::create(['title' => 'x', 'body' => 'y'])` — validates `$rules`, honors `$fillable`, sets timestamps.
+- `Post::create(['title' => 'x', 'body' => 'y'])` — validates `$rules`, honors `$fillable`,
+  fills `created_at`/`updated_at` when the table has them (generators always add them).
 - `$p->save()` after changing attributes. `$p->delete()` to remove.
 
 Columns exist at runtime: `$post->columns()` — an INSTANCE method, `Post::columns()` is a

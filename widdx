@@ -646,12 +646,12 @@ MD);
     echo "\n✅ Project '{$name}' created successfully!\n\n";
     echo "Next steps:\n";
     echo "  cd {$name}\n";
-    echo "  composer install\n";
-    echo "  cp .env.example .env\n";
     echo "  php widdx migrate\n";
-    echo "  php widdx db:seed\n";
     echo "  php widdx serve        # /users is already full CRUD — zero code written\n";
     echo "  php widdx make:crud Post title:string body:text?  # add more, still zero code\n";
+    echo "  (after make:crud: php widdx migrate, then RESTART php widdx serve)\n";
+    echo "Optional: composer install, cp .env.example .env, php widdx db:seed — the app runs\n";
+    echo "  on defaults without any of them (SQLite file appears by itself).\n";
     echo "  (shared hosting without terminal? upload the folder + open /install.php in the browser)\n";
 }
 

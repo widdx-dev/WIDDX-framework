@@ -1307,7 +1307,8 @@ test('2.12 the measured doc facts stay written down and the dead ones stay out',
     // The corrections themselves must not silently vanish.
     $required = [
         'AGENTS.md' => ['is NOT reliably seen', 'Restart is the whole fix',
-                        'CSRF + security headers are already ON', 'that line makes it run twice'],
+                        'CSRF + security headers are already ON', 'that line makes it run twice',
+                        'is named `csrf_token`', 'fills them by itself'],
         'README.md' => ['if it was already running, restart it', 'that runs the middleware twice',
                         'unpublished on Packagist'],
         'core/Cli/MakeCrud.php' => ['restart is required'],
@@ -1423,6 +1424,51 @@ test('Auth: register + email verification + password reset lifecycle', function 
     \Widdx\Schema::dropIfExists('auth_users');
     \Widdx\Schema::dropIfExists('auth_tokens');
     \Widdx\Auth::useModel(null);
+});
+
+test('2.13 save() fills created_at/updated_at on any table that has them', function () {
+    // Generators always add the two columns but no model sets $timestamps, so before
+    // this behaviour every generated app stored NULL timestamps on a real HTTP create.
+    // Drop first: Schema::create is IF NOT EXISTS, so a table left behind by an earlier
+    // run (another PHP version sharing this database file) would return stale rows.
+    \Widdx\Schema::dropIfExists('ts_auto');
+    \Widdx\Schema::dropIfExists('ts_bare');
+    \Widdx\Schema::create('ts_auto', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('label');
+        $t->timestamps();
+    });
+    \Widdx\Schema::create('ts_bare', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('label');
+    });
+
+    $auto = new class extends \Widdx\Model { protected ?string $table = 'ts_auto'; protected array $fillable = ['label']; };
+    $bare = new class extends \Widdx\Model { protected ?string $table = 'ts_bare'; protected array $fillable = ['label']; };
+    $off  = new class extends \Widdx\Model { protected ?string $table = 'ts_auto'; protected array $fillable = ['label']; protected ?bool $timestamps = false; };
+
+    $a = $auto::create(['label' => 'x']);
+    assert_true(!empty($a->created_at), 'auto: created_at filled without any property');
+    assert_true(!empty($a->updated_at), 'auto: updated_at filled without any property');
+    // Bound parameter, keyed on the id just inserted: "label = \"x\"" parses as an
+    // identifier on PostgreSQL, and the label alone is not unique across runs.
+    $stored = \Widdx\Database::connection()->pdo()
+        ->prepare('select created_at from ts_auto where id = ?');
+    $stored->execute([$a->id]);
+    $storedValue = (string) $stored->fetchColumn();
+    // Leave no open cursor: SQLite reports "database table is locked" if a later
+    // INSERT in this same test overlaps an unfinished SELECT.
+    $stored->closeCursor();
+    assert_equals((string) $a->created_at, $storedValue, 'auto: stored, not just in memory');
+
+    $b = $bare::create(['label' => 'y']);
+    assert_true(!empty($b->id), 'bare table: create still works with no timestamp columns');
+
+    $c = $off::create(['label' => 'z']);
+    assert_true(empty($c->created_at), 'explicit false wins over the columns being present');
+
+    \Widdx\Schema::dropIfExists('ts_auto');
+    \Widdx\Schema::dropIfExists('ts_bare');
 });
 
 // ---------- Integration suite (real HTTP, scaffold, SMTP) ----------

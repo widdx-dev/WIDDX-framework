@@ -413,12 +413,14 @@ class User extends Model
 User::create(request()->only(['name', 'email']));
 ```
 
-Auto-manage `created_at` / `updated_at` (requires those columns):
+`created_at` / `updated_at` are filled automatically as soon as the table has both columns —
+which every generator (`make:crud`, `make:model`, `make:migration`, `make:auth`) adds. No
+property to remember. Override it explicitly when you want to force either way:
 
 ```php
 class Post extends Model
 {
-    protected bool $timestamps = true;
+    protected ?bool $timestamps = false; // never touch them (true = always, null = auto)
 }
 ```
 
@@ -819,7 +821,7 @@ composer run phpstan          # static analysis (needs composer install first)
 ## Release & License
 
 Widdx is licensed under the **MIT license** (see `LICENSE`) and follows
-[semantic versioning](https://semver.org). The current baseline is **v0.3.2**.
+[semantic versioning](https://semver.org). The current baseline is **v0.3.3**.
 
 Two ways to start a project:
 

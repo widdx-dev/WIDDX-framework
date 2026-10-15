@@ -15,7 +15,7 @@ namespace Widdx;
  *
  * Power-ups (all optional):
  *   protected array $rules = ['email' => 'required|email']; // auto-validated by create()
- *   protected bool $timestamps = true;                       // auto-manage created_at/updated_at
+ *   protected ?bool $timestamps = false;                    // force off (default: auto-detect)
  */
 abstract class Model implements \JsonSerializable
 {
@@ -43,10 +43,11 @@ abstract class Model implements \JsonSerializable
     protected array $rules = [];
 
     /**
-     * Auto-manage created_at / updated_at columns.
-     * Requires those columns in the table.
+     * created_at / updated_at handling.
+     * null = fill them when the table has both columns (every generator adds them),
+     * true = always fill, false = never fill.
      */
-    protected bool $timestamps = false;
+    protected ?bool $timestamps = null;
 
     /** Row values */
     protected array $attributes = [];
@@ -93,6 +94,28 @@ abstract class Model implements \JsonSerializable
     public function columns(): array
     {
         return Database::connection()->tableColumns($this->getTable());
+    }
+
+    /** @var array<string,bool> table => has both timestamp columns (one probe per table) */
+    private static array $timestampTables = [];
+
+    /**
+     * Whether save() should write created_at/updated_at. An explicit true/false on the
+     * model always wins; null falls back to probing the table, because a table without
+     * those columns would die on an INSERT that names them.
+     */
+    protected function managesTimestamps(): bool
+    {
+        if ($this->timestamps !== null) {
+            return $this->timestamps;
+        }
+        $table = $this->getTable();
+        if (!isset(self::$timestampTables[$table])) {
+            $cols = Database::connection()->tableColumns($table);
+            self::$timestampTables[$table] =
+                in_array('created_at', $cols, true) && in_array('updated_at', $cols, true);
+        }
+        return self::$timestampTables[$table];
     }
 
     /** Editable columns: table columns minus pk/timestamps/hidden. */
@@ -331,7 +354,7 @@ abstract class Model implements \JsonSerializable
     public function save(): bool
     {
         // Auto-manage timestamps when enabled
-        if ($this->timestamps) {
+        if ($this->managesTimestamps()) {
             $now = date('Y-m-d H:i:s');
             if (!$this->exists && !isset($this->attributes['created_at'])) {
                 $this->attributes['created_at'] = $now;
