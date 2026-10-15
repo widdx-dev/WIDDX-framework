@@ -33,10 +33,12 @@ Then STOP and START the dev server again (Ctrl-C on the `php widdx serve` window
 php widdx serve
 ```
 
-Reason, verified: `php widdx serve` is one long-lived PHP worker. It compiles `routes/web.php`
-once and keeps using that copy, so a route line added while it runs stays 404 until restart.
-This applies to every edit to a file the server already loaded (routes, models, controllers,
-views). New files are fine. Restart is the whole fix — never rewrite working code over a 404.
+Reason, measured on PHP 8.3 and 8.5 (container disk and native disk): `php widdx serve` is one
+long-lived worker, and after it has served its first request an edit to a file it already loaded
+(routes, models, controllers, views) is NOT reliably seen — with the edit landing more than a
+second after that request it was stale in every trial (9/9), while a same-second edit sometimes
+worked. That is the trap: it can look fine in a demo and then 404. Restart is the whole fix —
+never rewrite working code over a 404. New files the worker never loaded are fine.
 
 The pages live at `/products` — plural. Always plural.
 
@@ -56,7 +58,7 @@ earlier steps. If you need more than a list of records, read PART 4 + PART 22.
 - One line `resource('posts')->public()` = a full working CRUD website for posts.
 - One line `authRoutes()` = register + login + logout + password reset + email verify.
 - One command `make:crud` = model + database table + routes, all at once.
-- Version: v0.3.1. All behavior below is tested (77 unit + the integration suite).
+- Version: v0.3.1. All behavior below is tested (the unit suite + the integration suite; the runner prints its own totals).
 
 ---
 
@@ -493,8 +495,8 @@ TRUSTED_PROXIES=
 
 - `php widdx new folder` — create a project. `new:api` — JSON-flavored one.
 - `php widdx serve --port=8000` — dev server. `--host=0.0.0.0` when it runs inside a container.
-  One long-lived worker: it does NOT see files it already loaded, so restart it after editing
-  routes, models, controllers or views.
+  One long-lived worker: it does not reliably see a file it already served, so restart it after
+  editing routes, models, controllers or views.
 - `php widdx migrate` / `migrate:rollback` — run/undo table changes.
 - `php widdx db:seed` / `db:wipe` — fill test data / drop tables.
 - `php widdx make:crud Name field:type…` — THE main tool (PART 5).
@@ -546,9 +548,9 @@ group; that line makes it run twice. RIGHT: only use `Router::middlewareGroup()`
 12. WRONG: inventing new config files. RIGHT: `config()` only loads `config/*.php`; extend those or use `.env`.
 13. WRONG: writing `resource('x')` by hand and calling the 403/login-redirect a bug. RIGHT: it is fail-closed on purpose — add `->public()`, or a policy, or `protected bool $public = true` in your controller.
 14. WRONG: reading a wall of "could not find driver" as broken code. RIGHT: that PHP lacks the PDO driver; `php widdx-test` now refuses to start and names the extension to install.
-15. WRONG: expecting a route or view edited while `php widdx serve` was running to work (it 404s or shows the old page).
-    RIGHT: restart the server — one long-lived worker keeps the files it already loaded in memory. Never "fix" a 404 by
-    rewriting working code; restart first, then look.
+15. WRONG: trusting a route or view edited while `php widdx serve` was running (it 404s or shows the
+    old page — unreliably, which is worse than always failing). RIGHT: restart the server. Never
+    "fix" a 404 by rewriting working code; restart first, then look.
 
 ---
 

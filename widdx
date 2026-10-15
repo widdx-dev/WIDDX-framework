@@ -274,10 +274,20 @@ PHP);
     }
 
     // Agent-facing docs travel with every project (AI assistants read these).
-    foreach (['AGENTS.md', 'llms.txt'] as $docFile) {
-        if (is_file(WIDDX_BASE_PATH . '/' . $docFile)) {
-            copy(WIDDX_BASE_PATH . '/' . $docFile, "{$base}/{$docFile}");
+    // Each tool auto-loads its OWN file name, so every gate has to ship: a project
+    // carrying only AGENTS.md is invisible to Claude Code, Cursor, Copilot and Gemini.
+    $agentDocs = ['AGENTS.md', 'llms.txt', 'CLAUDE.md', '.cursorrules', 'GEMINI.md',
+        '.github/copilot-instructions.md'];
+    foreach ($agentDocs as $docFile) {
+        $src = WIDDX_BASE_PATH . '/' . $docFile;
+        if (!is_file($src)) {
+            continue;
         }
+        $dst = "{$base}/" . $docFile;
+        if (!is_dir(dirname($dst))) {
+            @mkdir(dirname($dst), 0775, true);
+        }
+        copy($src, $dst);
     }
 
     // config/app.php

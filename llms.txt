@@ -24,7 +24,7 @@
 - Validation rules drive both server-side checks and the auto-generated HTML form.
 - CRUD pages are FAIL-CLOSED: `resource('x')` without `->public()` (and without a policy)
   sends guests to `/login` and gives logged-in users 403. Generators emit `->public()`.
-- `php widdx test` = 77 unit tests + the integration suite (real HTTP, CSRF, auth, SMTP, CLI).
+- `php widdx test` = the unit suite + the integration suite (real HTTP, CSRF, auth, SMTP, CLI).
   It refuses to start when the PHP PDO driver is missing, so env problems never look like bugs.
 - Deployment: VPS (`php widdx migrate`) or shared hosting without terminal
   (`/install.php` one-shot web installer).

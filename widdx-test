@@ -1254,6 +1254,85 @@ test('2.11 README has exactly one Complete Component List and no numbering gaps'
     assert_equals([], $missing, '### N. headings must be sequential, missing: ' . implode(',', $missing));
 });
 
+test('2.12 every AI agent entry point points at AGENTS.md', function () {
+    $root = __DIR__;
+    if (!str_starts_with(rtrim((string) @file_get_contents($root . '/README.md')), '# Widdx')) {
+        return; // scaffolded projects ship their own README — nothing to lint here
+    }
+    // Every tool that auto-loads its own instruction file must only POINT at the handbook.
+    // A gate that restates facts is a second source of truth, and it drifts (three of them
+    // did). Length is the proxy: a pointer is short.
+    $gates = ['CLAUDE.md', '.cursorrules', 'llms.txt', 'GEMINI.md', '.github/copilot-instructions.md'];
+    foreach ($gates as $g) {
+        $body = @file_get_contents($root . '/' . $g);
+        assert_true(is_string($body) && $body !== '', "agent gate missing: {$g}");
+        assert_true(str_contains($body, 'AGENTS.md'), "{$g} must name AGENTS.md as the authoritative handbook");
+        assert_true(strlen($body) < 2500, "{$g} grew past a pointer (" . strlen($body) . " bytes) — move the facts into AGENTS.md");
+    }
+    // A gate that exists only in the framework repo is useless where the agent actually
+    // works: the generated project. Every gate must be in the `widdx new` copy list.
+    $cli = (string) file_get_contents($root . '/widdx');
+    foreach ($gates as $g) {
+        assert_true(str_contains($cli, "'{$g}'"), "{$g} is not shipped by `php widdx new` — agents in a real project never see it");
+    }
+});
+
+test('2.12 the measured doc facts stay written down and the dead ones stay out', function () {
+    $root = __DIR__;
+    if (!str_starts_with(rtrim((string) @file_get_contents($root . '/README.md')), '# Widdx')) {
+        return; // scaffolded project
+    }
+    $docs = [
+        'AGENTS.md' => (string) file_get_contents($root . '/AGENTS.md'),
+        'README.md' => (string) file_get_contents($root . '/README.md'),
+        'llms.txt' => (string) file_get_contents($root . '/llms.txt'),
+        'routes/web.php' => (string) file_get_contents($root . '/routes/web.php'),
+        'core/Cli/MakeCrud.php' => (string) file_get_contents($root . '/core/Cli/MakeCrud.php'),
+    ];
+    // Sentences measured as FALSE and removed on 2026-10-15. If one reappears, the person
+    // adding it has not run the probe — this is the whole reason the test exists.
+    $forbidden = [
+        'restart nothing',                     // `php widdx serve` does NOT hot-reload
+        'picks it up on the next request',     // the same false promise, older wording
+        'uncomment to enable globally',        // CSRF is already on through the ambient web group
+    ];
+    foreach ($docs as $name => $body) {
+        foreach ($forbidden as $phrase) {
+            assert_true(
+                stripos($body, $phrase) === false,
+                "{$name} revived a claim measured false: \"{$phrase}\""
+            );
+        }
+    }
+    // The corrections themselves must not silently vanish.
+    $required = [
+        'AGENTS.md' => ['is NOT reliably seen', 'Restart is the whole fix',
+                        'CSRF + security headers are already ON', 'that line makes it run twice'],
+        'README.md' => ['if it was already running, restart it', 'that runs the middleware twice',
+                        'unpublished on Packagist'],
+        'core/Cli/MakeCrud.php' => ['restart is required'],
+        'routes/web.php' => ['ALREADY on'],
+    ];
+    foreach ($required as $name => $phrases) {
+        foreach ($phrases as $phrase) {
+            assert_true(str_contains($docs[$name], $phrase), "{$name} must keep: \"{$phrase}\"");
+        }
+    }
+    // PART 0 is the recipe small models execute verbatim: every command in it must be a real
+    // CLI verb, and the restart step must be inside the recipe, not only in the prose.
+    $part0 = (string) preg_replace('/^.*## PART 0.*$/m', '', file_get_contents($root . '/AGENTS.md'));
+    $part0 = substr($part0, 0, (int) strpos($part0, '## PART 1'));
+    preg_match_all('/^\s*php widdx ([a-z:]+)\b/m', $part0, $m);
+    $verbs = array_unique($m[1]);
+    assert_true(count($verbs) >= 3, 'PART 0 lost its commands: ' . implode(',', $verbs));
+    $cli = (string) file_get_contents($root . '/widdx');
+    foreach ($verbs as $verb) {
+        assert_true(str_contains($cli, "case '{$verb}'"), "PART 0 documents `php widdx {$verb}`, which the CLI does not implement");
+    }
+    assert_true(str_contains($part0, 'php widdx serve') && str_contains($part0, 'restart'),
+        'PART 0 must tell the reader to restart the dev server — it is the step an agent skips otherwise');
+});
+
 test('Schedule: time buckets, when-gate and identity keys', function () {
     \Widdx\Schedule::flush();
     $t = \Widdx\Schedule::command('queue:work')->everyFiveMinutes();

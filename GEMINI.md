@@ -1,0 +1,1 @@
+Read AGENTS.md at the repository root before writing code. It is the complete, authoritative handbook for the Widdx PHP framework — one atomic fact per line: PART 0 (start), PART 2 (golden rules), PART 4 (inference), PART 21 (pitfalls), PART 22 (feature cheat sheet). This file only points at it; never restate facts here.

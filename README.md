@@ -1,8 +1,10 @@
 # Widdx 🚀
 
 > **Building with an AI assistant?** Start at [AGENTS.md](AGENTS.md) — the complete
-> handbook written for AI coding tools (conventions, APIs, CLI, pitfalls). It ships
-> with every scaffolded project, and [llms.txt](llms.txt) indexes it for LLM crawlers.
+> handbook written for AI coding tools (conventions, APIs, CLI, pitfalls). [llms.txt](llms.txt)
+> indexes it for LLM crawlers, and every tool's own entry point (`CLAUDE.md`, `.cursorrules`,
+> `GEMINI.md`, `.github/copilot-instructions.md`) is a short pointer to it. All of them ship
+> with every scaffolded project, so an agent working in your app finds the handbook automatically.
 
 A very simple PHP framework, inspired by Laravel but much simpler.
 Philosophy: **Write minimal code — the framework infers the rest.**

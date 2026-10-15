@@ -166,7 +166,7 @@ class MakeCrud
 
         echo "Created: App\\Models\\{$model} + create_{$table}_table migration + resource('{$table}')->public()\n";
         echo "Next:    php widdx migrate — then restart php widdx serve and open /{$table}.\n";
-        echo "         (restart is required: the running dev server still holds the old routes/web.php)\n";
+        echo "         (restart is required: the running dev server does not reliably reload routes/web.php)\n";
     }
 
     /** Map a make:crud field type to a Blueprint column call. */
