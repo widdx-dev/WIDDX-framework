@@ -420,7 +420,7 @@ property to remember. Override it explicitly when you want to force either way:
 ```php
 class Post extends Model
 {
-    protected ?bool $timestamps = false; // never touch them (true = always, null = auto)
+    protected bool $timestamps = false; // never touch them (the default is true = fill when present)
 }
 ```
 
@@ -821,7 +821,7 @@ composer run phpstan          # static analysis (needs composer install first)
 ## Release & License
 
 Widdx is licensed under the **MIT license** (see `LICENSE`) and follows
-[semantic versioning](https://semver.org). The current baseline is **v0.3.3**.
+[semantic versioning](https://semver.org). The current baseline is **v0.3.4**.
 
 Two ways to start a project:
 

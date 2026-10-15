@@ -15,7 +15,7 @@ namespace Widdx;
  *
  * Power-ups (all optional):
  *   protected array $rules = ['email' => 'required|email']; // auto-validated by create()
- *   protected ?bool $timestamps = false;                    // force off (default: auto-detect)
+ *   protected bool $timestamps = false;                     // never fill created_at/updated_at
  */
 abstract class Model implements \JsonSerializable
 {
@@ -44,10 +44,12 @@ abstract class Model implements \JsonSerializable
 
     /**
      * created_at / updated_at handling.
-     * null = fill them when the table has both columns (every generator adds them),
-     * true = always fill, false = never fill.
+     * true (the default) = fill them whenever the table has both columns, which is what
+     * every generator adds; false = never fill. Stays a plain bool on purpose: a property
+     * type may not be widened in a subclass, so `protected ?bool` would fatal in any
+     * project model that still declares `protected bool $timestamps`.
      */
-    protected ?bool $timestamps = null;
+    protected bool $timestamps = true;
 
     /** Row values */
     protected array $attributes = [];
@@ -100,14 +102,14 @@ abstract class Model implements \JsonSerializable
     private static array $timestampTables = [];
 
     /**
-     * Whether save() should write created_at/updated_at. An explicit true/false on the
-     * model always wins; null falls back to probing the table, because a table without
-     * those columns would die on an INSERT that names them.
+     * Whether save() should write created_at/updated_at. Probing the table is what keeps
+     * this safe: forcing the pair onto a table without those columns would die on the
+     * INSERT that names them, so a model can only ever turn the feature off, not on.
      */
     protected function managesTimestamps(): bool
     {
-        if ($this->timestamps !== null) {
-            return $this->timestamps;
+        if (!$this->timestamps) {
+            return false;
         }
         $table = $this->getTable();
         if (!isset(self::$timestampTables[$table])) {

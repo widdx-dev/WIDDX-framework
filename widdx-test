@@ -1445,7 +1445,11 @@ test('2.13 save() fills created_at/updated_at on any table that has them', funct
 
     $auto = new class extends \Widdx\Model { protected ?string $table = 'ts_auto'; protected array $fillable = ['label']; };
     $bare = new class extends \Widdx\Model { protected ?string $table = 'ts_bare'; protected array $fillable = ['label']; };
-    $off  = new class extends \Widdx\Model { protected ?string $table = 'ts_auto'; protected array $fillable = ['label']; protected ?bool $timestamps = false; };
+    $off  = new class extends \Widdx\Model { protected ?string $table = 'ts_auto'; protected array $fillable = ['label']; protected bool $timestamps = false; };
+    // Plain `bool` on purpose: the README used to teach `protected bool $timestamps = true;`,
+    // and property types are invariant in PHP, so widening the base to ?bool would make every
+    // such existing model fatal on autoload.
+    $forced = new class extends \Widdx\Model { protected ?string $table = 'ts_bare'; protected array $fillable = ['label']; protected bool $timestamps = true; };
 
     $a = $auto::create(['label' => 'x']);
     assert_true(!empty($a->created_at), 'auto: created_at filled without any property');
@@ -1463,6 +1467,10 @@ test('2.13 save() fills created_at/updated_at on any table that has them', funct
 
     $b = $bare::create(['label' => 'y']);
     assert_true(!empty($b->id), 'bare table: create still works with no timestamp columns');
+
+    $f = $forced::create(['label' => 'w']);
+    assert_true(!empty($f->id), 'true + missing columns: skipped, not a failed INSERT');
+    assert_true(empty($f->created_at), 'true + missing columns: nothing invented');
 
     $c = $off::create(['label' => 'z']);
     assert_true(empty($c->created_at), 'explicit false wins over the columns being present');
