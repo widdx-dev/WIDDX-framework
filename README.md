@@ -819,7 +819,7 @@ composer run phpstan          # static analysis (needs composer install first)
 ## Release & License
 
 Widdx is licensed under the **MIT license** (see `LICENSE`) and follows
-[semantic versioning](https://semver.org). The current baseline is **v0.3.1**.
+[semantic versioning](https://semver.org). The current baseline is **v0.3.2**.
 
 Two ways to start a project:
 
