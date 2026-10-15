@@ -18,7 +18,8 @@ resource('users', UserController::class)->public();
 //  App\Middleware\AuthMiddleware simply extends it for project-specific rules.)
 // get('/admin', fn() => 'Admin panel')->middleware(\Widdx\AuthMiddleware::class);
 
-// CSRF protection example — uncomment to enable globally:
-// (leading \ is required: this file lives in the global namespace)
-// \Widdx\Router::use(\Widdx\CsrfMiddleware::class);
+// CSRF + security headers are ALREADY on: core/App.php puts them in the ambient
+// 'web' group, which covers every route in this file. Do not add them again here —
+// Router::use() would run them a second time. Use it only to REPLACE a group:
+// \Widdx\Router::middlewareGroup('web', [\Widdx\CsrfMiddleware::class]);
 

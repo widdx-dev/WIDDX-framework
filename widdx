@@ -114,6 +114,11 @@ function write_file(string $path, string $content): void
         fwrite(STDERR, "File already exists, skipping: {$path}\n");
         exit(1);
     }
+    // A heredoc drops the final newline, and an "add one route line" append then
+    // glues itself onto the last comment — a parse error waiting to happen.
+    if (!str_ends_with($content, "\n")) {
+        $content .= "\n";
+    }
     file_put_contents($path, $content);
     echo "  Created: {$path}\n";
 }

@@ -156,11 +156,17 @@ class MakeCrud
         $routesFile = $base . '/routes/web.php';
         $routes = is_file($routesFile) ? (string) file_get_contents($routesFile) : '';
         if (!str_contains($routes, "resource('{$table}')")) {
-            file_put_contents($routesFile, "\nresource('{$table}')->public();\n", FILE_APPEND);
+            // A file with no final newline would otherwise glue this line onto the
+            // last statement — every request then dies on a parse error.
+            if ($routes !== '' && !str_ends_with($routes, "\n")) {
+                $routes .= "\n";
+            }
+            file_put_contents($routesFile, $routes . "\nresource('{$table}')->public();\n");
         }
 
         echo "Created: App\\Models\\{$model} + create_{$table}_table migration + resource('{$table}')->public()\n";
-        echo "Next:    php widdx migrate — then open /{$table}. Zero hand-written code.\n";
+        echo "Next:    php widdx migrate — then restart php widdx serve and open /{$table}.\n";
+        echo "         (restart is required: the running dev server still holds the old routes/web.php)\n";
     }
 
     /** Map a make:crud field type to a Blueprint column call. */

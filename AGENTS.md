@@ -19,7 +19,7 @@ php widdx serve
 
 Then open http://localhost:8000 — it works (demo users CRUD is live).
 
-To add any list of records (run INSIDE the myapp folder) — ALWAYS two commands:
+To add any list of records (run INSIDE the myapp folder) — ALWAYS two commands + a restart:
 
 ```
 php widdx make:crud Product name:string price:float
@@ -27,7 +27,16 @@ php widdx migrate
 ```
 
 The second command is NOT optional. `make:crud` creates the table file; `migrate` applies it.
-Then restart nothing — the running `php widdx serve` picks it up on the next request.
+Then STOP and START the dev server again (Ctrl-C on the `php widdx serve` window, then run it):
+
+```
+php widdx serve
+```
+
+Reason, verified: `php widdx serve` is one long-lived PHP worker. It compiles `routes/web.php`
+once and keeps using that copy, so a route line added while it runs stays 404 until restart.
+This applies to every edit to a file the server already loaded (routes, models, controllers,
+views). New files are fine. Restart is the whole fix — never rewrite working code over a 404.
 
 The pages live at `/products` — plural. Always plural.
 
@@ -47,7 +56,7 @@ earlier steps. If you need more than a list of records, read PART 4 + PART 22.
 - One line `resource('posts')->public()` = a full working CRUD website for posts.
 - One line `authRoutes()` = register + login + logout + password reset + email verify.
 - One command `make:crud` = model + database table + routes, all at once.
-- Version: v0.3.0. All behavior below is tested (77 unit + the integration suite).
+- Version: v0.3.1. All behavior below is tested (77 unit + the integration suite).
 
 ---
 
@@ -150,7 +159,8 @@ Step 2 — run the migration:
 php widdx migrate
 ```
 
-Step 3 — open the app. Done. `/products` already does list/create/show/edit/delete. (URL is ALWAYS the plural name.)
+Step 3 — restart `php widdx serve` (Ctrl-C, then run it again), then open `/products`.
+Done. `/products` already does list/create/show/edit/delete. (URL is ALWAYS the plural name.)
 
 Step 4 — only if the user asked for custom design:
 
@@ -193,21 +203,27 @@ Routes file: `routes/web.php`. API and web share this one file.
 
 ---
 
-## PART 7 — Middleware (it is opt-in, one line to enable)
+## PART 7 — Middleware (CSRF + security headers are already ON; the rest is opt-in)
 
-- Global CSRF: `\Widdx\Router::use(\Widdx\CsrfMiddleware::class);`
-- Global security headers: `\Widdx\Router::use(\Widdx\SecurityHeaders::class);`
+Every route declared in `routes/web.php` runs in the ambient `web` group, which is
+`[CsrfMiddleware, SecurityHeaders]` by default (`core/App.php`). Routes under `/api/...`
+run in the `api` group, which is empty by default. Do NOT add the CSRF or headers
+middleware again — you would run them twice.
+
+- Redefine a group: `\Widdx\Router::middlewareGroup('web', [\Widdx\CsrfMiddleware::class]);`
+- Add a truly global middleware (every route, any group): `\Widdx\Router::use(SomeMw::class);`
 - Protect one route with login: `->middleware(\Widdx\AuthMiddleware::class)`
 - Rate limit: `->middleware(new \Widdx\ThrottleMiddleware(60, 60))` — 60 requests per 60 seconds per IP.
 - IP behind proxy: set `TRUSTED_PROXIES` in `.env` or throttling counts the proxy, not visitors.
 
-CSRF warning: once CsrfMiddleware is on, EVERY POST form needs:
+CSRF warning: since CSRF is on for web routes from the first request, EVERY POST form needs:
 
 ```
 <?= csrf_field() ?>
 ```
 
 Missing it gives status 419. This breaks the site silently — add it to all forms.
+(The built-in CRUD/auth forms already carry it.)
 
 ---
 
@@ -477,6 +493,8 @@ TRUSTED_PROXIES=
 
 - `php widdx new folder` — create a project. `new:api` — JSON-flavored one.
 - `php widdx serve --port=8000` — dev server. `--host=0.0.0.0` when it runs inside a container.
+  One long-lived worker: it does NOT see files it already loaded, so restart it after editing
+  routes, models, controllers or views.
 - `php widdx migrate` / `migrate:rollback` — run/undo table changes.
 - `php widdx db:seed` / `db:wipe` — fill test data / drop tables.
 - `php widdx make:crud Name field:type…` — THE main tool (PART 5).
@@ -519,11 +537,18 @@ Notes:
 7. WRONG: two form inputs with the same name in hidden/shown sections. RIGHT: unique names per section (PHP keeps the last value).
 8. WRONG: editing `widdx` and trusting normal lint. RIGHT: `php -l widdx` (it has no .php extension; CI covers it).
 9. WRONG: "fixing" `queue:work` to run forever. RIGHT: cron it with `--max` — it exits when empty on purpose.
-10. WRONG: enabling `CsrfMiddleware` without `<?= csrf_field() ?>` in every form. RIGHT: add the field first, or 419 everywhere.
+10. WRONG: writing a POST form without `<?= csrf_field() ?>`. CSRF is already ON for every `web`
+route (PART 7), so a missing field gives 419 and the site breaks silently. RIGHT: every form gets
+the field; built-in CRUD/auth forms already emit it.
+10b. WRONG: calling `Router::use(CsrfMiddleware::class)` to "enable" CSRF. It is already in the `web`
+group; that line makes it run twice. RIGHT: only use `Router::middlewareGroup()` to change a group.
 11. WRONG: trusting `X-Forwarded-For` implicitly. RIGHT: set `TRUSTED_PROXIES`; until then `Request::ip()` uses the real peer.
 12. WRONG: inventing new config files. RIGHT: `config()` only loads `config/*.php`; extend those or use `.env`.
 13. WRONG: writing `resource('x')` by hand and calling the 403/login-redirect a bug. RIGHT: it is fail-closed on purpose — add `->public()`, or a policy, or `protected bool $public = true` in your controller.
 14. WRONG: reading a wall of "could not find driver" as broken code. RIGHT: that PHP lacks the PDO driver; `php widdx-test` now refuses to start and names the extension to install.
+15. WRONG: expecting a route or view edited while `php widdx serve` was running to work (it 404s or shows the old page).
+    RIGHT: restart the server — one long-lived worker keeps the files it already loaded in memory. Never "fix" a 404 by
+    rewriting working code; restart first, then look.
 
 ---
 

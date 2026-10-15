@@ -235,15 +235,19 @@ need to.
 
 ### 8. CSRF Protection
 
+CSRF + security headers are **already on** for every route in `routes/web.php` (the
+ambient `web` group in `core/App.php`). Routes under `/api/...` are the `api` group,
+empty by default. Do not register them again — that runs the middleware twice.
+
 ```php
-// In routes/web.php — enable globally (leading \ required in global-namespace files):
-\Widdx\Router::use(\Widdx\CsrfMiddleware::class);
-\Widdx\Router::use(\Widdx\SecurityHeaders::class); // X-Frame-Options, nosniff, Referrer-Policy, CSP
+// Only needed to change what a group contains (this replaces it — CSRF stays,
+// the security headers do not):
+\Widdx\Router::middlewareGroup('web', [\Widdx\CsrfMiddleware::class]); // drop SecurityHeaders
 
-// Or per-route:
-post('/users', [UserController::class, 'store'])->middleware(Widdx\CsrfMiddleware::class);
+// Or per-route, for a route outside the web group:
+post('/users', [UserController::class, 'store'])->middleware(\Widdx\CsrfMiddleware::class);
 
-// In forms:
+// In forms (built-in CRUD/auth forms already emit this):
 <form method="POST" action="/users">
     <?= csrf_field() ?>
     ...
@@ -333,6 +337,9 @@ php widdx make:crud Post title:string body:text? views:integer?
 php widdx migrate
 php widdx serve        # → /posts is a complete CRUD app. You wrote nothing.
 ```
+
+(`php widdx serve` is one long-lived worker: if it was already running, restart it —
+it still holds the old `routes/web.php` in memory.)
 
 What `make:crud` produced for you: a model (with `$fillable` + `$rules` derived
 from the column types), a migration, and one appended route line:
@@ -810,22 +817,24 @@ composer run phpstan          # static analysis (needs composer install first)
 ## Release & License
 
 Widdx is licensed under the **MIT license** (see `LICENSE`) and follows
-[semantic versioning](https://semver.org). The current baseline is **v0.3.0**.
+[semantic versioning](https://semver.org). The current baseline is **v0.3.1**.
 
 Two ways to start a project:
 
 ```bash
-# 1) Clone the framework and scaffold a project from it (zero config)
+# 1) Clone the framework and scaffold a project from it (zero config) — the supported path
 git clone <repo-url> widdx && php widdx new my-app
 
-# 2) As a composer dependency: require widdx/framework and boot via its autoloader
+# 2) As a composer dependency — NOT installable yet: widdx/framework is still
+#    unpublished on Packagist (composer require returns 404 until it is released).
 composer require widdx/framework
 ```
 
 Packaging decision: the repository is **library + skeleton in one** — `widdx/framework`
-is publishable on Packagist (PSR-4 `Widdx\` → `core/`), while `php widdx new` ships the
+is *ready to be* published on Packagist (PSR-4 `Widdx\` → `core/`), while `php widdx new` ships the
 app skeleton (no separate template repo to keep in sync). `composer.lock` is not
-committed, per library convention.
+committed, per library convention. Until the release happens, install from source (path
+repository or a VCS requirement on this repo) rather than the Packagist name.
 
 ---
 

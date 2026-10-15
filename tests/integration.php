@@ -542,8 +542,12 @@ ok('1.4 guest + JSON caller = 401 from guard', $r['status'] === 401 && str_conta
 
 // ------------------------------------------------------------ 5. CSRF stage
 
-sec('CSRF middleware (enabled mid-flight, no restart)');
+sec('CSRF: registering the middleware globally on top of the web group');
 
+// CSRF is already on through the ambient web group; this append checks that a
+// project adding it again does not break the round-trip. (routes/web.php edits
+// are NOT re-read by the live php -S worker, so this line is really a probe
+// that the existing protection stays correct.)
 file_put_contents($proj . '/routes/web.php', "\n" . '\\Widdx\\Router::use(\\Widdx\\CsrfMiddleware::class);' . "\n", FILE_APPEND);
 
 $r = http($port, 'POST', '/users', ['name' => 'No Token', 'email' => 'nt@test.local']);
@@ -568,7 +572,7 @@ if ($token !== null) {
 
 // ---------------------------------------------------- 6. security headers
 
-sec('SecurityHeaders middleware');
+sec('SecurityHeaders on every web response (ambient web group)');
 
 file_put_contents($proj . '/routes/web.php', "\n" . '\\Widdx\\Router::use(\\Widdx\\SecurityHeaders::class);' . "\n", FILE_APPEND);
 $r = http($port, 'GET', '/', null, $jar);
