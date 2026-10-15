@@ -39,15 +39,26 @@ if (!class_exists('Widdx\App')) {
 }
 
 use Widdx\Installer;
+use Widdx\Session;
 
 $base = WIDDX_BASE_PATH;
 
 // Locked forever after a successful install — one-shot endpoint.
+// (Checked FIRST: a stale lock must 404 even when .env went missing after.)
 if (Installer::installed($base)) {
     http_response_code(404);
     header('Content-Type: text/plain; charset=utf-8');
     exit("This project is already installed. Delete storage/app/installed.lock only if you know what you are doing.\n");
 }
+
+// Installer CSRF: its own session token, independent of the app.
+Session::start();
+$iform = Session::get('_installer_token');
+if (!is_string($iform) || $iform === '') {
+    $iform = bin2hex(random_bytes(16));
+    Session::put('_installer_token', $iform);
+}
+Installer::installKey($base); // create on first GET; value is NEVER rendered
 
 $errors = [];
 $done = null;
@@ -57,12 +68,27 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $action = (string) ($_POST['action'] ?? 'install');
     $old = $_POST;
     try {
+        // 1) CSRF: constant-time compare against the session token.
+        $sent = $_POST['installer_token'] ?? null;
+        if (!is_string($sent) || !hash_equals($iform, $sent)) {
+            throw new RuntimeException('انتهت صلاحية جلسة التنصيب (CSRF) — حدِّث الصفحة وأعد المحاولة.');
+        }
+        // 2) Proof of possession: the key is only readable over FTP/SSH.
+        if (!Installer::keyMatches($base, $_POST['install_key'] ?? null)) {
+            throw new RuntimeException('مفتاح التنصيب غير صحيح. افتح ملف storage/app/install.key عبر FTP/SSH وانسخ محتواه هنا.');
+        }
+
         if ($action === 'lock_only') {
             if (!Installer::configured($base)) {
                 throw new RuntimeException('لا يوجد .env بعد — أكمل التنصيب أولًا.');
             }
             Installer::lock($base);
             $done = 'تم القفل. install.php أصبح الآن مغلقًا (404).';
+            if (is_file(__FILE__)) {
+                if (!@unlink(__FILE__)) {
+                    $done .= ' <strong>احذف install.php يدويًا الآن.</strong>';
+                }
+            }
         } elseif (Installer::configured($base)) {
             // Existing config (CLI flow or manual .env) — never overwrite it.
             throw new RuntimeException('.env موجود مسبقًا؛ لن يتم overriding له. إن كان كل شيء جاهزًا اضغط "قفل فقط" بالأسفل، أو احذف .env لإعادة التنصيب.');
@@ -88,6 +114,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $executed = Installer::finish($base);
             $n = count($executed);
             $done = "تم التنصيب! نفِّذت {$n} migration، وأُنشئ .env، وقُفل المثبّت. اذهب إلى <a href=\"/\">الرئيسية</a>.";
+            // Best-effort self-removal (ignore hosts that block unlink here).
+            if (is_file(__FILE__)) {
+                if (!@unlink(__FILE__)) {
+                    $done .= ' <strong>احذف install.php يدويًا الآن — لم يتمكن المثبّت من حذفه بنفسه.</strong>';
+                }
+            }
         }
     } catch (Throwable $e) {
         $errors[] = $e->getMessage();
@@ -142,15 +174,26 @@ li{margin:4px 0}
 <?php endforeach; ?>
 </ul>
 
-<?php if ($errors): foreach ($errors as $er): ?><div class="err"><?= $er ?></div><?php endforeach; endif; ?>
+<?php if ($errors): foreach ($errors as $er): ?><div class="err"><?= e($er) ?></div><?php endforeach; endif; ?>
 
-<?php if ($configured): ?>
+<?php if ($configured):
+    // .env exists but the installer is NOT locked yet — offer locking.
+    // Key + token are required here too, so this button cannot be fired
+    // by a drive-by POST.
+?>
     <p>.env موجود بالفعل (ربما ضبطته عبر الطرفية). يمكنك قفل المثبّت فقط:</p>
-    <form method="post"><input type="hidden" name="action" value="lock_only">
+    <form method="post">
+    <input type="hidden" name="action" value="lock_only">
+    <input type="hidden" name="installer_token" value="<?= e($iform) ?>">
+    <label>مفتاح التنصيب <span class="hint">افتح ملف <code>storage/app/install.key</code> عبر FTP/SSH وانسخ محتواه هنا</span>
+    <input type="text" name="install_key" value="" autocomplete="off"></label>
     <button class="btn" type="submit">قفل المثبّت فقط</button></form>
 <?php elseif ($ready): ?>
 <form method="post">
 <input type="hidden" name="action" value="install">
+<input type="hidden" name="installer_token" value="<?= e($iform) ?>">
+<label>مفتاح التنصيب <span class="hint">إثبات الملكية: افتح ملف <code>storage/app/install.key</code> عبر FTP/SSH وانسخ محتواه هنا — لا يظهر أبدًا في هذه الصفحة</span>
+<input type="text" name="install_key" value="" autocomplete="off"></label>
 <label>نوع قاعدة البيانات
 <select name="DB_CONNECTION">
     <option value="sqlite" <?= $val('DB_CONNECTION') === 'sqlite' || $old === [] ? 'selected' : '' ?>>SQLite (الأسهل — بلا إعداد)</option>
@@ -178,7 +221,8 @@ li{margin:4px 0}
     <option value="ar" <?= ($val('APP_LOCALE', 'ar') === 'ar') ? 'selected' : '' ?>>العربية (RTL)</option>
     <option value="en" <?= $val('APP_LOCALE') === 'en' ? 'selected' : '' ?>>English (LTR)</option>
 </select></label>
-<label style="font-weight:400"><input type="checkbox" name="APP_DEBUG" value="1" style="width:auto" <?= $old === [] ? 'checked' : '' ?>> وضع التصحيح (APP_DEBUG) — عطّله في الإنتاج</label>
+<label style="font-weight:400"><input type="checkbox" name="APP_DEBUG" value="1" style="width:auto" <?= $old === [] ? 'checked' : '' ?>> وضع التصحيح (APP_DEBUG)</label>
+<p style="color:#b91c1c;font-size:.85rem;margin:4px 0 12px">⚠ تحذير: وضع التصحيح يعرض للزوار تفاصيل الأخطاء ومسارات الملفات الداخلية — مناسب للتجربة المحلية فقط. اتركه معطّلًا في أي موقع فعلي (الافتراضي في الإطار: OFF).</p>
 
 <button class="btn" type="submit">تنصيب الآن</button>
 <p class="hint">سيُنشئ هذا النموذج ملف .env، ويشغّل كل migrations المعلّقة، ثم يُقفل نفسه نهائيًا.</p>

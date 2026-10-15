@@ -4,19 +4,14 @@ declare(strict_types=1);
 
 namespace App\Middleware;
 
-use Widdx\Request;
-use Widdx\Response;
-
 /**
- * Example middleware.
- * Usage: get('/admin', ...)->middleware(AuthMiddleware::class);
+ * Project auth middleware — REAL behavior since v0.3: it simply extends
+ * the framework's \Widdx\AuthMiddleware, so guests get 302 to /login (or
+ * 401 JSON for API callers), never a silent pass-through.
+ *
+ * Usage: get('/admin', ...)->middleware(App\Middleware\AuthMiddleware::class);
+ * Need custom rules? Override handle() and call parent::handle() first.
  */
-class AuthMiddleware
+class AuthMiddleware extends \Widdx\AuthMiddleware
 {
-    public function handle(Request $request, callable $next): Response
-    {
-        // Example: dummy check — replace with your own logic
-        // if (!isset($_SESSION['user'])) { return redirect('/'); }
-        return $next($request);
-    }
 }

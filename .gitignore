@@ -22,5 +22,8 @@
 *.swp
 .DS_Store
 
+# Throwaway app trees left behind by debugging runs
+/tests/tmp-debug/
+
 # Composer lock is not committed for libraries
 /composer.lock

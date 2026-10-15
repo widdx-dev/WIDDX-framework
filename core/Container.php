@@ -22,9 +22,6 @@ class Container implements \Psr\Container\ContainerInterface
     /** @var array<string, object> Shared instances (singletons) */
     protected array $singletons = [];
 
-    /** @var array<string, mixed> Additional parameters at call time (e.g. route params) */
-    protected array $contextual = [];
-
     /** @var array<string, \ReflectionClass> Reflection cache for performance */
     protected array $reflectionCache = [];
 
@@ -103,18 +100,16 @@ class Container implements \Psr\Container\ContainerInterface
 
     /**
      * Create an object with automatic constructor injection.
+     *
+     * $params are contextual values for THIS constructor only — they must
+     * never leak into nested dependencies (threaded explicitly, not stored).
      */
     public function make(string $class, array $params = []): object
     {
-        $this->contextual = $params;
-        try {
-            return $this->build($class);
-        } finally {
-            $this->contextual = [];
-        }
+        return $this->build($class, $params);
     }
 
-    protected function build(mixed $concrete): object
+    protected function build(mixed $concrete, array $contextual = []): object
     {
         // Ready Closure
         if ($concrete instanceof \Closure) {
@@ -146,7 +141,7 @@ class Container implements \Psr\Container\ContainerInterface
             return $ref->newInstance();
         }
 
-        $args = $this->resolveParameters($ctor->getParameters(), []);
+        $args = $this->resolveParameters($ctor->getParameters(), [], $contextual);
         return $ref->newInstanceArgs($args);
     }
 
@@ -163,14 +158,14 @@ class Container implements \Psr\Container\ContainerInterface
             [$target, $method] = $callable;
             $object = is_object($target) ? $target : $this->get((string) $target);
             $ref = new \ReflectionMethod($object, (string) $method);
-            $args = $this->resolveParameters($ref->getParameters(), $routeParams);
+            $args = $this->resolveParameters($ref->getParameters(), $routeParams, []);
             return $ref->invokeArgs($object, $args);
         }
 
         // Case: Closure or function
         if ($callable instanceof \Closure || is_string($callable) && function_exists($callable)) {
             $ref = new \ReflectionFunction(\Closure::fromCallable($callable));
-            $args = $this->resolveParameters($ref->getParameters(), $routeParams);
+            $args = $this->resolveParameters($ref->getParameters(), $routeParams, []);
             return $ref->invokeArgs($args);
         }
 
@@ -185,8 +180,12 @@ class Container implements \Psr\Container\ContainerInterface
 
     /**
      * Resolve function parameters: inject by type, by route param name, or default value.
+     *
+     * @param array $params Constructor/method parameters to resolve
+     * @param array $routeParams Route parameters matched by name
+     * @param array $contextual Values for the TOP-LEVEL signature only (never passed down)
      */
-    protected function resolveParameters(array $params, array $routeParams): array
+    protected function resolveParameters(array $params, array $routeParams, array $contextual = []): array
     {
         $args = [];
 
@@ -200,9 +199,9 @@ class Container implements \Psr\Container\ContainerInterface
                 continue;
             }
 
-            // 2) Additional context
-            if (array_key_exists($name, $this->contextual)) {
-                $args[] = $this->contextual[$name];
+            // 2) Additional context (top-level signature only)
+            if (array_key_exists($name, $contextual)) {
+                $args[] = $contextual[$name];
                 continue;
             }
 

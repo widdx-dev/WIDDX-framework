@@ -5,7 +5,9 @@ return [
     'name' => 'Widdx',
 
     // Debug mode: true shows error details, false shows friendly pages only
-    'debug' => filter_var(env('APP_DEBUG', 'true'), FILTER_VALIDATE_BOOLEAN),
+    // Debug OFF unless APP_DEBUG is explicitly set — a forgotten .env must
+    // never expose stack traces on a public server.
+    'debug' => filter_var(env('APP_DEBUG', 'false'), FILTER_VALIDATE_BOOLEAN),
 
     // Locale for framework messages (lang/{locale}.php; 'en' is the fallback)
     'locale' => env('APP_LOCALE', 'en'),

@@ -36,6 +36,13 @@ class Auth
     }
 
     /**
+     * Bcrypt of a throwaway string. attempt() verifies unknown users against
+     * it so "user not found" and "wrong password" take the same time —
+     * otherwise attackers can enumerate accounts by stopwatch.
+     */
+    protected const TIMING_HASH = '$2y$12$rsA5reQ0bKC/0AehgyLIz.Uc2OyfENehP52tb2J61IUPgmq2i48KW';
+
+    /**
      * Attempt login with credentials (e.g. ['email' => ..., 'password' => ...]).
      * Returns true on success (user stored in session).
      */
@@ -56,12 +63,23 @@ class Auth
         $user = $query->first();
 
         if (!$user || $password === null) {
+            // Burn the same bcrypt cycle as the real verify path.
+            password_verify((string) ($password ?? ''), self::TIMING_HASH);
             return false;
         }
 
-        $hash = $user->password ?? null;
-        if ($hash === null || !password_verify((string) $password, (string) $hash)) {
+        $hash = (string) ($user->password ?? '');
+        if ($hash === '' || !password_verify((string) $password, $hash)) {
             return false;
+        }
+        // Transparent upgrade: old-cost hashes are rehashed with current defaults.
+        if (password_needs_rehash($hash, PASSWORD_DEFAULT)) {
+            $user->password = password_hash((string) $password, PASSWORD_DEFAULT);
+            try {
+                $user->save();
+            } catch (\Throwable) {
+                // Rehash is best-effort — login must not depend on it.
+            }
         }
 
         static::login($user);
@@ -75,6 +93,8 @@ class Auth
         Session::put('auth_user_class', $user::class);
         // Guard against session fixation: issue a fresh session ID on login.
         Session::regenerate();
+        // ...and a fresh CSRF token tied to the NEW session only.
+        Session::forget('_csrf_token');
     }
 
     /** Log out */
@@ -82,6 +102,10 @@ class Auth
     {
         Session::forget('auth_user_id');
         Session::forget('auth_user_class');
+        // The old session's CSRF token must die with the identity, and the
+        // ID rotates so a copy taken while logged in is worthless after.
+        Session::forget('_csrf_token');
+        Session::regenerate();
     }
 
     /** Is anyone logged in? */
@@ -153,15 +177,33 @@ class Auth
     /** Create + mail a signed reset link. Returns false when the email is unknown. */
     public static function sendResetLink(string $email): bool
     {
+        static::ensureMailListener();
         $class = static::userClass();
         if (!$class::query()->where('email', $email)->exists()) {
             return false; // caller must still report success (anti-enumeration)
         }
         $token = static::createToken($email, 'reset');
         $link = static::resetLink($email, $token);
-        Mail::raw($email, 'Reset your password', "Use this link to reset your password (valid 1 hour):\n{$link}");
+        // Deferred until AFTER the response reached the client: the request
+        // itself returns in the same time whether or not the mail goes out,
+        // so reset-link requests cannot be timed into an enumeration oracle.
+        Event::queue('auth.mail', $email, 'Reset your password', "Use this link to reset your password (valid 1 hour):\n{$link}");
         return true;
     }
+
+    /** One shared listener that actually sends queued auth mails. */
+    protected static function ensureMailListener(): void
+    {
+        if (static::$mailListenerRegistered) {
+            return;
+        }
+        Event::listen('auth.mail', function (string $to, string $subject, string $body): void {
+            Mail::raw($to, $subject, $body);
+        });
+        static::$mailListenerRegistered = true;
+    }
+
+    protected static bool $mailListenerRegistered = false;
 
     public static function resetLink(string $email, string $token): string
     {

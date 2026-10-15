@@ -102,13 +102,28 @@ class App
         Container::getInstance()->instance(Request::class, $request);
         Container::getInstance()->instance('request', $request);
 
-        // Load routes (registered via global get/post/... functions)
+        // Load routes (registered via global get/post/... functions).
+        // Default middleware groups — secure by construction:
+        //   web = CSRF + security headers (routes/web.php lives in it)
+        //   api = nothing extra (token-based clients have no form to protect)
+        // A project can redefine either with Router::middlewareGroup('web', [...])
+        // inside routes/web.php — registration happens per route, at require time.
+        Router::middlewareGroup('web', [CsrfMiddleware::class, SecurityHeaders::class]);
+        Router::middlewareGroup('api', []);
         $routesFile = $basePath . '/routes/web.php';
         if (is_file($routesFile)) {
+            $router = Router::getInstance();
+            $router->setAmbientGroup('web');
             require $routesFile;
+            $router->setAmbientGroup(null);
         }
 
         try {
+            // 2.3: a JSON content-type with an undecodable body is a client
+            // error, surfaced as a clean 400 (JSON, since caller speaks JSON).
+            if ($request->malformedJson) {
+                throw new Exceptions\HttpException('Malformed JSON request body.', 400);
+            }
             $response = Router::getInstance()->dispatch($request);
         } catch (\Throwable $e) {
             $response = static::renderException($e);
@@ -174,6 +189,39 @@ class App
     /** Convert any exception to a clear error page */
     public static function renderException(\Throwable $e): Response
     {
+        // JSON callers (Accept/Content-Type json, or /api paths) always get
+        // machine-readable errors — never an HTML page or a redirect.
+        if (PHP_SAPI !== 'cli') {
+            try {
+                $wantsJson = request()->expectsJson();
+            } catch (\Throwable) {
+                $wantsJson = false;
+            }
+            if ($wantsJson) {
+                if ($e instanceof Exceptions\ValidationException) {
+                    return Response::json(['message' => 'The given data was invalid.', 'errors' => $e->errors], 422);
+                }
+                $jStatus = 500;
+                if ($e instanceof Exceptions\AuthenticationException) {
+                    $jStatus = 401;
+                } elseif ($e instanceof Exceptions\RouteNotFoundException || $e instanceof Exceptions\NotFoundException) {
+                    $jStatus = 404;
+                } elseif ($e instanceof Exceptions\HttpException) {
+                    $jStatus = $e->status;
+                }
+                $jMsg = $e->getMessage();
+                if ($jStatus === 500 && !static::getConfig('app.debug', false)) {
+                    $jMsg = 'Internal Server Error.';
+                }
+                return Response::json(['error' => $jMsg], $jStatus);
+            }
+        }
+
+        // Guests at the fail-closed CRUD gate → login page, never a 500.
+        if ($e instanceof Exceptions\AuthenticationException && PHP_SAPI !== 'cli') {
+            return Response::redirect('/login');
+        }
+
         // Validation errors → redirect back with errors + old input (zero controller code)
         if ($e instanceof Exceptions\ValidationException && PHP_SAPI !== 'cli') {
             Session::flash('_errors', $e->errors);
@@ -186,7 +234,7 @@ class App
             return Response::redirect($back);
         }
 
-        $debug = (bool) static::getConfig('app.debug', true);
+        $debug = (bool) static::getConfig('app.debug', false);
 
         $status = 500;
         if ($e instanceof Exceptions\RouteNotFoundException || $e instanceof Exceptions\NotFoundException) {
@@ -249,30 +297,33 @@ HTML;
         return Response::make($html, $status);
     }
 
-    /** Friendly Arabic hint based on exception type */
+    /**
+     * Friendly, localized hint based on exception type.
+     * Text lives in lang/{locale}.php under the 'hints' section.
+     */
     protected static function friendlyHint(\Throwable $e): string
     {
         if ($e instanceof Exceptions\RouteNotFoundException) {
-            return 'This URL is not registered. Open <code>routes/web.php</code> and add the required route.';
+            return Lang::line('hints.route_not_found');
         }
         if ($e instanceof Exceptions\ViewNotFoundException) {
-            return 'The view template does not exist. Check the name passed to <code>view()</code> and verify the file exists in <code>views/</code>.';
+            return Lang::line('hints.view_not_found');
         }
         if ($e instanceof Exceptions\BindingException) {
-            return 'Automatic dependency injection failed. Check the details below — likely a parameter name that does not match <code>{param}</code> in the route, or a missing class.';
+            return Lang::line('hints.binding');
         }
         if ($e instanceof Exceptions\DatabaseException) {
-            return 'Database problem. Check <code>config/database.php</code> and verify the required table exists.';
+            return Lang::line('hints.database');
         }
         if ($e instanceof Exceptions\NotFoundException) {
-            return 'The requested item does not exist. Check the ID passed in the URL.';
+            return Lang::line('hints.not_found');
         }
         if ($e instanceof Exceptions\MethodNotAllowedException) {
-            return 'The URL exists but the HTTP method is wrong. Check the form <code>method</code> (use <code>_method</code> for PUT/DELETE) or the API request method.';
+            return Lang::line('hints.method_not_allowed');
         }
         if ($e instanceof Exceptions\ValidationException) {
-            return 'Some inputs are invalid. Check the validation errors below.';
+            return Lang::line('hints.validation');
         }
-        return 'An unexpected error occurred. Check the details below or the error log.';
+        return Lang::line('hints.generic');
     }
 }

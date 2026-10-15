@@ -353,6 +353,62 @@ if (!function_exists('storage')) {
     }
 }
 
+if (!function_exists('storageRoutes')) {
+    /**
+     * Serve web-accessible uploads over HTTP — the ONLY safe way to expose
+     * stored files. Registers GET {prefix}/{path} serving storage/app/public
+     * (never the rest of storage/app) with real Content-Type + nosniff and
+     * hard traversal protection. Call once in routes/web.php:
+     *   storageRoutes(); // files stored via ->store('public/uploads')
+     *                    // become http://site/storage/uploads/<name>
+     */
+    function storageRoutes(string $prefix = '/storage'): void
+    {
+        $root = (defined('WIDDX_BASE_PATH') ? WIDDX_BASE_PATH : dirname(__DIR__)) . '/storage/app/public';
+        get("{$prefix}/{path:.+}", function (string $path) use ($root): Response {
+            if ($path === '' || str_contains($path, "\0")
+                || str_starts_with($path, '/') || preg_match('#^[a-zA-Z]:#', $path) === 1) {
+                abort(404);
+            }
+            $segments = [];
+            foreach (explode('/', str_replace('\\', '/', $path)) as $seg) {
+                if ($seg === '' || $seg === '.') {
+                    continue;
+                }
+                if ($seg === '..') {
+                    abort(404);
+                }
+                $segments[] = $seg;
+            }
+            $realRoot = realpath($root);
+            $real = realpath($root . '/' . implode('/', $segments));
+            if ($realRoot === false || $real === false || !is_file($real)
+                || !str_starts_with($real, $realRoot . '/')) {
+                abort(404);
+            }
+            $mime = 'application/octet-stream';
+            if (function_exists('finfo_open')) {
+                $finfo = finfo_open(FILEINFO_MIME_TYPE);
+                if ($finfo !== false) {
+                    $detected = finfo_file($finfo, $real);
+                    finfo_close($finfo);
+                    if (is_string($detected) && $detected !== '') {
+                        $mime = $detected;
+                    }
+                }
+            }
+            // Never hand the browser a runnable/script file, whatever it contains.
+            if (preg_match('#^(text/x-|application/(x-sh|x-httpd-php|php))#', $mime) === 1) {
+                $mime = 'text/plain';
+            }
+            return Response::make((string) file_get_contents($real))
+                ->setHeader('Content-Type', $mime)
+                ->setHeader('X-Content-Type-Options', 'nosniff')
+                ->setHeader('Content-Disposition', 'inline; filename="' . basename($real) . '"');
+        })->name('storage.serve');
+    }
+}
+
 if (!function_exists('queue')) {
     /**
      * queue() → Queue instance
@@ -426,12 +482,15 @@ if (!function_exists('resource')) {
      *   resource('posts');                    // ZERO code: finds App\Controllers\PostController,
      *                                         // else drives App\Models\Post with built-in views
      *   resource('users', UserController::class); // explicit controller
+     *   resource('posts')->public();          // opt out of the fail-closed auth gate
      *
      * Creates: GET/POST /posts, GET/PUT/DELETE /posts/{id} + named routes.
+     * Returns a RouteGroup so ->public()/->middleware() apply to all 7 routes.
      */
-    function resource(string $name, ?string $controller = null): void
+    function resource(string $name, ?string $controller = null): \Widdx\RouteGroup
     {
         $name = strtolower($name);
+        $routes = [];
 
         if ($controller === null) {
             $studly = str_replace(' ', '', ucwords(str_replace(['_', '-'], ' ', singular($name))));
@@ -448,24 +507,25 @@ if (!function_exists('resource')) {
                 }
                 // Model-only: drive the generic CRUD controller with built-in views.
                 $mk = fn() => new \Widdx\ResourceController($model);
-                get("/{$name}", fn() => $mk()->index())->name("{$name}.index");
-                get("/{$name}/create", fn() => $mk()->create())->name("{$name}.create");
-                post("/{$name}", fn() => $mk()->store())->name("{$name}.store");
-                get("/{$name}/{id}", fn(string $id) => $mk()->show($id))->name("{$name}.show");
-                get("/{$name}/{id}/edit", fn(string $id) => $mk()->edit($id))->name("{$name}.edit");
-                put("/{$name}/{id}", fn(string $id) => $mk()->update($id))->name("{$name}.update");
-                delete("/{$name}/{id}", fn(string $id) => $mk()->destroy($id))->name("{$name}.destroy");
-                return;
+                $routes[] = get("/{$name}", fn() => $mk()->index())->name("{$name}.index");
+                $routes[] = get("/{$name}/create", fn() => $mk()->create())->name("{$name}.create");
+                $routes[] = post("/{$name}", fn() => $mk()->store())->name("{$name}.store");
+                $routes[] = get("/{$name}/{id}", fn(string $id) => $mk()->show($id))->name("{$name}.show");
+                $routes[] = get("/{$name}/{id}/edit", fn(string $id) => $mk()->edit($id))->name("{$name}.edit");
+                $routes[] = put("/{$name}/{id}", fn(string $id) => $mk()->update($id))->name("{$name}.update");
+                $routes[] = delete("/{$name}/{id}", fn(string $id) => $mk()->destroy($id))->name("{$name}.destroy");
+                return new \Widdx\RouteGroup($routes);
             }
         }
 
-        get("/{$name}", [$controller, 'index'])->name("{$name}.index");
-        get("/{$name}/create", [$controller, 'create'])->name("{$name}.create");
-        post("/{$name}", [$controller, 'store'])->name("{$name}.store");
-        get("/{$name}/{id}", [$controller, 'show'])->name("{$name}.show");
-        get("/{$name}/{id}/edit", [$controller, 'edit'])->name("{$name}.edit");
-        put("/{$name}/{id}", [$controller, 'update'])->name("{$name}.update");
-        delete("/{$name}/{id}", [$controller, 'destroy'])->name("{$name}.destroy");
+        $routes[] = get("/{$name}", [$controller, 'index'])->name("{$name}.index");
+        $routes[] = get("/{$name}/create", [$controller, 'create'])->name("{$name}.create");
+        $routes[] = post("/{$name}", [$controller, 'store'])->name("{$name}.store");
+        $routes[] = get("/{$name}/{id}", [$controller, 'show'])->name("{$name}.show");
+        $routes[] = get("/{$name}/{id}/edit", [$controller, 'edit'])->name("{$name}.edit");
+        $routes[] = put("/{$name}/{id}", [$controller, 'update'])->name("{$name}.update");
+        $routes[] = delete("/{$name}/{id}", [$controller, 'destroy'])->name("{$name}.destroy");
+        return new \Widdx\RouteGroup($routes);
     }
 }
 
@@ -473,10 +533,12 @@ if (!function_exists('apiResource')) {
     /**
      * Register API CRUD routes (returns JSON).
      * Usage: apiResource('posts'); // or apiResource('posts', PostController::class);
+     *        apiResource('posts')->public(); // opt out of the fail-closed auth gate
      */
-    function apiResource(string $name, ?string $controller = null): void
+    function apiResource(string $name, ?string $controller = null): \Widdx\RouteGroup
     {
         $name = strtolower($name);
+        $routes = [];
 
         if ($controller === null) {
             $studly = str_replace(' ', '', ucwords(str_replace(['_', '-'], ' ', singular($name))));
@@ -492,22 +554,23 @@ if (!function_exists('apiResource')) {
                     );
                 }
                 $mk = fn() => new \Widdx\ResourceApiController($model);
-                get("/api/{$name}", fn() => $mk()->index())->name("api.{$name}.index");
-                post("/api/{$name}", fn() => $mk()->store())->name("api.{$name}.store");
-                get("/api/{$name}/{id}", fn(string $id) => $mk()->show($id))->name("api.{$name}.show");
-                put("/api/{$name}/{id}", fn(string $id) => $mk()->update($id))->name("api.{$name}.update");
-                patch("/api/{$name}/{id}", fn(string $id) => $mk()->update($id))->name("api.{$name}.patch");
-                delete("/api/{$name}/{id}", fn(string $id) => $mk()->destroy($id))->name("api.{$name}.destroy");
-                return;
+                $routes[] = get("/api/{$name}", fn() => $mk()->index())->name("api.{$name}.index");
+                $routes[] = post("/api/{$name}", fn() => $mk()->store())->name("api.{$name}.store");
+                $routes[] = get("/api/{$name}/{id}", fn(string $id) => $mk()->show($id))->name("api.{$name}.show");
+                $routes[] = put("/api/{$name}/{id}", fn(string $id) => $mk()->update($id))->name("api.{$name}.update");
+                $routes[] = patch("/api/{$name}/{id}", fn(string $id) => $mk()->update($id))->name("api.{$name}.patch");
+                $routes[] = delete("/api/{$name}/{id}", fn(string $id) => $mk()->destroy($id))->name("api.{$name}.destroy");
+                return new \Widdx\RouteGroup($routes);
             }
         }
 
-        get("/api/{$name}", [$controller, 'index'])->name("api.{$name}.index");
-        post("/api/{$name}", [$controller, 'store'])->name("api.{$name}.store");
-        get("/api/{$name}/{id}", [$controller, 'show'])->name("api.{$name}.show");
-        put("/api/{$name}/{id}", [$controller, 'update'])->name("api.{$name}.update");
-        patch("/api/{$name}/{id}", [$controller, 'update'])->name("api.{$name}.patch");
-        delete("/api/{$name}/{id}", [$controller, 'destroy'])->name("api.{$name}.destroy");
+        $routes[] = get("/api/{$name}", [$controller, 'index'])->name("api.{$name}.index");
+        $routes[] = post("/api/{$name}", [$controller, 'store'])->name("api.{$name}.store");
+        $routes[] = get("/api/{$name}/{id}", [$controller, 'show'])->name("api.{$name}.show");
+        $routes[] = put("/api/{$name}/{id}", [$controller, 'update'])->name("api.{$name}.update");
+        $routes[] = patch("/api/{$name}/{id}", [$controller, 'update'])->name("api.{$name}.patch");
+        $routes[] = delete("/api/{$name}/{id}", [$controller, 'destroy'])->name("api.{$name}.destroy");
+        return new \Widdx\RouteGroup($routes);
     }
 }
 
@@ -606,17 +669,20 @@ if (!function_exists('authRoutes')) {
     function authRoutes(): void
     {
         $c = fn(string $m, array $args = []) => (new \Widdx\AuthController())->{$m}(...$args);
+        // Credential endpoints are brute-force targets: 5 attempts per minute
+        // per client IP each.
+        $throttle = fn() => new \Widdx\ThrottleMiddleware(5, 60);
         get('/login', fn() => $c('showLogin'))->name('login');
-        post('/login', fn() => $c('login'));
+        post('/login', fn() => $c('login'))->middleware($throttle());
         get('/register', fn() => $c('showRegister'))->name('register');
-        post('/register', fn() => $c('register'));
+        post('/register', fn() => $c('register'))->middleware($throttle());
         post('/logout', fn() => $c('logout'))->name('logout');
         get('/forgot-password', fn() => $c('showForgot'))->name('password.request');
-        post('/forgot-password', fn() => $c('sendResetLink'));
+        post('/forgot-password', fn() => $c('sendResetLink'))->middleware($throttle());
         get('/reset-password/{token}', fn(string $token) => $c('showReset', [$token]))->name('password.reset');
         post('/reset-password', fn() => $c('reset'))->name('password.update');
         get('/email-verification', fn() => $c('showVerifyNotice'))->name('verification.notice');
-        post('/email-verification', fn() => $c('resendVerification'))->name('verification.resend');
+        post('/email-verification', fn() => $c('resendVerification'))->name('verification.resend')->middleware($throttle());
         get('/verify-email/{token}', fn(string $token) => $c('verify', [$token]))->name('verification.verify');
     }
 }

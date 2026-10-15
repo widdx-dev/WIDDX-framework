@@ -95,7 +95,7 @@ class Schedule
 
         $dir = dirname($stateFile);
         if (!is_dir($dir)) {
-            mkdir($dir, 0777, true);
+            mkdir($dir, 0775, true);
         }
         file_put_contents($stateFile, json_encode($state, JSON_PRETTY_PRINT));
         return $ran;

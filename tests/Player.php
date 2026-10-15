@@ -11,7 +11,7 @@ class Player extends Model
 {
     protected array $fillable = ['name', 'team_id'];
 
-    public function team()
+    public function team(): \Widdx\Relations\BelongsTo
     {
         return $this->belongsTo(Team::class);
     }

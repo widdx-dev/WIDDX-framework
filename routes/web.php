@@ -9,10 +9,14 @@ get('/', fn() => view('welcome'));
 
 // One line = full CRUD (index, create, store, show, edit, update, destroy)
 // with named routes: users.index, users.create, users.store, ...
-resource('users', UserController::class);
+// ->public() opens the group to guests; without it (and without a
+// App\Policies\UserPolicy) the fail-closed gate redirects/403s every call.
+resource('users', UserController::class)->public();
 
 // Middleware example — uncomment to try:
-// get('/admin', fn() => 'Admin panel')->middleware(App\Middleware\AuthMiddleware::class);
+// (\Widdx\AuthMiddleware guards for real: guests → 302 /login, JSON → 401.
+//  App\Middleware\AuthMiddleware simply extends it for project-specific rules.)
+// get('/admin', fn() => 'Admin panel')->middleware(\Widdx\AuthMiddleware::class);
 
 // CSRF protection example — uncomment to enable globally:
 // (leading \ is required: this file lives in the global namespace)

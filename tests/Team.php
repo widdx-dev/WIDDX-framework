@@ -11,12 +11,12 @@ class Team extends Model
 {
     protected array $fillable = ['name'];
 
-    public function players()
+    public function players(): \Widdx\Relations\HasMany
     {
         return $this->hasMany(Player::class);
     }
 
-    public function captain()
+    public function captain(): \Widdx\Relations\HasOne
     {
         return $this->hasOne(Player::class);
     }

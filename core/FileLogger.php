@@ -24,7 +24,7 @@ class FileLogger implements LoggerInterface
     {
         $this->path = $path ?? (dirname(__DIR__) . '/storage/logs');
         if (!is_dir($this->path)) {
-            mkdir($this->path, 0777, true);
+            mkdir($this->path, 0775, true);
         }
     }
 

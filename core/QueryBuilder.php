@@ -34,12 +34,22 @@ class QueryBuilder
     /** Whitelist of allowed SQL operators */
     protected array $allowedOperators = ['=', '!=', '<>', '<', '>', '<=', '>=', 'LIKE', 'NOT LIKE', 'IN', 'NOT IN', 'IS', 'IS NOT'];
 
-    public function __construct(string $table, ?string $modelClass = null, ?\PDO $pdo = null, string $driver = 'sqlite')
+    public function __construct(string $table, ?string $modelClass = null, ?\PDO $pdo = null, string $driver = '')
     {
         $this->table = $table;
         $this->modelClass = $modelClass;
+        // 2.7: when no pdo/driver is passed, both come from the real default
+        // connection. Deriving the driver here is what makes identifier quoting
+        // correct on mysql/pgsql — a Model built with `new QueryBuilder($t, __class__)`
+        // used to fall through to sqlite's ANSI quotes and break on MySQL.
+        if ($pdo === null && $driver === '') {
+            $conn = Database::connection();
+            $this->pdo = $conn->pdo();
+            $this->driver = strtolower($conn->driver());
+            return;
+        }
         $this->pdo = $pdo ?? Database::connection()->pdo();
-        $this->driver = strtolower($driver);
+        $this->driver = strtolower($driver !== '' ? $driver : 'sqlite');
     }
 
     // ---------- Fluent Build ----------

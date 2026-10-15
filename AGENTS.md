@@ -44,10 +44,10 @@ earlier steps. If you need more than a list of records, read PART 4 + PART 22.
 - Composer is optional. The autoloader works without it.
 - There is no npm. There is no build step. There is no config file to edit.
 - The idea of Widdx: you write almost nothing. The framework infers the rest from names.
-- One line `resource('posts')` = a full working CRUD website for posts.
+- One line `resource('posts')->public()` = a full working CRUD website for posts.
 - One line `authRoutes()` = register + login + logout + password reset + email verify.
 - One command `make:crud` = model + database table + routes, all at once.
-- Version: v0.2.x. All behavior below is tested (50 unit + 144 integration).
+- Version: v0.3.0. All behavior below is tested (77 unit + the integration suite).
 
 ---
 
@@ -113,7 +113,8 @@ Each item: "if you do X" → "Widdx does Y". Memorize these; they replace all co
 6. Model has `$rules` array → the create/edit form is BUILT from it automatically.
 7. Rule contains `string` → form shows a text input.
 8. Rule contains `text` → form shows a textarea.
-9. Rule contains `bool` → form shows a checkbox.
+9. Rule contains `bool` → form shows a checkbox (plus a hidden `0`, so unchecking
+   really saves false). Built-in list/detail pages render it as `✓ yes` / `✗ no`.
 10. Column name ends with `_id` and model `User` exists for `user_id` → form shows a dropdown filled from users. No code from you.
 11. Rule contains `file` or `image` → form shows a file input and the upload is saved.
 12. `$fillable = ['title']` → mass assignment allowed only for those columns.
@@ -126,6 +127,10 @@ Each item: "if you do X" → "Widdx does Y". Memorize these; they replace all co
 19. A route action returns an array → client gets JSON. No Response object needed.
 20. Forms POST `_method=PUT` or `_method=DELETE` → the real PUT/DELETE route runs.
 21. `APP_LOCALE=ar` (or he/fa/ur/ps/sd/ug/yi/ku/dv) → every built-in page renders `dir="rtl"`. Zero extra work.
+22. You write `resource('posts')` with NO `->public()` and no policy → the pages are LOCKED:
+    a guest is redirected to `/login`, a logged-in user gets 403. Deny is the default.
+23. You write `resource('posts')->public()` → the whole group is open to visitors. `make:crud`
+    and `authRoutes()` scaffolding already emit `->public()` for you; hand-written lines do not.
 
 ---
 
@@ -157,7 +162,8 @@ What `make:crud` produced:
 
 - `app/Models/Product.php` (with `$fillable` and `$rules` filled in)
 - `database/migrations/...create_products_table.php`
-- one line `resource('products');` added to `routes/web.php`
+- one line `resource('products')->public();` added to `routes/web.php`
+  (the `->public()` is what opens the pages; see PART 4 items 22-23)
 
 Field types you may use: `string text integer float bool date email url file image fk(Model)` and a `?` suffix means optional. Example:
 
@@ -178,6 +184,8 @@ php widdx make:crud Invoice amount:float company:fk(Company) note:text?
 - `patch`, `delete` — exist and work like put.
 - `->name('x.y')` — names a route. `route('x.y', ['id' => 2])` builds its URL.
 - `resource('x')` — the 7 CRUD routes (GET /x, GET /x/create, POST /x, GET /x/{id}, GET /x/{id}/edit, PUT /x/{id}, DELETE /x/{id}).
+- `->public()` on that group — opens all 7 to visitors. Without it (and without a policy) the pages are locked: guests → `/login`, users → 403.
+- `Router::group(['prefix' => 'admin', 'middleware' => […]], function () { … })` — prefix + middleware for the routes registered inside.
 - `apiResource('x')` — JSON CRUD under `/api/x` (no create/edit pages).
 - `authRoutes()` — the whole login system (see PART 10).
 
@@ -467,7 +475,7 @@ TRUSTED_PROXIES=
 ## PART 19 — CLI commands (what each one does)
 
 - `php widdx new folder` — create a project. `new:api` — JSON-flavored one.
-- `php widdx serve --port=8000` — dev server.
+- `php widdx serve --port=8000` — dev server. `--host=0.0.0.0` when it runs inside a container.
 - `php widdx migrate` / `migrate:rollback` — run/undo table changes.
 - `php widdx db:seed` / `db:wipe` — fill test data / drop tables.
 - `php widdx make:crud Name field:type…` — THE main tool (PART 5).
@@ -502,7 +510,7 @@ Notes:
 ## PART 21 — Pitfalls (each: the wrong thing, then the right thing)
 
 1. WRONG: `Auth::user()` inside a view. RIGHT: `auth()` inside a view. Always.
-2. WRONG: hand-writing a controller + 4 views for CRUD. RIGHT: `resource('x')`.
+2. WRONG: hand-writing a controller + 4 views for CRUD. RIGHT: `resource('x')->public()`.
 3. WRONG: expecting `create()` to save a field. RIGHT: put the field in `$fillable` first.
 4. WRONG: tightening `file/image` rules to reject path strings. RIGHT: leave them — re-validation on update needs this.
 5. WRONG: a policy with only `viewAny` and wondering why create is 403. RIGHT: define every ability you use; undefined = denied.
@@ -513,6 +521,8 @@ Notes:
 10. WRONG: enabling `CsrfMiddleware` without `<?= csrf_field() ?>` in every form. RIGHT: add the field first, or 419 everywhere.
 11. WRONG: trusting `X-Forwarded-For` implicitly. RIGHT: set `TRUSTED_PROXIES`; until then `Request::ip()` uses the real peer.
 12. WRONG: inventing new config files. RIGHT: `config()` only loads `config/*.php`; extend those or use `.env`.
+13. WRONG: writing `resource('x')` by hand and calling the 403/login-redirect a bug. RIGHT: it is fail-closed on purpose — add `->public()`, or a policy, or `protected bool $public = true` in your controller.
+14. WRONG: reading a wall of "could not find driver" as broken code. RIGHT: that PHP lacks the PDO driver; `php widdx-test` now refuses to start and names the extension to install.
 
 ---
 

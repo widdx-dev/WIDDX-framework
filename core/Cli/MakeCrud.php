@@ -33,7 +33,7 @@ class MakeCrud
     /** @var array<string,string> column type → validation rule */
     protected const TYPE_RULE = [
         'string' => 'required|string|max:255',
-        'text' => 'required|text|string',
+        'text' => 'required|string',
         'integer' => 'required|int',
         'int' => 'required|int',
         'float' => 'required|numeric',
@@ -71,6 +71,7 @@ class MakeCrud
         $columns = [];
         $fillable = [];
         $rulesLines = [];
+        $schemaLines = [];
         foreach ($fieldArgs as $f) {
             $optional = str_ends_with($f, '?');
             $f = $optional ? substr($f, 0, -1) : $f;
@@ -113,12 +114,13 @@ class MakeCrud
             $columns[] = "            {$col} {$sql}" . $suffix;
             $fillable[] = $col;
             $rulesLines[] = "        '{$col}' => '{$rule}',";
+            $schemaLines[] = '            ' . self::schemaCall($type, $col, $refTable) . ($optional ? '->nullable()' : '') . ';';
         }
 
         // ---- Model ----
         $modelDir = $base . '/app/Models';
         if (!is_dir($modelDir)) {
-            mkdir($modelDir, 0777, true);
+            mkdir($modelDir, 0775, true);
         }
         $fillableStr = "'" . implode("', '", $fillable) . "'";
         $rulesStr = implode("\n", $rulesLines);
@@ -133,28 +135,47 @@ class MakeCrud
         // ---- Migration ----
         $migDir = $base . '/database/migrations';
         if (!is_dir($migDir)) {
-            mkdir($migDir, 0777, true);
+            mkdir($migDir, 0775, true);
         }
-        $colSql = implode(",\n", $columns);
+        // 2.6: build the table through the portable Schema builder, so the
+        // generated migration works on sqlite AND mysql/pgsql (raw
+        // "INTEGER PRIMARY KEY AUTOINCREMENT" was sqlite-only).
+        $schemaBody = implode("\n", $schemaLines);
         $migStub = "<?php\n\ndeclare(strict_types=1);\n\nreturn new class {\n"
             . "    public function up(\\PDO \$pdo): void\n    {\n"
-            . "        \$pdo->exec(\"CREATE TABLE IF NOT EXISTS {$table} (\n"
-            . "            id INTEGER PRIMARY KEY AUTOINCREMENT,\n{$colSql},\n"
-            . "            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n"
-            . "            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n        )\");\n    }\n\n"
+            . "        \\Widdx\\Schema::create('{$table}', function (\\Widdx\\Blueprint \$t) {\n"
+            . "            \$t->id();\n{$schemaBody}\n            \$t->timestamps();\n"
+            . "        }, \$pdo);\n    }\n\n"
             . "    public function down(\\PDO \$pdo): void\n    {\n"
-            . "        \$pdo->exec(\"DROP TABLE IF EXISTS {$table}\");\n    }\n};\n";
+            . "        \\Widdx\\Schema::dropIfExists('{$table}', \$pdo);\n    }\n};\n";
         file_put_contents("{$migDir}/" . date('Y_m_d_His') . "_create_{$table}_table.php", $migStub);
 
         // ---- Route (append once) ----
+        // ->public() keeps the zero-code promise: without it the fail-closed
+        // gate (1.2) would 302/403 every visitor until a policy exists.
         $routesFile = $base . '/routes/web.php';
         $routes = is_file($routesFile) ? (string) file_get_contents($routesFile) : '';
         if (!str_contains($routes, "resource('{$table}')")) {
-            file_put_contents($routesFile, "\nresource('{$table}');\n", FILE_APPEND);
+            file_put_contents($routesFile, "\nresource('{$table}')->public();\n", FILE_APPEND);
         }
 
-        echo "Created: App\\Models\\{$model} + create_{$table}_table migration + resource('{$table}')\n";
+        echo "Created: App\\Models\\{$model} + create_{$table}_table migration + resource('{$table}')->public()\n";
         echo "Next:    php widdx migrate — then open /{$table}. Zero hand-written code.\n";
+    }
+
+    /** Map a make:crud field type to a Blueprint column call. */
+    protected static function schemaCall(string $type, string $col, ?string $refTable = null): string
+    {
+        $q = "'" . $col . "'";
+        return match ($type) {
+            'text' => "\$t->text({$q})",
+            'integer', 'int' => "\$t->integer({$q})",
+            'float', 'number' => "\$t->float({$q})",
+            'bool', 'boolean' => "\$t->boolean({$q})",
+            'date' => "\$t->date({$q})",
+            'fk' => "\$t->foreignId({$q})" . ($refTable !== null ? "->constrained('{$refTable}')" : ''),
+            default => "\$t->string({$q}, 255)",
+        };
     }
 
     protected static function studly(string $value): string

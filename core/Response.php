@@ -23,8 +23,11 @@ class Response
     public static function json(mixed $data, int $status = 200, array $headers = []): self
     {
         $headers['Content-Type'] = 'application/json; charset=utf-8';
+        // Pretty-print only in debug: production payloads stay compact.
+        $flags = JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+            | (App::getConfig('app.debug', false) ? JSON_PRETTY_PRINT : 0);
         try {
-            $content = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR);
+            $content = json_encode($data, $flags);
         } catch (\JsonException $e) {
             // Never send a silently-empty body — surface the encoding failure.
             $content = json_encode(['error' => 'JSON encoding failed: ' . $e->getMessage()]) ?: '[]';
@@ -67,6 +70,13 @@ class Response
     public function getContent(): mixed
     {
         return $this->content;
+    }
+
+    /** 2.4: drop the body (HEAD requests must send headers only). */
+    public function withoutBody(): self
+    {
+        $this->content = '';
+        return $this;
     }
 
     /** Set multiple headers at once */

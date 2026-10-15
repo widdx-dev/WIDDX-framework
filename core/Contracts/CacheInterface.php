@@ -30,7 +30,7 @@ interface CacheInterface
     public function pull(string $key, mixed $default = null): mixed;
 
     /** Increment a numeric value */
-    public function increment(string $key, int $value = 1): int|false;
+    public function increment(string $key, int $value = 1, int $ttlOnCreate = 0): int|false;
 
     /** Decrement a numeric value */
     public function decrement(string $key, int $value = 1): int|false;

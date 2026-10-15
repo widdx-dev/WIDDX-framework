@@ -11,7 +11,7 @@ class Role extends Model
 {
     protected array $fillable = ['name'];
 
-    public function permissions()
+    public function permissions(): \Widdx\Relations\BelongsToMany
     {
         return $this->belongsToMany(Permission::class);
     }

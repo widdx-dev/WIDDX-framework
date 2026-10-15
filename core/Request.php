@@ -18,6 +18,15 @@ class Request
     /** Route parameters extracted from {id} */
     public array $routeParams = [];
 
+    /** 2.10: matched route URI template (e.g. /users/{id}) for stable keys. */
+    public string $routePattern = '';
+
+    /** Raw request body (JSON / urlencoded PUT-PATCH-DELETE). Populated by capture(). */
+    public string $raw = '';
+
+    /** True when the body advertised JSON but could not be decoded (=> 400). */
+    public bool $malformedJson = false;
+
     /**
      * Proxies we trust enough to read X-Forwarded-For from them.
      * Never trust XFF from random clients — only from listed peers (or '*').
@@ -43,10 +52,96 @@ class Request
         $this->cookies = $cookies;
     }
 
-    /** Create request from superglobals */
+    /** Create request from superglobals, then fold the raw body into $post. */
     public static function capture(): self
     {
-        return new self($_GET, $_POST, $_SERVER, $_FILES, $_COOKIE);
+        $request = new self($_GET, $_POST, $_SERVER, $_FILES, $_COOKIE);
+        $request->parseRawBody();
+        return $request;
+    }
+
+    /**
+     * 2.3: PHP only fills $_POST for urlencoded/multipart POST. So JSON
+     * bodies and form bodies sent with PUT/PATCH/DELETE are read from
+     * php://input here and merged into $post, which makes input()/all()/
+     * validate()/create() work identically for JSON and form requests.
+     * Multipart PUT/PATCH/DELETE is not parsed (PHP cannot) — use _method
+     * spoofing on a POST form for file uploads on update.
+     */
+    public function parseRawBody(): void
+    {
+        $method = strtoupper((string) ($this->server['REQUEST_METHOD'] ?? ''));
+        $type = strtolower((string) ($this->server['CONTENT_TYPE'] ?? $this->server['HTTP_CONTENT_TYPE'] ?? ''));
+        $isJson = str_contains($type, 'application/json') || str_contains($type, '+json');
+        $isFormBody = in_array($method, ['PUT', 'PATCH', 'DELETE'], true)
+            && str_contains($type, 'application/x-www-form-urlencoded');
+        if (!$isJson && !$isFormBody) {
+            return;
+        }
+        // Guard against a huge body: refuse > 2 MiB before reading it all.
+        $len = (int) ($this->server['CONTENT_LENGTH'] ?? 0);
+        if ($len > 2 * 1024 * 1024) {
+            if ($isJson) {
+                $this->malformedJson = true;
+            }
+            return;
+        }
+        // capture() leaves $raw empty and reads the stream; tests may preset it.
+        if ($this->raw === '') {
+            $this->raw = (string) file_get_contents('php://input');
+        }
+        if ($this->raw === '') {
+            return;
+        }
+        if ($isJson) {
+            $decoded = json_decode($this->raw, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                $this->malformedJson = true;
+                return;
+            }
+            if (is_array($decoded)) {
+                $this->post = array_replace($this->post, $decoded);
+            }
+            return;
+        }
+        parse_str($this->raw, $parsed);
+        if (is_array($parsed) && $parsed !== []) {
+            $this->post = array_replace($this->post, $parsed);
+        }
+    }
+
+    /** Decoded JSON body (whole payload, or one key). */
+    public function json(?string $key = null, mixed $default = null): mixed
+    {
+        $data = json_decode($this->raw, true);
+        if (!is_array($data)) {
+            $data = [];
+        }
+        return $key === null ? $data : ($data[$key] ?? $default);
+    }
+
+    /** Read a request header by name (case/dash insensitive). */
+    public function header(string $name, mixed $default = null): mixed
+    {
+        $upper = strtoupper($name);
+        $key = 'HTTP_' . str_replace('-', '_', $upper);
+        $value = $this->server[$key] ?? null;
+        if ($value === null && in_array($upper, ['CONTENT_TYPE', 'CONTENT_LENGTH'], true)) {
+            $value = $this->server[$upper] ?? null;
+        }
+        return $value ?? $default;
+    }
+
+    /** Token from an "Authorization: Bearer x" header, or null. */
+    public function bearerToken(): ?string
+    {
+        $auth = (string) ($this->server['HTTP_AUTHORIZATION']
+            ?? $this->server['REDIRECT_HTTP_AUTHORIZATION']
+            ?? '');
+        if (stripos($auth, 'bearer ') === 0) {
+            return trim(substr($auth, 7));
+        }
+        return null;
     }
 
     /**
@@ -62,8 +157,7 @@ class Request
     {
         $peer = (string) ($this->server['REMOTE_ADDR'] ?? 'cli');
         $xff = $this->server['HTTP_X_FORWARDED_FOR'] ?? null;
-        $trusted = static::$trustedProxies
-            ?? array_values(array_filter((array) config('app.trusted_proxies', [])));
+        $trusted = static::trustedProxies();
         if ($trusted === [] || $xff === null || $xff === '') {
             if (!in_array('*', $trusted, true)) {
                 return $peer;
@@ -77,6 +171,27 @@ class Request
             return $peer;
         }
         return (string) end($hops);
+    }
+
+    /** Configured trusted proxy list (runtime override, else config). */
+    public static function trustedProxies(): array
+    {
+        return static::$trustedProxies
+            ?? array_values(array_filter((array) config('app.trusted_proxies', [])));
+    }
+
+    /**
+     * Is this direct peer one of the trusted proxies? Session::start() uses
+     * the same trust list as ip() when deciding on Secure cookies.
+     */
+    public static function isTrustedPeer(?string $peer = null): bool
+    {
+        $peer ??= (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+        if ($peer === '') {
+            return false;
+        }
+        $trusted = static::trustedProxies();
+        return in_array('*', $trusted, true) || in_array($peer, $trusted, true);
     }
 
     /** HTTP method with spoofing support via _method field */
@@ -102,6 +217,20 @@ class Request
             $path = rtrim($path, '/');
         }
         return $path === '' ? '/' : $path;
+    }
+
+    /**
+     * Does the caller want JSON back?
+     * Accept: …json…, Content-Type: application/json, or a /api path.
+     * Error rendering (419/401/403/422/500) keys off this.
+     */
+    public function expectsJson(): bool
+    {
+        $accept = strtolower((string) ($this->server['HTTP_ACCEPT'] ?? ''));
+        $type = strtolower((string) ($this->server['CONTENT_TYPE'] ?? ''));
+        return str_contains($accept, '/json')
+            || str_contains($type, '/json')
+            || str_starts_with($this->uri(), '/api');
     }
 
     /** All inputs (POST + GET + route params) */
@@ -245,7 +374,7 @@ class Request
                     [$ruleName, $ruleParam] = explode(':', $rule, 2);
                 }
 
-                $failure = $this->validateRule($field, $value, $ruleName, $ruleParam);
+                $failure = $this->validateRule($field, $value, $ruleName, $ruleParam, $ruleList);
                 if ($failure !== null) {
                     $errors[$field][] = $this->message($field, $ruleName, $failure, $messages);
                     break; // Stop at first error per field
@@ -289,7 +418,7 @@ class Request
      * Validate a single rule.
      * @return null when valid, otherwise ['langKey' => ?, 'replace' => ?]
      */
-    protected function validateRule(string $field, mixed $value, string $rule, ?string $param): ?array
+    protected function validateRule(string $field, mixed $value, string $rule, ?string $param, array $ruleList = []): ?array
     {
         switch ($rule) {
             case 'string':
@@ -328,14 +457,14 @@ class Request
                 if (is_string($value) && $value !== '') {
                     return null;
                 }
-                if ($value instanceof UploadedFile && $value->isValid() && in_array($value->extension(), $exts, true)) {
+                if ($value instanceof UploadedFile && $value->isValid() && in_array($value->safeExtension(), $exts, true)) {
                     return null;
                 }
                 return ['replace' => ['values' => implode(', ', $exts)]];
             case 'min':
-                return $this->validateMin($value, $param);
+                return $this->validateMin($value, $param, $ruleList);
             case 'max':
-                return $this->validateMax($value, $param);
+                return $this->validateMax($value, $param, $ruleList);
             case 'in':
                 $values = explode(',', (string) $param);
                 return in_array((string) $value, $values, true) ? null : ['replace' => ['values' => implode(', ', $values)]];
@@ -359,17 +488,78 @@ class Request
                     $query->where('id', '!=', (int) $ignoreId);
                 }
                 return $query->exists() ? [] : null;
+            case 'nullable':
+                return null; // explicit no-op: empty values are skipped earlier
+            case 'date':
+                if ($value instanceof \DateTimeInterface) {
+                    return null;
+                }
+                return is_string($value) && $value !== '' && strtotime($value) !== false ? null : [];
+            case 'alpha':
+                return is_string($value) && preg_match('/\A[\p{L}\s]+\z/u', $value) === 1 ? null : [];
+            case 'alpha_num':
+                return is_string($value) && preg_match('/\A[\p{L}\p{N}]+\z/u', $value) === 1 ? null : [];
+            case 'digits':
+                return is_scalar($value) && preg_match('/\A[0-9]{' . (int) $param . '}\z/', (string) $value) === 1
+                    ? null : ['replace' => ['digits' => (int) $param]];
+            case 'json':
+                if (!is_string($value) || $value === '') {
+                    return [];
+                }
+                json_decode($value);
+                return json_last_error() === JSON_ERROR_NONE ? null : [];
+            case 'regex':
+                if (!is_string($value) || $param === null || $param === '') {
+                    return [];
+                }
+                return @preg_match($param, $value) === 1 ? null : [];
+            case 'starts_with':
+                return is_string($value) && $param !== null && str_starts_with($value, $param)
+                    ? null : ['replace' => ['values' => (string) $param]];
+            case 'ends_with':
+                return is_string($value) && $param !== null && str_ends_with($value, $param)
+                    ? null : ['replace' => ['values' => (string) $param]];
+            case 'size':
+                $n = (float) $param;
+                if ($value instanceof UploadedFile) {
+                    return $value->sizeKb() == $n ? null : ['replace' => ['size' => $n]];
+                }
+                if (is_numeric($value)) {
+                    return (float) $value == $n ? null : ['replace' => ['size' => $n]];
+                }
+                if (is_array($value)) {
+                    return count($value) == (int) $n ? null : ['replace' => ['size' => $n]];
+                }
+                if (is_string($value)) {
+                    return mb_strlen($value) == (int) $n ? null : ['replace' => ['size' => $n]];
+                }
+                return [];
+            case 'between':
+                [$bLo, $bHi] = array_pad(explode(',', (string) $param), 2, null);
+                if (!is_numeric($value) || $bLo === null || $bHi === null) {
+                    return [];
+                }
+                $bf = (float) $value;
+                return ($bf >= (float) $bLo && $bf <= (float) $bHi)
+                    ? null : ['replace' => ['min' => (float) $bLo, 'max' => (float) $bHi]];
             default:
-                return null; // Unknown rules pass silently
+                // A typo'd rule name ('emial') must fail LOUD, not silently pass.
+                throw new Exceptions\WiddxException('Unknown validation rule [' . $rule . '] on field [' . $field . '].');
         }
     }
 
     /** Validate a min: rule across value types. */
-    protected function validateMin(mixed $value, ?string $param): ?array
+    protected function validateMin(mixed $value, ?string $param, array $rules = []): ?array
     {
         $min = (int) $param;
         if ($value instanceof UploadedFile && $value->sizeKb() < $min) {
             return ['langKey' => 'min.file', 'replace' => ['min' => $min]];
+        }
+        // 2.1: a numerically-typed field compares as a NUMBER even when the
+        // value arrives as a string, so '25' with int|min:18 passes instead of
+        // failing on strlen('25') === 2.
+        if ($rules !== [] && array_intersect($rules, ['int', 'integer', 'numeric', 'float', 'double']) !== [] && is_numeric($value)) {
+            return (float) $value < $min ? ['langKey' => 'min.numeric', 'replace' => ['min' => $min]] : null;
         }
         if (is_string($value) && mb_strlen($value) < $min) {
             return ['langKey' => 'min.string', 'replace' => ['min' => $min]];
@@ -384,11 +574,14 @@ class Request
     }
 
     /** Validate a max: rule across value types. */
-    protected function validateMax(mixed $value, ?string $param): ?array
+    protected function validateMax(mixed $value, ?string $param, array $rules = []): ?array
     {
         $max = (int) $param;
         if ($value instanceof UploadedFile && $value->sizeKb() > $max) {
             return ['langKey' => 'max.file', 'replace' => ['max' => $max]];
+        }
+        if ($rules !== [] && array_intersect($rules, ['int', 'integer', 'numeric', 'float', 'double']) !== [] && is_numeric($value)) {
+            return (float) $value > $max ? ['langKey' => 'max.numeric', 'replace' => ['max' => $max]] : null;
         }
         if (is_string($value) && mb_strlen($value) > $max) {
             return ['langKey' => 'max.string', 'replace' => ['max' => $max]];
@@ -426,9 +619,12 @@ class Request
     public function validateCsrf(): bool
     {
         Session::start();
-        $token = (string) ($this->input('csrf_token')
+        $raw = $this->input('csrf_token')
             ?? $this->server['HTTP_X_CSRF_TOKEN']
-            ?? '');
+            ?? '';
+        // csrf_token[]=x arrives as an ARRAY: casting it to string would
+        // emit a PHP notice — treat any non-string as simply invalid.
+        $token = is_string($raw) ? $raw : '';
         $stored = (string) (Session::get('_csrf_token') ?? '');
         // An empty token on either side must never validate (prevents bypass
         // when hash_equals('', '') would otherwise return true).

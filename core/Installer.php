@@ -17,10 +17,47 @@ namespace Widdx;
  *   - It REFUSES to overwrite an existing .env (attacker cannot
  *     re-point the app's database); the UI only offers "lock only".
  *   - The DB connection is TESTED before anything is written.
+ *   - Proof of possession: storage/app/install.key must be typed back
+ *     into the form — only someone with FTP/SSH access can read it.
+ *   - POSTs carry a session CSRF token; .env is written 0600.
  */
 class Installer
 {
     public const LOCK = '/storage/app/installed.lock';
+    public const KEY = '/storage/app/install.key';
+
+    /**
+     * Get — or create — the one-time install key (32 hex chars).
+     * The form asks the installer to READ this file over FTP/SSH and paste
+     * its content: anonymous web callers cannot, so the installer page
+     * never leaks the key itself.
+     */
+    public static function installKey(string $base): string
+    {
+        $file = $base . self::KEY;
+        if (is_file($file)) {
+            $key = trim((string) file_get_contents($file));
+            if ($key !== '') {
+                return $key;
+            }
+        }
+        $dir = dirname($file);
+        if (!is_dir($dir)) {
+            mkdir($dir, 0775, true);
+        }
+        $key = bin2hex(random_bytes(16));
+        file_put_contents($file, $key . "\n");
+        @chmod($file, 0600);
+        return $key;
+    }
+
+    /** Constant-time proof-of-possession check of the typed-in key. */
+    public static function keyMatches(string $base, mixed $given): bool
+    {
+        return is_string($given)
+            && $given !== ''
+            && hash_equals(static::installKey($base), trim($given));
+    }
 
     /** Installed (locked) already? */
     public static function installed(string $base): bool
@@ -105,7 +142,7 @@ class Installer
                     }
                     $dir = dirname($db);
                     if (!is_dir($dir)) {
-                        @mkdir($dir, 0777, true);
+                        @mkdir($dir, 0775, true);
                     }
                     if (!is_writable($dir)) {
                         return "directory of the database file is not writable: {$dir}";
@@ -153,8 +190,13 @@ class Installer
             if ($value === '') {
                 return;
             }
+            // A CR/LF inside a value would append attacker-chosen KEY=VALUE
+            // lines to .env — refuse the whole install instead.
+            if (preg_match('/[\r\n]/', $value) === 1) {
+                throw new \RuntimeException("REFUSED: the value of {$key} contains a line break.");
+            }
             if (preg_match('/[\s="]/', $value)) {
-                $value = '"' . str_replace(['\\', '"'], ['\\\\', '\"'], $value) . '"';
+                $value = '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], $value) . '"';
             }
             $lines[] = "{$key}={$value}";
         };
@@ -179,7 +221,10 @@ class Installer
 
     public static function writeEnv(string $base, array $v): void
     {
+        // 0600: the file will hold DB credentials — unreadable by other
+        // accounts on shared hosting, writable only by us.
         file_put_contents($base . '/.env', static::buildEnv($v));
+        @chmod($base . '/.env', 0600);
     }
 
     /**
@@ -200,8 +245,10 @@ class Installer
     {
         $dir = dirname($base . self::LOCK);
         if (!is_dir($dir)) {
-            mkdir($dir, 0777, true);
+            mkdir($dir, 0775, true);
         }
         file_put_contents($base . self::LOCK, 'installed ' . date('c') . "\n");
+        // The install key has served its purpose — remove it.
+        @unlink($base . self::KEY);
     }
 }

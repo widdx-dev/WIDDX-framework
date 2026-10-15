@@ -15,6 +15,39 @@ namespace Widdx;
  */
 class UploadedFile
 {
+    /** @var array<string,string> detected mime → canonical extension (the ONLY one store() trusts). */
+    protected const EXT_BY_MIME = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/gif' => 'gif',
+        'image/webp' => 'webp',
+        'image/bmp' => 'bmp',
+        'image/tiff' => 'tiff',
+        'application/pdf' => 'pdf',
+        'text/plain' => 'txt',
+        'text/csv' => 'csv',
+        'application/zip' => 'zip',
+        'application/x-bzip2' => 'bz2',
+        'application/x-gzip' => 'gz',
+        'application/x-7z-compressed' => '7z',
+        'application/msword' => 'doc',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation' => 'pptx',
+        'audio/mpeg' => 'mp3',
+        'audio/ogg' => 'ogg',
+        'video/mp4' => 'mp4',
+        'video/mpeg' => 'mpeg',
+        'video/webm' => 'webm',
+    ];
+
+    /** @var string[] extensions that must NEVER reach the disk, whatever the client claims. */
+    protected const FORBIDDEN_EXT = [
+        'php', 'phtml', 'php3', 'php4', 'php5', 'php6', 'php7', 'php8', 'phar', 'pht',
+        'cgi', 'pl', 'pm', 'py', 'sh', 'bash', 'exe', 'com', 'bat', 'cmd',
+        'htaccess', 'htpasswd', 'jsp', 'asp', 'aspx',
+    ];
+
     public function __construct(
         protected string $tmpPath,
         protected string $originalName,
@@ -106,6 +139,23 @@ class UploadedFile
         return strtolower((string) pathinfo($this->originalName, PATHINFO_EXTENSION));
     }
 
+    /**
+     * Extension DERIVED from the real detected content — never from the
+     * client-supplied filename. Unknown types collapse to 'bin'/'txt',
+     * and executable extensions are hard-denied in every case.
+     */
+    public function safeExtension(): string
+    {
+        $mime = $this->mimeType();
+        if (isset(self::EXT_BY_MIME[$mime])) {
+            return self::EXT_BY_MIME[$mime];
+        }
+        if (str_starts_with($mime, 'text/')) {
+            return 'txt';
+        }
+        return 'bin';
+    }
+
     /** Detected mime (real content, not the browser-sent claim). */
     public function mimeType(): string
     {
@@ -138,7 +188,7 @@ class UploadedFile
         }
         $dir = dirname($destination);
         if (!is_dir($dir)) {
-            mkdir($dir, 0777, true);
+            mkdir($dir, 0775, true);
         }
         if (is_uploaded_file($this->tmpPath)) {
             return move_uploaded_file($this->tmpPath, $destination);
@@ -159,9 +209,15 @@ class UploadedFile
         if (!method_exists($disk, 'root')) {
             throw new Exceptions\WiddxException('The active storage disk does not support file uploads.');
         }
-        $safe = preg_replace('/[^A-Za-z0-9._-]/', '_', $this->originalName) ?: 'file';
-        $name = date('Ymd') . '_' . bin2hex(random_bytes(3)) . '_' . $safe;
-        $relative = trim($directory, '/') . '/' . $name;
+        $ext = $this->safeExtension();
+        if (in_array($ext, self::FORBIDDEN_EXT, true)) {
+            $ext = 'bin'; // belt & braces — safeExtension never returns these
+        }
+        $sanitized = preg_replace('/[^A-Za-z0-9._-]/', '_', $this->originalName) ?: 'file';
+        $stem = strtolower((string) pathinfo($sanitized, PATHINFO_FILENAME));
+        $stem = substr((string) preg_replace('/[^a-z0-9]+/', '-', $stem), 0, 40);
+        $name = date('Ymd') . '_' . bin2hex(random_bytes(4)) . ($stem !== '' && $stem !== '-' ? rtrim($stem, '-') : '') . '.' . $ext;
+        $relative = ($directory === '' ? '' : trim($directory, '/') . '/') . $name;
 
         $target = $disk->root() . '/' . $relative;
         if (!$this->move($target)) {

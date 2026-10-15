@@ -26,8 +26,10 @@ abstract class Model implements \JsonSerializable
     protected string $primaryKey = 'id';
 
     /**
-     * Fields allowed for mass assignment. Empty = allow all (except primary key).
-     * Example: protected array $fillable = ['name', 'email'];
+     * Fields allowed for mass assignment. DENY BY DEFAULT:
+     *   []      → nothing may be mass-assigned (create()/fill() ignore input)
+     *   ['*']   → explicit allow-all opt-out (primary key is STILL never assignable)
+     *   ['a']   → only listed columns
      */
     protected array $fillable = [];
 
@@ -119,6 +121,13 @@ abstract class Model implements \JsonSerializable
 
     // ---------- Magic Field Access ----------
 
+    /**
+     * Explicitly whitelisted lazy-relation method names (property syntax).
+     * Methods not listed here are callable via $model->name ONLY when their
+     * declared return type is a Widdx\Relations\Relation subclass.
+     */
+    protected array $relationMethods = [];
+
     public function __get(string $name): mixed
     {
         if (array_key_exists($name, $this->attributes)) {
@@ -128,13 +137,34 @@ abstract class Model implements \JsonSerializable
             return $this->relations[$name];
         }
         // Magic relation access: $user->posts — lazy unless already eager-loaded.
-        if (method_exists($this, $name)) {
+        // Guarded: property reads must NEVER execute arbitrary methods (delete,
+        // save, columns… were all reachable through this door before).
+        if ($this->isRelationMethod($name)) {
             $result = $this->{$name}();
             if ($result instanceof Relations\Relation) {
                 return $this->relations[$name] = $result->getResults();
             }
         }
         return null;
+    }
+
+    /** May $name be invoked by a property read? See $relationMethods docs. */
+    protected function isRelationMethod(string $name): bool
+    {
+        if (!method_exists($this, $name)) {
+            return false;
+        }
+        if (in_array($name, $this->relationMethods, true)) {
+            return true;
+        }
+        $ref = new \ReflectionMethod($this, $name);
+        // Framework-declared methods are data operations, never relations.
+        if ($ref->getDeclaringClass()->getName() === self::class) {
+            return false;
+        }
+        $type = $ref->getReturnType();
+        return $type instanceof \ReflectionNamedType
+            && is_a((string) $type->getName(), Relations\Relation::class, true);
     }
 
     public function __set(string $name, mixed $value): void
@@ -165,19 +195,28 @@ abstract class Model implements \JsonSerializable
         return $this;
     }
 
-    /** Mass assignment respecting $fillable */
+    /** Mass assignment — deny by default. Empty $fillable accepts NOTHING;
+     *  $fillable = ['*'] is the explicit allow-all opt-out. The primary key
+     *  is never mass-assignable (create or update, either mode). */
     public function fill(array $data): self
     {
+        $all = $this->fillable === ['*'];
         foreach ($data as $key => $value) {
-            if ($key === $this->primaryKey && $this->exists) {
+            if ($key === $this->primaryKey) {
                 continue;
             }
-            if (!empty($this->fillable) && !in_array($key, $this->fillable, true)) {
+            if (!$all && !in_array($key, $this->fillable, true)) {
                 continue;
             }
             $this->attributes[$key] = $value;
         }
         return $this;
+    }
+
+    /** Read-only view of the allow-list (used by zero-code CRUD internals). */
+    public function getFillable(): array
+    {
+        return $this->fillable;
     }
 
     // ---------- Validation ----------
@@ -246,6 +285,13 @@ abstract class Model implements \JsonSerializable
         $model = new static();
         $data = $model->validate($data);
         $model->fill($data);
+        if ($data !== [] && $model->attributes === []) {
+            throw new Exceptions\ModelException(
+                'Mass assignment blocked for ' . static::class . ': $fillable is empty, '
+                . 'so no input column was accepted. List columns in protected array $fillable '
+                . "(e.g. ['title']) or opt in fully with \$fillable = ['*']."
+            );
+        }
         $model->save();
         return $model;
     }

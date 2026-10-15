@@ -28,6 +28,10 @@ class CsrfMiddleware
         }
 
         if (!$request->validateCsrf()) {
+            // Token clients (fetch/XHR, /api paths) get machine-readable 419.
+            if ($request->expectsJson()) {
+                return Response::json(['error' => 'CSRF token mismatch.'], 419);
+            }
             throw new Exceptions\HttpException('CSRF token mismatch. Please refresh the page and try again.', 419);
         }
 

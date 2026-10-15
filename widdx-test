@@ -30,6 +30,58 @@ if (is_file($autoload)) {
     require __DIR__ . '/core/helpers.php';
 }
 
+// 2.7: honour the environment so the suite can run against sqlite/mysql/pgsql
+// (CI matrix + local: DB_CONNECTION=pgsql php widdx-test). loadEnv never
+// overrides real env vars, so with no .env this is a config-only boot.
+\Widdx\App::basePath(WIDDX_BASE_PATH);
+\Widdx\App::loadEnv(WIDDX_BASE_PATH);
+\Widdx\App::loadConfig(WIDDX_BASE_PATH . '/config');
+
+// A missing PDO extension is an ENVIRONMENT failure, not a code failure. Without
+// this it surfaces as a dozen "could not find driver" tests that look like bugs.
+$driver = (string) config('database.default', 'sqlite');
+$wantedExt = ['sqlite' => 'pdo_sqlite', 'mysql' => 'pdo_mysql', 'pgsql' => 'pdo_pgsql', 'sqlsrv' => 'pdo_sqlsrv', 'oci' => 'pdo_oci'][$driver] ?? null;
+if ($wantedExt !== null && !extension_loaded($wantedExt)) {
+    fwrite(STDERR, <<<TXT
+        Widdx test suite cannot run: PHP driver '{$wantedExt}' is not installed.
+          DB_CONNECTION={$driver} needs it. Fix (pick one):
+            apt install php-sqlite3            (Debian/Ubuntu, SQLite)
+            docker run a php image that has it (e.g. php:8.3-cli)
+          Then re-run: php widdx-test
+
+        TXT);
+    exit(2);
+}
+
+// 2.7: the networked drivers outlive a single run — wipe the schema so
+// leftover tables/rows (unique indexes, stale jobs) cannot poison a rerun.
+function widdx_reset_networked_db(): void
+{
+    $drv = (string) (getenv('DB_CONNECTION') ?: 'sqlite');
+    if (!in_array($drv, ['mysql', 'pgsql'], true)) {
+        return;
+    }
+    $host = (string) (getenv('DB_HOST') ?: '127.0.0.1');
+    $port = (int) (getenv('DB_PORT') ?: ($drv === 'mysql' ? 3306 : 5432));
+    $user = (string) (getenv('DB_USERNAME') ?: ($drv === 'mysql' ? 'root' : 'postgres'));
+    $pass = (string) (getenv('DB_PASSWORD') ?: ($drv === 'mysql' ? 'widdxpass' : ''));
+    $name = (string) (getenv('DB_DATABASE') ?: 'widdx');
+    if ($drv === 'mysql') {
+        $pdo = new PDO("mysql:host={$host};port={$port}", $user, $pass, [PDO::ATTR_TIMEOUT => 5]);
+        $pdo->exec("DROP DATABASE IF EXISTS {$name}");
+        $pdo->exec("CREATE DATABASE {$name} CHARACTER SET utf8mb4");
+        return;
+    }
+    // pgsql: connect to the TARGET database, not 'postgres', or the wipe
+    // drops the wrong schema and stale rows survive a rerun.
+    $pdo = new PDO("pgsql:host={$host};port={$port};dbname={$name}", $user, $pass, [PDO::ATTR_TIMEOUT => 5]);
+    $pdo->exec("DROP SCHEMA IF EXISTS public CASCADE");
+    $pdo->exec("CREATE SCHEMA public");
+    $pdo->exec("GRANT ALL ON SCHEMA public TO {$user}");
+}
+
+widdx_reset_networked_db();
+
 // Simple test runner
 $tests = [];
 $passed = 0;
@@ -179,7 +231,9 @@ test('QueryBuilder generates correct SQL', function () {
 test('View renders template', function () {
     \Widdx\View::setBasePath(__DIR__ . '/views');
     $html = \Widdx\View::make('welcome');
-    assert_true(str_contains($html, 'Widdx'));
+    // Assert the structure, not the text: 'welcome' prints config('app.name'),
+    // which is "Widdx" in the framework repo and the project name in a scaffold.
+    assert_true(str_contains($html, '<!DOCTYPE html>') && str_contains($html, '</html>'), 'rendered output is not a document');
 });
 
 // Response tests
@@ -323,6 +377,24 @@ test('Installer: buildEnv + lock + requirements + testConnection', function () {
     assert_true(str_contains($env, 'DB_PASSWORD="a b=c"'), 'space/= must be quoted');
     assert_true(str_contains($env, 'APP_DEBUG=true'));
 
+    // 1.10: CR/LF in a value would append rogue lines to .env — refuse hard.
+    // (must be the server branch, since sqlite only writes DB_DATABASE)
+    $threw = false;
+    try {
+        \Widdx\Installer::buildEnv(['DB_CONNECTION' => 'mysql', 'DB_HOST' => "evil.example.com\nAPP_DEBUG=true"]);
+    } catch (\RuntimeException $e) {
+        $threw = str_contains($e->getMessage(), 'REFUSED');
+    }
+    assert_true($threw, 'newline in a value must throw, never write');
+
+    // 1.10: install key lifecycle — created once, 32 hex, proof-of-possession.
+    $key = \Widdx\Installer::installKey($base);
+    assert_true((bool) preg_match('/^[0-9a-f]{32}$/', $key), 'key shape');
+    assert_equals($key, \Widdx\Installer::installKey($base), 'stable across calls');
+    assert_equals(false, \Widdx\Installer::keyMatches($base, 'guess-guess-guess-guess-guess-1234'));
+    assert_equals(false, \Widdx\Installer::keyMatches($base, ['array', 'input']));
+    assert_true(\Widdx\Installer::keyMatches($base, $key), 'typed key matches');
+
     // sqlite connection test creates the file relative to base
     $err = \Widdx\Installer::testConnection($base, ['DB_CONNECTION' => 'sqlite', 'DB_DATABASE' => './t.sqlite']);
     assert_equals(null, $err, 'sqlite testConnection: ' . (string) $err);
@@ -385,6 +457,137 @@ test('validate() confirmed rule + custom messages', function () {
     }
 });
 
+test('2.1 numeric-string min/max compares as number, not length', function () {
+    \Widdx\App::basePath(WIDDX_BASE_PATH);
+    // '25' with int|min:18 must PASS (used to fail on strlen('25') === 2).
+    $ok = (new \Widdx\Request([], ['age' => '25'], ['REQUEST_METHOD' => 'POST']))->validate(['age' => 'required|int|min:18']);
+    assert_equals('25', $ok['age']);
+    // '5' with int|min:18 must fail as min.numeric ("at least 18"), not min.string.
+    $msg = 'NO-FAIL';
+    try { (new \Widdx\Request([], ['age' => '5'], ['REQUEST_METHOD' => 'POST']))->validate(['age' => 'required|int|min:18']); }
+    catch (\Widdx\Exceptions\ValidationException $e) { $msg = $e->errors['age'][0]; }
+    assert_true(str_contains($msg, 'at least 18'), 'numeric min message: ' . $msg);
+    // max with a numeric string fails on VALUE, not length.
+    $msg2 = 'NO-FAIL';
+    try { (new \Widdx\Request([], ['n' => '2000'], ['REQUEST_METHOD' => 'POST']))->validate(['n' => 'required|numeric|max:1000']); }
+    catch (\Widdx\Exceptions\ValidationException $e) { $msg2 = $e->errors['n'][0]; }
+    assert_true(str_contains($msg2, 'exceed 1000'), 'numeric max message: ' . $msg2);
+    // a plain string keeps length-based min.
+    $msg3 = 'NO-FAIL';
+    try { (new \Widdx\Request([], ['code' => 'AB'], ['REQUEST_METHOD' => 'POST']))->validate(['code' => 'required|string|min:3']); }
+    catch (\Widdx\Exceptions\ValidationException $e) { $msg3 = $e->errors['code'][0]; }
+    assert_true(str_contains($msg3, 'at least 3 characters'), 'string min stays length-based: ' . $msg3);
+});
+
+test('2.2 unknown rule throws WiddxException; new rules validate', function () {
+    \Widdx\App::basePath(WIDDX_BASE_PATH);
+    // typo 'emial' must throw WiddxException instead of silently passing.
+    $threw = false;
+    try { (new \Widdx\Request([], ['x' => 'a@b.com'], ['REQUEST_METHOD' => 'POST']))->validate(['x' => 'required|emial']); }
+    catch (\Widdx\Exceptions\WiddxException $e) { $threw = str_contains($e->getMessage(), 'Unknown validation rule [emial]'); }
+    assert_true($threw, 'unknown rule must throw, not pass silently');
+
+    $req = fn(array $d) => new \Widdx\Request([], $d, ['REQUEST_METHOD' => 'POST']);
+    $fails = function (\Widdx\Request $r, array $rules): bool {
+        try { $r->validate($rules); return false; } catch (\Widdx\Exceptions\ValidationException $e) { return true; }
+    };
+    // nullable is a recognized no-op; empty passes without throwing.
+    $req(['nickname' => ''])->validate(['nickname' => 'nullable|alpha']);
+    // date
+    $req(['d' => '2024-01-31'])->validate(['d' => 'required|date']);
+    assert_true($fails($req(['d' => 'so-not-a-date']), ['d' => 'required|date']), 'bad date must fail');
+    // alpha / alpha_num
+    $req(['a' => 'Hello World'])->validate(['a' => 'required|alpha']);
+    assert_true($fails($req(['a' => 'Hello1']), ['a' => 'required|alpha']), 'alpha rejects digits');
+    $req(['a' => 'Room214'])->validate(['a' => 'required|alpha_num']);
+    assert_true($fails($req(['a' => 'Room 214']), ['a' => 'required|alpha_num']), 'alpha_num rejects spaces');
+    // digits:5
+    $req(['z' => '12345'])->validate(['z' => 'required|digits:5']);
+    assert_true($fails($req(['z' => '1234']), ['z' => 'required|digits:5']), 'digits:5 rejects 4');
+    // json
+    $req(['j' => '{"a":1}'])->validate(['j' => 'required|json']);
+    assert_true($fails($req(['j' => '{oops']), ['j' => 'required|json']), 'bad json fails');
+    // starts_with / ends_with
+    $req(['s' => 'Widdx rules'])->validate(['s' => 'required|starts_with:Widdx|ends_with:rules']);
+    // size (exact string length)
+    $req(['t' => 'abcde'])->validate(['t' => 'required|size:5']);
+    assert_true($fails($req(['t' => 'abcd']), ['t' => 'required|size:5']), 'size:5 rejects 4');
+    // between (numeric range)
+    $req(['n' => '5'])->validate(['n' => 'required|numeric|between:1,10']);
+    assert_true($fails($req(['n' => '50']), ['n' => 'required|numeric|between:1,10']), 'between rejects 50');
+    // regex
+    $req(['r' => 'AB-123'])->validate(['r' => 'required|regex:/^[A-Z]{2}-\d{3}$/']);
+    assert_true($fails($req(['r' => 'abc']), ['r' => 'required|regex:/^[A-Z]{2}-\d{3}$/']), 'regex rejects lowercase');
+    // boolean alias already worked
+    $req(['b' => '1'])->validate(['b' => 'required|boolean']);
+});
+
+test('2.3 Request parses JSON/urlencoded bodies; json()/header()/bearerToken()', function () {
+    \Widdx\App::basePath(WIDDX_BASE_PATH);
+    // JSON body merged into input()/all()/validate().
+    $r = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'POST', 'CONTENT_TYPE' => 'application/json']);
+    $r->raw = '{"name":"Ada","age":30,"tags":["x","y"]}';
+    $r->parseRawBody();
+    assert_equals('Ada', $r->input('name'));
+    assert_equals(30, $r->json('age'));
+    assert_equals(['name' => 'Ada'], $r->validate(['name' => 'required|string']));
+    // urlencoded PUT body (PHP would NOT fill $_POST for PUT).
+    $p = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'PUT', 'CONTENT_TYPE' => 'application/x-www-form-urlencoded']);
+    $p->raw = 'title=Hello+World&status=on';
+    $p->parseRawBody();
+    assert_equals('Hello World', $p->input('title'));
+    // malformed JSON is flagged, never silently treated as empty.
+    $b = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'POST', 'CONTENT_TYPE' => 'application/json']);
+    $b->raw = '{not valid json';
+    $b->parseRawBody();
+    assert_true($b->malformedJson, 'bad json must set malformedJson');
+    // bearer + header accessors.
+    $h = new \Widdx\Request([], [], ['HTTP_AUTHORIZATION' => 'Bearer tok-123', 'HTTP_X_CUSTOM' => 'cv']);
+    assert_equals('tok-123', $h->bearerToken());
+    assert_equals('Bearer tok-123', $h->header('Authorization'));
+    assert_equals('cv', $h->header('X-Custom'));
+    assert_equals(null, $h->header('X-Missing'));
+    assert_equals(null, (new \Widdx\Request())->bearerToken());
+});
+
+test('2.4 Route is its own PSR-4 file (core/Route.php)', function () {
+    assert_true(is_file(WIDDX_BASE_PATH . '/core/Route.php'), 'core/Route.php must exist');
+    $rc = new \ReflectionClass(\Widdx\Route::class);
+    assert_true(str_ends_with($rc->getFileName(), 'core' . DIRECTORY_SEPARATOR . 'Route.php'), 'Route defined in ' . $rc->getFileName());
+});
+
+test('2.4 HEAD matches GET but sends no body; OPTIONS gives 204 + Allow', function () {
+    $router = \Widdx\Router::getInstance();
+    $router->add(['GET'], '/it24-h', fn () => 'BODYTEXT');
+    $router->add(['GET', 'POST'], '/it24-o', fn () => 'X');
+    $head = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'HEAD', 'REQUEST_URI' => '/it24-h']);
+    $resp = $router->dispatch($head);
+    assert_equals(200, $resp->getStatus());
+    assert_equals('', (string) $resp->getContent(), 'HEAD must send no body');
+    $opt = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'OPTIONS', 'REQUEST_URI' => '/it24-o']);
+    $resp2 = $router->dispatch($opt);
+    assert_equals(204, $resp2->getStatus());
+    $allow = $resp2->getHeaders()['Allow'] ?? '';
+    assert_true(str_contains($allow, 'GET') && str_contains($allow, 'POST') && str_contains($allow, 'OPTIONS'), 'Allow=' . $allow);
+});
+
+test('2.4 Router::url throws when a required {param} is missing', function () {
+    $router = \Widdx\Router::getInstance();
+    $router->add(['GET'], '/it24-show/{id}', fn () => 'x')->name('it24.show');
+    assert_equals('/it24-show/7', $router->url('it24.show', ['id' => 7]));
+    $threw = false;
+    try { $router->url('it24.show'); }
+    catch (\Widdx\Exceptions\WiddxException $e) { $threw = str_contains($e->getMessage(), 'unfilled'); }
+    assert_true($threw, 'missing param must throw, never emit {id}');
+});
+
+test('2.4 CorsMiddleware is inert by default (no allowed_origins)', function () {
+    $mw = new \Widdx\CorsMiddleware();
+    $req = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'GET', 'HTTP_ORIGIN' => 'https://evil.test']);
+    $resp = $mw->handle($req, fn () => \Widdx\Response::make('ok'));
+    assert_true(!array_key_exists('Access-Control-Allow-Origin', $resp->getHeaders()), 'must not grant CORS by default');
+});
+
 test('validate() empty array fails required', function () {
     $request = new \Widdx\Request([], ['tags' => []], ['REQUEST_METHOD' => 'POST']);
     try {
@@ -443,10 +646,103 @@ test('empty ApiCrudController subclass infers its model', function () {
     assert_equals(\App\Models\User::class, $m->invoke($ctrl));
 });
 
+test('1.11 numeric rules drive the input step (float=any, integer=1)', function () {
+    $ctrl = new \Widdx\ResourceController(\Widdx\Tests\Pricing::class);
+    $m = new \ReflectionMethod($ctrl, 'fields');
+    $m->setAccessible(true);
+    $byName = [];
+    foreach ($m->invoke($ctrl) as $f) {
+        $byName[$f['name']] = $f;
+    }
+    assert_equals('any', $byName['unit']['step'], 'numeric/float accepts decimals');
+    assert_equals('1', $byName['qty']['step'], 'integer stays whole');
+    assert_equals(null, $byName['label']['step'], 'text has no step');
+    assert_equals('file', $byName['cover']['type'], 'image rule -> file input');
+    assert_equals('textarea', $byName['note']['type'], 'text rule -> textarea');
+});
+
 test('resource() without controller registers 7 model-driven routes', function () {
     \Widdx\Router::reset();
     resource('users');
     assert_equals(7, count(\Widdx\Router::getInstance()->all()));
+});
+
+test('1.2 resource() returns RouteGroup; ->public() marks the whole group', function () {
+    \Widdx\Router::reset();
+    $group = resource('users');
+    assert_true($group instanceof \Widdx\RouteGroup, 'resource() returns RouteGroup');
+    $routes = $group->routes();
+    assert_equals(7, count($routes));
+    assert_equals(false, $routes[0]->isPublic(), 'routes start fail-closed');
+    $group->public();
+    foreach ($routes as $rt) {
+        assert_true($rt->isPublic(), 'every route in the group is public');
+    }
+    \Widdx\Router::reset();
+    $api = apiResource('users');
+    assert_equals(6, count($api->routes()), 'apiResource group has 6 routes');
+    assert_equals(false, $api->routes()[0]->isPublic());
+});
+
+test('1.3 Router::group with prefix+middleware wraps registered routes', function () {
+    \Widdx\Router::reset();
+    \Widdx\Router::middlewareGroup('web', ['Widdx\\CsrfMiddleware']);
+    \Widdx\Router::group(['prefix' => 'admin', 'middleware' => ['App\\Middleware\\AuthMiddleware']], function () {
+        get('/users', fn() => 'ok');
+    });
+    $routes = \Widdx\Router::getInstance()->all();
+    assert_equals(1, count($routes));
+    assert_equals('/admin/users', $routes[0]->uri, 'prefix applied');
+    assert_true(in_array('App\\Middleware\\AuthMiddleware', $routes[0]->middlewares, true), 'group middleware attached');
+    assert_equals(false, in_array('Widdx\\CsrfMiddleware', $routes[0]->middlewares, true), 'ambient group off when unset');
+    // nested prefixes restore afterwards
+    get('/after', fn() => 'ok');
+    assert_equals('/after', \Widdx\Router::getInstance()->all()[1]->uri, 'prefix stack unwound');
+    \Widdx\Router::reset();
+});
+
+test('1.3 ambient web group lands on normal routes, /api routes take api', function () {
+    \Widdx\Router::reset();
+    \Widdx\Router::middlewareGroup('web', ['Widdx\\CsrfMiddleware']);
+    \Widdx\Router::middlewareGroup('api', []);
+    $r = \Widdx\Router::getInstance();
+    $r->setAmbientGroup('web');
+    get('/notes', fn() => 'ok');
+    get('/api/notes', fn() => 'ok');
+    $r->setAmbientGroup(null);
+    $all = $r->all();
+    assert_true(in_array('Widdx\\CsrfMiddleware', $all[0]->middlewares, true), 'web route got CSRF');
+    assert_equals(false, in_array('Widdx\\CsrfMiddleware', $all[1]->middlewares, true), '/api route did NOT');
+    \Widdx\Router::reset();
+});
+
+test('1.3 Request::expectsJson detects Accept/Content-Type/json path', function () {
+    $accept = new \Widdx\Request([], [], ['HTTP_ACCEPT' => 'application/json']);
+    assert_true($accept->expectsJson(), 'Accept: json');
+    $type = new \Widdx\Request([], [], ['CONTENT_TYPE' => 'application/json']);
+    assert_true($type->expectsJson(), 'Content-Type: json');
+    $path = new \Widdx\Request([], [], ['REQUEST_URI' => '/api/secrets']);
+    assert_true($path->expectsJson(), '/api path');
+    $html = new \Widdx\Request([], [], ['REQUEST_URI' => '/notes', 'HTTP_ACCEPT' => 'text/html']);
+    assert_equals(false, $html->expectsJson(), 'plain browser request');
+});
+
+test('1.9 flash data lives under _flash instead of top-level session keys', function () {
+    \Widdx\Session::start();
+    \Widdx\Session::flash('_probe19', 'value19');
+    assert_equals('value19', \Widdx\Session::get('_probe19'), 'get() still finds flashed value');
+    assert_true(\Widdx\Session::has('_probe19'), 'has() sees flash too');
+    $raw = $_SESSION;
+    assert_equals(false, array_key_exists('_probe19', $raw), 'NOT stored top-level');
+    assert_true(isset($raw['_flash']['data']['_probe19']), 'stored under _flash/data');
+    \Widdx\Session::forget('_probe19');
+    assert_equals(null, \Widdx\Session::get('_probe19'), 'forget clears flash entries');
+});
+
+test('1.9 session start runs in strict mode with cookie-only ids', function () {
+    \Widdx\Session::start();
+    assert_equals('1', (string) ini_get('session.use_strict_mode'), 'use_strict_mode=1 (fixation defense)');
+    assert_equals('1', (string) ini_get('session.use_only_cookies'), 'use_only_cookies=1');
 });
 
 test('resource() without any class fails with a helpful message', function () {
@@ -469,13 +765,157 @@ test('Model::columns() reads real table columns', function () {
     @unlink($file);
 });
 
-test('ORM relations: lazy access, eager loading, pivot, nested chains', function () {
+// ------------------------------------------------------------------ 1.1 mass assignment
+test('1.1 mass assignment denies by default; "*" opts in; PK never', function () {
+    \Widdx\App::basePath(WIDDX_BASE_PATH);
+    \Widdx\Schema::create('leaks', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('name');
+        $t->integer('is_admin')->default(0);
+    });
     $pdo = \Widdx\Database::connection()->pdo();
-    $pdo->exec('CREATE TABLE IF NOT EXISTS teams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)');
-    $pdo->exec('CREATE TABLE IF NOT EXISTS players (id INTEGER PRIMARY KEY AUTOINCREMENT, team_id INTEGER, name TEXT)');
-    $pdo->exec('CREATE TABLE IF NOT EXISTS roles (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)');
-    $pdo->exec('CREATE TABLE IF NOT EXISTS permissions (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)');
-    $pdo->exec('CREATE TABLE IF NOT EXISTS permission_role (id INTEGER PRIMARY KEY AUTOINCREMENT, role_id INTEGER, permission_id INTEGER)');
+    $pdo->exec('DELETE FROM leaks');
+
+    // empty $fillable = NOTHING mass-assignable → create() must fail loudly
+    $threw = false;
+    try {
+        \Widdx\Tests\Leak::create(['name' => 'x', 'is_admin' => 1, 'id' => 77]);
+    } catch (\Widdx\Exceptions\ModelException $e) {
+        $threw = true;
+        assert_true(str_contains(strtolower($e->getMessage()), 'fillable'), 'exception must mention $fillable: ' . $e->getMessage());
+    }
+    assert_true($threw, 'empty $fillable must block create entirely');
+
+    // explicit '*' opt-in works — but the primary key stays never-assignable
+    $m = \Widdx\Tests\Open::create(['name' => 'ok', 'is_admin' => 1, 'id' => 77]);
+    assert_equals('ok', $m->name);
+    assert_equals(1, (int) $m->is_admin, '* allows listed-by-anything columns');
+    assert_true((int) $m->id !== 77, 'primary key must never be mass-assignable');
+
+    // allowlist model: unknown keys filtered, id ignored by fill()
+    \Widdx\Schema::create('teams', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('name');
+    });
+    $pdo->exec('DELETE FROM teams');
+    $t = \Widdx\Tests\Team::create(['name' => 'T', 'is_admin' => 1]);
+    assert_equals('T', $t->name);
+    $t->fill(['name' => 'T2', 'id' => 999]);
+    $t->save();
+    $fresh = \Widdx\Tests\Team::find($t->id);
+    assert_equals('T2', $fresh->name);
+    assert_true((int) $fresh->id !== 999, 'fill() must ignore the primary key');
+
+    \Widdx\Schema::dropIfExists('leaks');
+    \Widdx\Schema::dropIfExists('teams');
+});
+
+test('1.6 __get never executes non-relation methods (delete/save/columns are data reads)', function () {
+    \Widdx\App::basePath(WIDDX_BASE_PATH);
+    \Widdx\Schema::create('leaks', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('name');
+        $t->integer('is_admin')->default(0);
+    });
+    $pdo = \Widdx\Database::connection()->pdo();
+    $pdo->exec('DELETE FROM leaks');
+
+    $j = \Widdx\Tests\Jargon::create(['name' => 'g']);
+    $fresh = \Widdx\Tests\Jargon::find($j->id);
+
+    // untyped, non-relation method must NOT run on a property read
+    assert_true($fresh->jargon !== 'CALLED', 'jargon() must not be invoked');
+    assert_true($fresh->touched === false, 'side effect must not happen via ->jargon');
+
+    // framework methods must never execute through magic reads
+    assert_true($fresh->delete === null, '->delete property read returns null');
+    assert_true(\Widdx\Tests\Jargon::find($j->id) !== null, 'row SURVIVES a ->delete property read');
+    assert_true($fresh->save === null, '->save property read returns null');
+    assert_true($fresh->columns === null, '->columns property read returns null');
+    assert_true($fresh->fill === null, '->fill property read returns null');
+
+    \Widdx\Schema::dropIfExists('leaks');
+});
+
+test('1.7 LocalStorage rejects traversal, absolute paths and NUL bytes', function () {
+    $s = new \Widdx\LocalStorage();
+    assert_true($s->put('inner/ok.txt', 'INSIDE'), 'nested legal path still works');
+    foreach (['../composer.json', '../../etc/passwd', 'a/../../composer.json', '/etc/passwd', "evil\0name"] as $bad) {
+        $threw = false;
+        try {
+            $s->get($bad);
+        } catch (\Widdx\Exceptions\WiddxException) {
+            $threw = true;
+        }
+        assert_true($threw, 'get() must reject: ' . str_replace("\0", 'NUL', $bad));
+    }
+    $threw = false;
+    try {
+        $s->put('../escape.txt', 'X');
+    } catch (\Widdx\Exceptions\WiddxException) {
+        $threw = true;
+    }
+    assert_true($threw, 'put() must reject traversal');
+    assert_true(!is_file(WIDDX_BASE_PATH . '/escape.txt'), 'nothing may land outside the disk');
+    $s->delete('inner/ok.txt');
+    @$s->deleteDirectory('inner');
+});
+
+test('1.8 store() derives extension from content; mimes uses detected; dangerous names neutered', function () {
+    $gif = base64_decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
+    $tmp1 = sys_get_temp_dir() . '/widdx18_' . bin2hex(random_bytes(4)) . '.bin';
+    file_put_contents($tmp1, $gif);
+    $f = new \Widdx\UploadedFile($tmp1, 'shell.php', 'application/x-httpd-php', 0, (int) filesize($tmp1));
+    assert_true($f->isImage(), 'content is a real gif');
+    assert_equals('gif', $f->safeExtension(), 'extension must come from CONTENT');
+    $rel = $f->store('it18');
+    assert_true(!str_contains($rel, '.php'), 'stored name must never keep the client php extension: ' . $rel);
+    assert_true(str_ends_with($rel, '.gif'), $rel);
+    assert_true(str_contains($rel, 'shell'), 'readable slug of original name is kept');
+    @unlink(WIDDX_BASE_PATH . '/storage/app/' . $rel);
+
+    // a text file dressed up as dog.jpg: detected txt → mimes:jpg must reject
+    $tmp2 = sys_get_temp_dir() . '/widdx18_' . bin2hex(random_bytes(4)) . '.bin';
+    file_put_contents($tmp2, 'pretending to be a jpeg');
+    $t = new \Widdx\UploadedFile($tmp2, 'dog.jpg', 'image/jpeg', 0, (int) filesize($tmp2));
+    assert_equals('txt', $t->safeExtension());
+    $req = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'POST'], [
+        'cover' => ['name' => 'dog.jpg', 'type' => 'image/jpeg', 'tmp_name' => $tmp2, 'error' => 0, 'size' => (int) filesize($tmp2)],
+    ]);
+    $threw = false;
+    try {
+        $req->validate(['cover' => 'required|image|mimes:jpg,png']);
+    } catch (\Widdx\Exceptions\ValidationException) {
+        $threw = true;
+    }
+    assert_true($threw, 'text disguised as jpg must fail mimes (real detection)');
+    @unlink($tmp2);
+});
+
+test('ORM relations: lazy access, eager loading, pivot, nested chains', function () {
+    \Widdx\Schema::create('teams', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('name');
+    });
+    \Widdx\Schema::create('players', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->integer('team_id');
+        $t->string('name');
+    });
+    \Widdx\Schema::create('roles', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('name');
+    });
+    \Widdx\Schema::create('permissions', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('name');
+    });
+    \Widdx\Schema::create('permission_role', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->integer('role_id');
+        $t->integer('permission_id');
+    });
+    $pdo = \Widdx\Database::connection()->pdo();
     foreach (['players', 'teams', 'permission_role', 'roles', 'permissions'] as $t) {
         $pdo->exec("DELETE FROM {$t}");
     }
@@ -530,7 +970,7 @@ test('ORM relations: lazy access, eager loading, pivot, nested chains', function
     }
 
     foreach (['players', 'teams', 'permission_role', 'roles', 'permissions'] as $t) {
-        $pdo->exec("DROP TABLE IF EXISTS {$t}");
+        \Widdx\Schema::dropIfExists($t);
     }
 });
 
@@ -629,6 +1069,197 @@ test('DatabaseQueue: retry with backoff, then failed_jobs, then queue:retry', fu
     $pdo->exec('DELETE FROM failed_jobs');
 });
 
+test('2.5 DatabaseQueue reserves atomically: two pops get different jobs, expired reservation is reclaimed', function () {
+    $q = new \Widdx\DatabaseQueue();
+    $pdo = \Widdx\Database::connection()->pdo();
+    $pdo->exec('DELETE FROM jobs');
+    $q->push(\Widdx\Tests\TestJob::class, ['n' => 1]);
+    $q->push(\Widdx\Tests\TestJob::class, ['n' => 2]);
+
+    $a = $q->pop();
+    $b = $q->pop();
+    assert_true($a !== null && $b !== null, 'both jobs are handed out');
+    assert_true((string) $a['id'] !== (string) $b['id'], 'two pops must return DIFFERENT rows, not the same job twice');
+    // Both are now reserved within the visibility window -> nothing claimable.
+    assert_true($q->pop() === null, 'reserved jobs stay hidden until the timeout');
+    // A crashed worker's job (reservation far in the past) is reclaimed.
+    $pdo->prepare('UPDATE jobs SET reserved_at = ? WHERE id = ?')->execute(['2000-01-01 00:00:00', $a['id']]);
+    $d = $q->pop();
+    assert_true($d !== null && (string) $d['id'] === (string) $a['id'], 'expired reservation is reclaimed');
+    $pdo->exec('DELETE FROM jobs');
+});
+
+test('2.6 Blueprint::toSql emits correct DDL per driver', function () {
+    $bp = new \Widdx\Blueprint('posts');
+    $bp->id();
+    $bp->string('title', 255);
+    $bp->text('body')->nullable();
+    $bp->integer('views')->default(0);
+    $bp->boolean('published');
+    $bp->foreignId('user_id');
+    $bp->timestamps();
+    $bp->unique('title');
+    $sqlite = implode("\n", $bp->toSql('sqlite'));
+    assert_true(str_contains($sqlite, 'CREATE TABLE IF NOT EXISTS posts'), $sqlite);
+    assert_true(str_contains($sqlite, 'id INTEGER PRIMARY KEY AUTOINCREMENT'), $sqlite);
+    assert_true(str_contains($sqlite, 'body TEXT NULL'), $sqlite);
+    assert_true(str_contains($sqlite, 'views INTEGER NOT NULL DEFAULT 0'), $sqlite);
+    assert_true(str_contains($sqlite, 'user_id INTEGER NOT NULL'), $sqlite);
+    assert_true(str_contains($sqlite, 'created_at TIMESTAMP NULL'), $sqlite);
+    assert_true(str_contains($sqlite, 'CREATE UNIQUE INDEX uniq_posts_title ON posts (title)'), $sqlite);
+
+    $b2 = new \Widdx\Blueprint('posts');
+    $b2->id();
+    $b2->string('title');
+    $mysql = implode("\n", $b2->toSql('mysql'));
+    assert_true(str_contains($mysql, 'id INT AUTO_INCREMENT PRIMARY KEY'), $mysql);
+
+    $b3 = new \Widdx\Blueprint('posts');
+    $b3->id();
+    $b3->boolean('active');
+    $b3->json('meta')->nullable();
+    $pgsql = implode("\n", $b3->toSql('pgsql'));
+    assert_true(str_contains($pgsql, 'id SERIAL PRIMARY KEY'), $pgsql);
+    assert_true(str_contains($pgsql, 'active BOOLEAN NOT NULL'), $pgsql);
+    assert_true(str_contains($pgsql, 'meta JSONB NULL'), $pgsql);
+});
+
+test('2.6 Schema creates a real table, hasTable sees it, dropIfExists removes it', function () {
+    \Widdx\Schema::dropIfExists('it_schema');
+    \Widdx\Schema::create('it_schema', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('name');
+        $t->timestamps();
+    });
+    assert_true(\Widdx\Schema::hasTable('it_schema'), 'hasTable after create');
+    $pdo = \Widdx\Database::connection()->pdo();
+    $pdo->prepare('INSERT INTO it_schema (name) VALUES (?)')->execute(['ok']);
+    assert_equals(1, (int) $pdo->query('SELECT COUNT(*) FROM it_schema')->fetchColumn());
+    // add a column to the existing table
+    \Widdx\Schema::table('it_schema', function (\Widdx\Blueprint $t) {
+        $t->integer('score')->default(0);
+    });
+    assert_equals(1, (int) $pdo->query('SELECT COUNT(score) FROM it_schema')->fetchColumn());
+    \Widdx\Schema::dropIfExists('it_schema');
+    assert_true(!\Widdx\Schema::hasTable('it_schema'), 'dropped');
+});
+
+test('2.10 FileCache atomic put/increment and refuses object inflation', function () {
+    $dir = sys_get_temp_dir() . '/widdx_fc210_' . getmypid();
+    @mkdir($dir, 0775, true);
+    $cache = new \Widdx\FileCache($dir);
+    $cache->put('greeting', 'hello', 60);
+    assert_equals('hello', $cache->get('greeting'));
+    // atomic counter, fixed window (expiry set once, kept across increments)
+    $cache->increment('hits', 1, 60);
+    $cache->increment('hits', 1, 60);
+    $cache->increment('hits', 1, 60);
+    assert_equals(3, (int) $cache->get('hits'));
+    // a cached object must NOT be instantiated on read (allowed_classes=false)
+    $cache->put('obj', new \ArrayObject(['x' => 1]), 0);
+    assert_true(!($cache->get('obj') instanceof \ArrayObject), 'cached objects must not be inflated');
+    $cache->flush();
+    @rmdir($dir);
+});
+
+test('2.10 Throttle is a fixed window keyed on the route pattern', function () {
+    $mw = new \Widdx\ThrottleMiddleware(2, 60);
+    $next = fn () => \Widdx\Response::make('ok');
+    $ip = '203.0.113.' . (string) random_int(20, 240);
+    $mk = function (string $id) use ($ip) {
+        $r = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/users/' . $id, 'REMOTE_ADDR' => $ip]);
+        $r->routePattern = '/users/{id}';
+        return $r;
+    };
+    // distinct URIs (/users/1, /users/2, /users/3) but the SAME pattern: only a
+    // pattern key throttles them together (a raw-URI key would not).
+    assert_equals(200, (int) $mw->handle($mk('1'), $next)->getStatus());
+    assert_equals(200, (int) $mw->handle($mk('2'), $next)->getStatus());
+    $resp = $mw->handle($mk('3'), $next);
+    assert_equals(429, (int) $resp->getStatus(), 'third hit past the cap must 429 across ids (same pattern)');
+    $ra = (int) ($resp->getHeaders()['Retry-After'] ?? 0);
+    assert_true($ra >= 1 && $ra <= 60, 'Retry-After must be the real remaining time, got ' . $ra);
+});
+
+test('2.11 Response::json pretty-prints only in debug mode', function () {
+    $ref = new \ReflectionClass(\Widdx\App::class);
+    $prop = $ref->getProperty('config');
+    $prop->setAccessible(true);
+    $saved = $prop->getValue();
+    try {
+        $prop->setValue(null, ['app' => ['debug' => false]]);
+        $compact = \Widdx\Response::json(['a' => 1, 'b' => [2]])->getContent();
+        assert_true(!str_contains((string) $compact, "\n"), 'production JSON must be compact, got: ' . $compact);
+        $prop->setValue(null, ['app' => ['debug' => true]]);
+        $pretty = \Widdx\Response::json(['a' => 1, 'b' => [2]])->getContent();
+        assert_true(str_contains((string) $pretty, "\n"), 'debug JSON must be pretty-printed');
+        assert_true(str_contains((string) $pretty, '"b": ['), 'debug JSON stays readable');
+        assert_equals(['a' => 1, 'b' => [2]], json_decode((string) $compact, true));
+    } finally {
+        $prop->setValue(null, $saved);
+    }
+});
+
+test('2.11 Container contextual params apply only to the top-level constructor', function () {
+    $c = new \Widdx\Container();
+    $top = $c->make(\Widdx\Tests\CtxTop::class, ['name' => 'outer']);
+    assert_equals('outer', $top->name, 'top-level constructor receives the contextual value');
+    // The nested dependency shares the parameter NAME but must NOT inherit the
+    // top-level contextual value (that was the leak).
+    assert_equals('default', $top->dep->name, 'nested dependency must not leak contextual params');
+    // An empty default still resolves to the default (no BindingException).
+    $plain = $c->make(\Widdx\Tests\CtxTop::class);
+    assert_equals('default', $plain->name);
+    assert_equals('default', $plain->dep->name);
+});
+
+test('2.11 friendlyHint is translated through Lang (en + ar)', function () {
+    $ref = new \ReflectionClass(\Widdx\App::class);
+    $prop = $ref->getProperty('config');
+    $prop->setAccessible(true);
+    $saved = $prop->getValue();
+    $m = $ref->getMethod('friendlyHint');
+    $m->setAccessible(true);
+    try {
+        $prop->setValue(null, ['app' => ['locale' => 'en']]);
+        \Widdx\Lang::reset();
+        $en = (string) $m->invoke(null, new \Widdx\Exceptions\RouteNotFoundException('nope'));
+        assert_true(str_contains($en, 'routes/web.php'), 'english hint mentions the routes file');
+        $prop->setValue(null, ['app' => ['locale' => 'ar']]);
+        \Widdx\Lang::reset();
+        $ar = (string) $m->invoke(null, new \Widdx\Exceptions\RouteNotFoundException('nope'));
+        assert_true(preg_match('/\p{Arabic}/u', $ar) === 1, 'arabic locale must render the arabic hint: ' . $ar);
+        assert_true(!str_contains($ar, 'This URL is not registered'), 'must not fall back to the english sentence: ' . $ar);
+        // every branch must resolve to a real lang line, never the raw key
+        foreach ([new \Widdx\Exceptions\ViewNotFoundException('v'), new \Widdx\Exceptions\BindingException('b'), new \Widdx\Exceptions\DatabaseException('d'), new \Widdx\Exceptions\NotFoundException('n'), new \Widdx\Exceptions\MethodNotAllowedException('m'), new \Widdx\Exceptions\ValidationException('f', [])] as $e) {
+            $hint = (string) $m->invoke(null, $e);
+            assert_true(!str_starts_with($hint, 'hints.'), 'hint must be translated, got raw key: ' . $hint);
+            assert_true($hint !== '', 'hint must not be empty');
+        }
+    } finally {
+        $prop->setValue(null, $saved);
+        \Widdx\Lang::reset();
+    }
+});
+
+test('2.11 README has exactly one Complete Component List and no numbering gaps', function () {
+    $readme = (string) file_get_contents(__DIR__ . '/README.md');
+    if (!str_starts_with(rtrim($readme), '# Widdx')) {
+        return; // scaffolded projects ship their own README — nothing to lint here
+    }
+    assert_equals(1, substr_count($readme, '## Complete Component List'), 'duplicated component-list headings must be merged');
+    preg_match_all('/^### (\d+)\./m', $readme, $m);
+    $nums = array_map('intval', $m[1]);
+    sort($nums);
+    $missing = [];
+    for ($i = 1; $i <= count($nums); $i++) {
+        if (!in_array($i, $nums, true)) {
+            $missing[] = $i;
+        }
+    }
+    assert_equals([], $missing, '### N. headings must be sequential, missing: ' . implode(',', $missing));
+});
+
 test('Schedule: time buckets, when-gate and identity keys', function () {
     \Widdx\Schedule::flush();
     $t = \Widdx\Schedule::command('queue:work')->everyFiveMinutes();
@@ -665,9 +1296,22 @@ test('Gate: abilities, authorize() 403, and policy convention', function () {
 });
 
 test('Auth: register + email verification + password reset lifecycle', function () {
+    \Widdx\Schema::create('auth_users', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('name');
+        $t->string('email')->unique();
+        $t->string('password');
+        $t->timestamp('email_verified_at')->nullable();
+        $t->timestamps();
+    });
+    \Widdx\Schema::create('auth_tokens', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('email');
+        $t->string('type');
+        $t->string('token_hash');
+        $t->timestamp('created_at')->nullable();
+    });
     $pdo = \Widdx\Database::connection()->pdo();
-    $pdo->exec('CREATE TABLE IF NOT EXISTS auth_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT UNIQUE, password TEXT, email_verified_at TEXT, created_at TEXT, updated_at TEXT)');
-    $pdo->exec('CREATE TABLE IF NOT EXISTS auth_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT, type TEXT, token_hash TEXT, created_at TEXT)');
     $pdo->exec('DELETE FROM auth_users');
     $pdo->exec('DELETE FROM auth_tokens');
 
@@ -693,6 +1337,8 @@ test('Auth: register + email verification + password reset lifecycle', function 
     // password reset: unknown email → false; known → mailed token link
     assert_equals(false, \Widdx\Auth::sendResetLink('ghost@nowhere.test'));
     assert_true(\Widdx\Auth::sendResetLink('sara@widdx.test'));
+    // 1.9: reset mail is deferred to Event::flush (post-response) on purpose.
+    \Widdx\Event::flush();
     $resetBody = (string) ($mail->logged()[1]['body'] ?? '');
     preg_match('#/reset-password/([a-f0-9]{64})\?email=#', $resetBody, $m2);
     assert_true(!empty($m2[1]), 'reset token present');
@@ -701,12 +1347,14 @@ test('Auth: register + email verification + password reset lifecycle', function 
     assert_true(password_verify('brandnewpass9', (string) \Widdx\Tests\AuthUser::find($user->id)->password), 'new password active');
     assert_equals(false, \Widdx\Auth::resetPassword('sara@widdx.test', $m2[1], 'thirdpass123'), 'tokens are single-use');
 
-    $pdo->exec('DROP TABLE auth_users');
-    $pdo->exec('DROP TABLE auth_tokens');
+    \Widdx\Schema::dropIfExists('auth_users');
+    \Widdx\Schema::dropIfExists('auth_tokens');
     \Widdx\Auth::useModel(null);
 });
 
 // ---------- Integration suite (real HTTP, scaffold, SMTP) ----------
+
+widdx_reset_networked_db();
 
 echo "\n===== Running integration suite (this boots real servers) =====\n";
 $integrationExit = 0;

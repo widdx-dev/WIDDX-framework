@@ -14,6 +14,8 @@ table{width:100%;border-collapse:collapse}
 th,td{text-align:start;padding:10px 8px;border-bottom:1px solid #e2e8f0}
 label{display:block;margin:12px 0 4px;font-weight:600}
 input,select,textarea{width:100%;padding:9px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:15px;box-sizing:border-box}
+input[type=checkbox],input[type=radio]{width:auto;padding:0;margin:0 8px 0 0;accent-color:#4f46e5;vertical-align:middle}
+input[type=file]{padding:8px;background:#fff}
 .flash{background:#dcfce7;border:1px solid #86efac;padding:10px 14px;border-radius:8px;margin-bottom:14px}
 .error{background:#fee2e2;border:1px solid #fca5a5;padding:8px 14px;border-radius:8px;margin:8px 0;color:#991b1b}
 </style>

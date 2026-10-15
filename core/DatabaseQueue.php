@@ -12,7 +12,7 @@ use Widdx\Contracts\QueueInterface;
  * Stores jobs in a database table. Simple, reliable, no external dependencies.
  *
  * Table schema (auto-created):
- *   jobs(id, queue, payload, attempts, available_at, created_at)
+ *   jobs(id, queue, payload, attempts, reserved_at, available_at, created_at)
  */
 class DatabaseQueue implements QueueInterface
 {
@@ -31,12 +31,24 @@ class DatabaseQueue implements QueueInterface
     {
         $driver = Database::connection()->driver();
         $sql = match ($driver) {
-            'mysql' => "CREATE TABLE IF NOT EXISTS {$this->table} (id INT AUTO_INCREMENT PRIMARY KEY, queue VARCHAR(255) NOT NULL, payload TEXT NOT NULL, attempts INT DEFAULT 0, failed_reason TEXT NULL, available_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-            'pgsql' => "CREATE TABLE IF NOT EXISTS {$this->table} (id SERIAL PRIMARY KEY, queue VARCHAR(255) NOT NULL, payload TEXT NOT NULL, attempts INT DEFAULT 0, failed_reason TEXT NULL, available_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-            'sqlsrv' => "CREATE TABLE IF NOT EXISTS {$this->table} (id INT IDENTITY(1,1) PRIMARY KEY, queue VARCHAR(255) NOT NULL, payload VARCHAR(MAX) NOT NULL, attempts INT DEFAULT 0, failed_reason VARCHAR(MAX) NULL, available_at DATETIME DEFAULT GETDATE(), created_at DATETIME DEFAULT GETDATE())",
-            default => "CREATE TABLE IF NOT EXISTS {$this->table} (id INTEGER PRIMARY KEY AUTOINCREMENT, queue VARCHAR(255) NOT NULL, payload TEXT NOT NULL, attempts INT DEFAULT 0, failed_reason TEXT NULL, available_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+            'mysql' => "CREATE TABLE IF NOT EXISTS {$this->table} (id INT AUTO_INCREMENT PRIMARY KEY, queue VARCHAR(255) NOT NULL, payload TEXT NOT NULL, attempts INT DEFAULT 0, failed_reason TEXT NULL, reserved_at TIMESTAMP NULL DEFAULT NULL, available_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+            'pgsql' => "CREATE TABLE IF NOT EXISTS {$this->table} (id SERIAL PRIMARY KEY, queue VARCHAR(255) NOT NULL, payload TEXT NOT NULL, attempts INT DEFAULT 0, failed_reason TEXT NULL, reserved_at TIMESTAMP NULL DEFAULT NULL, available_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+            'sqlsrv' => "CREATE TABLE IF NOT EXISTS {$this->table} (id INT IDENTITY(1,1) PRIMARY KEY, queue VARCHAR(255) NOT NULL, payload VARCHAR(MAX) NOT NULL, attempts INT DEFAULT 0, failed_reason VARCHAR(MAX) NULL, reserved_at DATETIME NULL, available_at DATETIME DEFAULT GETDATE(), created_at DATETIME DEFAULT GETDATE())",
+            default => "CREATE TABLE IF NOT EXISTS {$this->table} (id INTEGER PRIMARY KEY AUTOINCREMENT, queue VARCHAR(255) NOT NULL, payload TEXT NOT NULL, attempts INT DEFAULT 0, failed_reason TEXT NULL, reserved_at TIMESTAMP NULL, available_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         };
         $this->pdo->exec($sql);
+        // 2.5: jobs tables created before reserved_at existed get it added.
+        $this->ensureReservedAt();
+    }
+
+    /** Idempotently ensure the jobs table has the reserved_at column. */
+    protected function ensureReservedAt(): void
+    {
+        try {
+            $this->pdo->exec("ALTER TABLE {$this->table} ADD COLUMN reserved_at TIMESTAMP NULL");
+        } catch (\Throwable) {
+            // Already present (fresh CREATE, or a driver that rejects re-add).
+        }
     }
 
     protected function ensureFailedTable(): void
@@ -90,25 +102,87 @@ class DatabaseQueue implements QueueInterface
     {
         $driver = Database::connection()->driver();
         $now = date('Y-m-d H:i:s');
-        // Portable single-row select: LIMIT (mysql/sqlite/pgsql) vs TOP/FETCH (sqlsrv/oci).
-        if (in_array($driver, ['sqlsrv', 'mssql'], true)) {
-            $select = "SELECT TOP 1 * FROM {$this->table} WHERE queue = ? AND available_at <= ? ORDER BY id ASC";
-        } elseif (in_array($driver, ['oci', 'oracle'], true)) {
-            $select = "SELECT * FROM {$this->table} WHERE queue = ? AND available_at <= ? ORDER BY id ASC FETCH NEXT 1 ROWS ONLY";
-        } else {
-            $select = "SELECT * FROM {$this->table} WHERE queue = ? AND available_at <= ? ORDER BY id ASC LIMIT 1";
+        $expire = date('Y-m-d H:i:s', time() - $this->visibilitySeconds());
+        $claimable = 'queue = ? AND available_at <= ? AND (reserved_at IS NULL OR reserved_at <= ?)';
+
+        // 2.5: reserve atomically so two workers never run the same job.
+        // mysql/pgsql row-lock the candidate (FOR UPDATE SKIP LOCKED); sqlite
+        // takes an immediate write lock; the UPDATE is itself re-guarded on
+        // reserved_at, so a lost race releases and simply tries the next job.
+        for ($attempt = 0; $attempt < 10; $attempt++) {
+            $this->beginReservation($driver);
+            try {
+                if (in_array($driver, ['sqlsrv', 'mssql'], true)) {
+                    $select = "SELECT TOP 1 * FROM {$this->table} WHERE {$claimable} ORDER BY id ASC";
+                } elseif (in_array($driver, ['oci', 'oracle'], true)) {
+                    $select = "SELECT * FROM {$this->table} WHERE {$claimable} ORDER BY id ASC FETCH NEXT 1 ROWS ONLY";
+                } else {
+                    $lock = in_array($driver, ['mysql', 'pgsql'], true) ? ' FOR UPDATE SKIP LOCKED' : '';
+                    $select = "SELECT * FROM {$this->table} WHERE {$claimable} ORDER BY id ASC LIMIT 1{$lock}";
+                }
+                $stmt = $this->pdo->prepare($select);
+                $stmt->execute([$queue, $now, $expire]);
+                $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+                if (!$row) {
+                    $this->endReservation($driver, false);
+                    return null;
+                }
+                $upd = $this->pdo->prepare(
+                    "UPDATE {$this->table} SET reserved_at = ?, attempts = attempts + 1 WHERE id = ? AND (reserved_at IS NULL OR reserved_at <= ?)"
+                );
+                $upd->execute([$now, $row['id'], $expire]);
+                if ($upd->rowCount() < 1) {
+                    // Another worker claimed it first — release lock, retry.
+                    $this->endReservation($driver, false);
+                    continue;
+                }
+                $this->endReservation($driver, true);
+                $row['attempts'] = (int) $row['attempts'] + 1; // report the NEW attempt number
+                $row['reserved_at'] = $now;
+                $row['payload'] = json_decode((string) $row['payload'], true);
+                return $row;
+            } catch (\Throwable $e) {
+                $this->endReservation($driver, false);
+                throw $e;
+            }
         }
-        $stmt = $this->pdo->prepare($select);
-        $stmt->execute([$queue, $now]);
-        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
-        if (!$row) {
-            return null;
+        return null;
+    }
+
+    /** Start the reservation transaction/lock for this driver. */
+    protected function beginReservation(string $driver): void
+    {
+        if ($this->pdo->inTransaction()) {
+            return; // reuse an ambient transaction (never nest BEGIN)
         }
-        // Mark as reserved
-        $this->pdo->prepare("UPDATE {$this->table} SET attempts = attempts + 1 WHERE id = ?")->execute([$row['id']]);
-        $row['attempts'] = (int) $row['attempts'] + 1; // report the NEW attempt number
-        $row['payload'] = json_decode($row['payload'], true);
-        return $row;
+        if ($driver === 'sqlite') {
+            $this->pdo->exec('BEGIN IMMEDIATE');
+        } elseif (in_array($driver, ['mysql', 'pgsql'], true)) {
+            $this->pdo->beginTransaction();
+        }
+        // sqlsrv/oci: rely on the re-guarded UPDATE under autocommit (best effort).
+    }
+
+    /** Finish the reservation transaction/lock. */
+    protected function endReservation(string $driver, bool $commit): void
+    {
+        if ($driver === 'sqlite') {
+            $this->pdo->exec($commit ? 'COMMIT' : 'ROLLBACK');
+            return;
+        }
+        if (in_array($driver, ['mysql', 'pgsql'], true) && $this->pdo->inTransaction()) {
+            if ($commit) {
+                $this->pdo->commit();
+            } else {
+                $this->pdo->rollBack();
+            }
+        }
+    }
+
+    /** Seconds a reserved job stays hidden before it is reclaimable. */
+    protected function visibilitySeconds(): int
+    {
+        return max(1, (int) config('queue.retry_after', 90));
     }
 
     public function completed(string|int $jobId): void
@@ -137,7 +211,7 @@ class DatabaseQueue implements QueueInterface
 
         if ($attempts < $tries) {
             $wait = min(3600, $backoff * (2 ** max(0, $attempts - 1)));
-            $this->pdo->prepare("UPDATE {$this->table} SET available_at = ? WHERE id = ?")
+            $this->pdo->prepare("UPDATE {$this->table} SET available_at = ?, reserved_at = NULL WHERE id = ?")
                 ->execute([date('Y-m-d H:i:s', time() + $wait), $jobId]);
             return;
         }
@@ -177,7 +251,7 @@ class DatabaseQueue implements QueueInterface
 
     public function retry(string|int $jobId): bool
     {
-        $stmt = $this->pdo->prepare("UPDATE {$this->table} SET available_at = ? WHERE id = ?");
+        $stmt = $this->pdo->prepare("UPDATE {$this->table} SET available_at = ?, reserved_at = NULL WHERE id = ?");
         return $stmt->execute([date('Y-m-d H:i:s'), (string) $jobId]);
     }
 }

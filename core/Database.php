@@ -199,7 +199,7 @@ class Database
         if ($path !== ':memory:' && !is_file($path)) {
             $dir = dirname($path);
             if (!is_dir($dir)) {
-                mkdir($dir, 0777, true); // parent dir may not exist yet
+                mkdir($dir, 0775, true); // parent dir may not exist yet
             }
             touch($path); // Auto-create for zero-config experience
         }

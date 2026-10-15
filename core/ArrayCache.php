@@ -63,11 +63,16 @@ class ArrayCache implements CacheInterface
         return $value;
     }
 
-    public function increment(string $key, int $value = 1): int|false
+    public function increment(string $key, int $value = 1, int $ttlOnCreate = 0): int|false
     {
         $current = (int) $this->get($key, 0);
         $new = $current + $value;
-        $this->put($key, $new);
+        // Fixed window: keep the existing expiry; only a brand-new key takes $ttlOnCreate.
+        $exists = isset($this->items[$key]);
+        $expires = ($exists && (int) $this->items[$key]['expires'] !== 0)
+            ? (int) $this->items[$key]['expires']
+            : ($ttlOnCreate > 0 ? time() + $ttlOnCreate : 0);
+        $this->items[$key] = ['value' => $new, 'expires' => $expires];
         return $new;
     }
 

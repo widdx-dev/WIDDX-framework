@@ -20,7 +20,7 @@ if (PHP_OS_FAMILY === 'Windows') {
 }
 
 $ROOT = dirname(__DIR__);
-$TMP = sys_get_temp_dir() . '/widdx-it-' . getmypid() . '-' . random_int(1000, 9999);
+$TMP = (getenv('ITTMP') !== false ? getenv('ITTMP') : sys_get_temp_dir() . '/widdx-it') . '-' . getmypid() . '-' . random_int(1000, 9999);
 @mkdir($TMP, 0777, true);
 
 $GLOBALS['server_pids'] = [];
@@ -35,7 +35,9 @@ register_shutdown_function(static function () use ($TMP, $ROOT) {
     if ($GLOBALS['main_env_created'] && is_file($ROOT . '/.env')) {
         @unlink($ROOT . '/.env');
     }
-    if (str_contains($TMP, '/widdx-it-') && is_dir($TMP)) {
+    if (getenv('ITKEEP')) {
+        fwrite(STDERR, "KEPT TMP: {$TMP}\n");
+    } elseif (str_contains($TMP, '/widdx-it') && is_dir($TMP)) {
         @exec('rm -rf ' . escapeshellarg($TMP));
     }
 });
@@ -62,6 +64,11 @@ function ok(string $name, bool $cond, string $detail = ''): void
     }
 }
 
+function skip(string $name, string $why): void
+{
+    echo "  SKIP  {$name}  [{$why}]\n";
+}
+
 function shell(string $cmd): array
 {
     $out = [];
@@ -77,6 +84,71 @@ function pick_port(): int
     fclose($srv);
     return (int) substr($name, strrpos($name, ':') + 1);
 }
+
+/**
+ * 2.7: for the networked drivers the database outlives a single suite run —
+ * wipe the schema first so leftover rows (unique emails, stale jobs) cannot
+ * poison a rerun. sqlite needs nothing: its file is per-project under $TMP.
+ */
+function reset_server_db(): void
+{
+    $drv = (string) (getenv('DB_CONNECTION') ?: 'sqlite');
+    if (!in_array($drv, ['mysql', 'pgsql'], true)) {
+        return;
+    }
+    $host = (string) (getenv('DB_HOST') ?: '127.0.0.1');
+    $port = (int) (getenv('DB_PORT') ?: ($drv === 'mysql' ? 3306 : 5432));
+    $user = (string) (getenv('DB_USERNAME') ?: ($drv === 'mysql' ? 'root' : 'postgres'));
+    $pass = (string) (getenv('DB_PASSWORD') ?: ($drv === 'mysql' ? 'widdxpass' : ''));
+    $name = (string) (getenv('DB_DATABASE') ?: 'widdx');
+    if ($drv === 'mysql') {
+        $pdo = new PDO("mysql:host={$host};port={$port}", $user, $pass, [PDO::ATTR_TIMEOUT => 5]);
+        $pdo->exec("DROP DATABASE IF EXISTS {$name}");
+        $pdo->exec("CREATE DATABASE {$name} CHARACTER SET utf8mb4");
+        return;
+    }
+    // pgsql: must connect to the TARGET database — dropping public while
+    // attached to the 'postgres' maintenance DB wipes the wrong schema.
+    $pdo = new PDO("pgsql:host={$host};port={$port};dbname={$name}", $user, $pass, [PDO::ATTR_TIMEOUT => 5]);
+    $pdo->exec("DROP SCHEMA IF EXISTS public CASCADE");
+    $pdo->exec("CREATE SCHEMA public");
+    $pdo->exec("GRANT ALL ON SCHEMA public TO {$user}");
+}
+
+/**
+ * 2.7: a PDO for assertions the parent process makes against the SCAFFOLD
+ * project's own database. sqlite → that project's file; mysql/pgsql → the
+ * shared server DB the project resolves from the exported env.
+ */
+function project_pdo(string $sqliteFile): PDO
+{
+    $drv = (string) (getenv('DB_CONNECTION') ?: 'sqlite');
+    if ($drv === 'mysql' || $drv === 'pgsql') {
+        $host = (string) (getenv('DB_HOST') ?: '127.0.0.1');
+        $port = (int) (getenv('DB_PORT') ?: ($drv === 'mysql' ? 3306 : 5432));
+        $user = (string) (getenv('DB_USERNAME') ?: ($drv === 'mysql' ? 'root' : 'postgres'));
+        $pass = (string) (getenv('DB_PASSWORD') ?: ($drv === 'mysql' ? 'widdxpass' : ''));
+        $name = (string) (getenv('DB_DATABASE') ?: 'widdx');
+        return new PDO("{$drv}:host={$host};port={$port};dbname={$name}", $user, $pass, [PDO::ATTR_TIMEOUT => 5]);
+    }
+    return new PDO('sqlite:' . $sqliteFile);
+}
+
+/** 2.7: driver-aware "does this table exist" without loading the framework. */
+function db_has_table(PDO $pdo, string $table): bool
+{
+    $drv = (string) (getenv('DB_CONNECTION') ?: 'sqlite');
+    if ($drv === 'sqlite') {
+        $st = $pdo->prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND lower(name)=lower(?)");
+        $st->execute([$table]);
+        return (int) $st->fetchColumn() > 0;
+    }
+    $st = $pdo->prepare('SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?');
+    $st->execute([$table]);
+    return (int) $st->fetchColumn() > 0;
+}
+
+reset_server_db();
 
 function dechunk(string $data): string
 {
@@ -188,12 +260,23 @@ function http(int $port, string $method, string $path, ?array $form = null, arra
     return ['status' => $status, 'headers' => $headers, 'body' => $raw];
 }
 
+/** Pull the session's CSRF token out of any rendered form (web group is on by default). */
+function grab_csrf(int $port, string $formPath, array &$jar): string
+{
+    $r = http($port, 'GET', $formPath, null, $jar);
+    return preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $m) === 1 ? $m[1] : '';
+}
+
 function start_server(string $proj, int $port): int
 {
     @mkdir($proj . '/storage/sessions', 0777, true);
+    $router = is_file($proj . '/public/router.php')
+        ? ' ' . escapeshellarg($proj . '/public/router.php')
+        : '';
     $cmd = 'nohup ' . escapeshellarg(PHP_BINARY)
         . ' -d session.save_path=' . escapeshellarg($proj . '/storage/sessions')
         . " -S 127.0.0.1:{$port} -t " . escapeshellarg($proj . '/public')
+        . $router
         . ' > ' . escapeshellarg($proj . '/server.log') . ' 2>&1 & echo $!';
     $pid = (int) trim((string) shell_exec($cmd));
     for ($i = 0; $i < 100; $i++) {
@@ -222,10 +305,16 @@ sec('Scaffold: php widdx new app');
 ok('widdx new exits 0', $code === 0, $out);
 $proj = $TMP . '/app';
 
-// Bring the demo app files from the framework repo into the scaffold.
-copy($ROOT . '/app/Controllers/UserController.php', $proj . '/app/Controllers/UserController.php');
-copy($ROOT . '/app/Models/User.php', $proj . '/app/Models/User.php');
-shell('cp -r ' . escapeshellarg($ROOT . '/views/users') . ' ' . escapeshellarg($proj . '/views/'));
+// Bring the demo app files from the framework repo into the scaffold. A
+// scaffolded project ships a bare app/, so without them the suite exercises the
+// zero-code fallback path (model + built-in pages) instead.
+$repoDemo = is_file($ROOT . '/app/Controllers/UserController.php')
+    && is_dir($ROOT . '/views/users');
+if ($repoDemo) {
+    copy($ROOT . '/app/Controllers/UserController.php', $proj . '/app/Controllers/UserController.php');
+    copy($ROOT . '/app/Models/User.php', $proj . '/app/Models/User.php');
+    shell('cp -r ' . escapeshellarg($ROOT . '/views/users') . ' ' . escapeshellarg($proj . '/views/'));
+}
 
 // Routes: full users resource + probe routes used by the scenarios below.
 $probes = <<<'ROUTES'
@@ -234,7 +323,7 @@ $probes = <<<'ROUTES'
 use Widdx\Auth;
 use Widdx\Response;
 
-resource('users', \App\Controllers\UserController::class);
+resource('users', \App\Controllers\UserController::class)->public();
 
 post('/it-login', function () {
     $ok = Auth::attempt(request()->only(['email', 'password']));
@@ -285,6 +374,15 @@ get('/it-event-check', fn() => Response::json([
     'hit' => is_file(\Widdx\App::basePath('') . '/storage/event-hit.txt'),
 ]));
 get('/it-throttle', fn() => Response::json(['ok' => true]))->middleware(new \Widdx\ThrottleMiddleware(2, 60));
+// id lookup by email — works whether the list page is the demo view or the
+// built-in zero-code one (their row markup differs).
+get('/it-id', function () {
+    // QueryBuilder rows are stdClass objects, not arrays.
+    $row = db('users')->where('email', (string) request()->query('email'))->first();
+    return Response::json(['id' => $row->id ?? null]);
+});
+// 1.4 guard: the framework middleware itself, available in every project.
+get('/it-guarded', fn() => Response::json(['ok' => true]))->middleware(\Widdx\AuthMiddleware::class);
 ROUTES;
 file_put_contents($proj . '/routes/web.php', $probes . "\n", FILE_APPEND);
 
@@ -292,6 +390,11 @@ file_put_contents($proj . '/routes/web.php', $probes . "\n", FILE_APPEND);
 ok('migrate exits 0', $code === 0, $out);
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx db:seed');
 ok('db:seed exits 0', $code === 0, $out);
+
+// 1.4 needs no demo file: /it-guarded (framework AuthMiddleware) was registered
+// with the other probes BEFORE the server started — php -S intermittently fails
+// to pick up a route appended to a live server (the same trap that made
+// /it-boom 404), so the guard assertions never depend on a mid-flight append.
 
 $port = pick_port();
 $pid = start_server($proj, $port);
@@ -313,27 +416,29 @@ ok('seeded users listed', str_contains($r['body'], 'Admin User'), substr(md5($r[
 $r = http($port, 'GET', '/users/create');
 ok('GET /users/create is 200', $r['status'] === 200, "status={$r['status']}");
 
-$r = http($port, 'POST', '/users', ['name' => 'It Test', 'email' => 'it@test.local']);
+// web group is ON by default (1.3): every mutating request needs a token.
+$tokU = grab_csrf($port, '/users/create', $jar);
+ok('1.3 web group put a csrf token in the form automatically', strlen($tokU) >= 32, 'token=' . $tokU);
+
+$r = http($port, 'POST', '/users', ['csrf_token' => $tokU, 'name' => 'It Test', 'email' => 'it@test.local'], $jar);
 ok('POST /users redirects', $r['status'] === 302, "status={$r['status']}");
 $r = http($port, 'GET', '/users', null, $jar);
 ok('created user visible in list', str_contains($r['body'], 'It Test'));
 
-$id = null;
-if (preg_match('#/users/(\d+)"[^>]*>\s*It Test#', $r['body'], $m)) {
-    $id = (int) $m[1];
-}
-ok('extract new user id', $id !== null, 'id not found in list markup');
+$r = http($port, 'GET', '/it-id?email=it%40test.local');
+$id = json_decode($r['body'], true)['id'] ?? null;
+ok('created row is readable by unique email', $id !== null, $r['body']);
 
 if ($id !== null) {
     $r = http($port, 'GET', '/users/' . $id);
     ok('GET show page 200', $r['status'] === 200 && str_contains($r['body'], 'It Test'), "status={$r['status']}");
 
-    $r = http($port, 'POST', '/users/' . $id, ['_method' => 'PUT', 'name' => 'Renamed', 'email' => 'it@test.local']);
+    $r = http($port, 'POST', '/users/' . $id, ['csrf_token' => $tokU, '_method' => 'PUT', 'name' => 'Renamed', 'email' => 'it@test.local'], $jar);
     ok('_method=PUT spoof redirects', $r['status'] === 302, "status={$r['status']}");
     $r = http($port, 'GET', '/users/' . $id);
     ok('update applied', str_contains($r['body'], 'Renamed'));
 
-    $r = http($port, 'POST', '/users/' . $id, ['_method' => 'DELETE']);
+    $r = http($port, 'POST', '/users/' . $id, ['csrf_token' => $tokU, '_method' => 'DELETE'], $jar);
     ok('_method=DELETE spoof redirects', $r['status'] === 302, "status={$r['status']}");
     $r = http($port, 'GET', '/users/' . $id);
     ok('deleted user 404s', $r['status'] === 404, "status={$r['status']}");
@@ -350,7 +455,7 @@ ok('POST on show-uri is 405', $r['status'] === 405, "status={$r['status']}");
 sec('Model-auto validation: flash errors + old input');
 
 $r = http($port, 'GET', '/users/create', null, $jar);
-$r = http($port, 'POST', '/users', ['name' => '', 'email' => 'not-an-email'], $jar);
+$r = http($port, 'POST', '/users', ['csrf_token' => $tokU, 'name' => '', 'email' => 'not-an-email'], $jar);
 ok('invalid POST redirects back', $r['status'] === 302, "status={$r['status']}");
 $r = http($port, 'GET', '/users/create', null, $jar);
 ok('validation error flashed', str_contains($r['body'], 'valid email'), substr($r['body'], 0, 120));
@@ -360,23 +465,23 @@ ok('old input repopulated', str_contains($r['body'], 'value="not-an-email"'));
 
 sec('Validation rules (JSON probes)');
 
-$r = http($port, 'POST', '/it-validate', ['name' => 'Sam', 'email' => 'fresh@test.local', 'password' => 'secret1', 'password_confirmation' => 'secret1']);
+$r = http($port, 'POST', '/it-validate', ['csrf_token' => $tokU, 'name' => 'Sam', 'email' => 'fresh@test.local', 'password' => 'secret1', 'password_confirmation' => 'secret1'], $jar);
 $data = json_decode($r['body'], true);
 ok('valid payload passes', $r['status'] === 200 && ($data['ok'] ?? false) === true, $r['body']);
 
-$r = http($port, 'POST', '/it-validate', ['name' => 'Sam', 'email' => 'admin@example.com', 'password' => 'secret1', 'password_confirmation' => 'secret1']);
+$r = http($port, 'POST', '/it-validate', ['csrf_token' => $tokU, 'email' => 'admin@example.com', 'name' => 'Sam', 'password' => 'secret1', 'password_confirmation' => 'secret1'], $jar);
 $data = json_decode($r['body'], true);
 ok('unique: rejects seeded email', $r['status'] === 422 && str_contains($data['errors']['email'][0] ?? '', 'already been taken'), $r['body']);
 
-$r = http($port, 'POST', '/it-validate', ['name' => 'Sam', 'email' => 'fresh@test.local', 'password' => 'aaa111', 'password_confirmation' => 'bbb222']);
+$r = http($port, 'POST', '/it-validate', ['csrf_token' => $tokU, 'name' => 'Sam', 'email' => 'fresh@test.local', 'password' => 'aaa111', 'password_confirmation' => 'bbb222'], $jar);
 $data = json_decode($r['body'], true);
 ok('confirmed: mismatch caught', str_contains($data['errors']['password'][0] ?? '', 'confirmation does not match'), $r['body']);
 
-$r = http($port, 'POST', '/it-validate', ['name' => 'ab', 'email' => 'fresh@test.local', 'password' => 'secret1', 'password_confirmation' => 'secret1']);
+$r = http($port, 'POST', '/it-validate', ['csrf_token' => $tokU, 'name' => 'ab', 'email' => 'fresh@test.local', 'password' => 'secret1', 'password_confirmation' => 'secret1'], $jar);
 $data = json_decode($r['body'], true);
 ok('min:3 caught', str_contains($data['errors']['name'][0] ?? '', 'at least 3'), $r['body']);
 
-$r = http($port, 'POST', '/it-validate-custom', []);
+$r = http($port, 'POST', '/it-validate-custom', ['csrf_token' => $tokU], $jar);
 $data = json_decode($r['body'], true);
 ok('custom message overrides lang', str_contains($data['errors']['token'][0] ?? '', 'CUSTOM token message'), $r['body']);
 
@@ -394,11 +499,11 @@ $r = http($port, 'GET', '/it-event-check');
 $data = json_decode($r['body'], true);
 ok('Event::flush fired after response', ($data['hit'] ?? false) === true, $r['body']);
 
-$r = http($port, 'POST', '/it-login', ['email' => 'admin@example.com', 'password' => 'wrong'], $jar);
+$r = http($port, 'POST', '/it-login', ['csrf_token' => $tokU, 'email' => 'admin@example.com', 'password' => 'wrong'], $jar);
 $data = json_decode($r['body'], true);
 ok('bad credentials rejected', ($data['ok'] ?? true) === false, $r['body']);
 
-$r = http($port, 'POST', '/it-login', ['email' => 'admin@example.com', 'password' => 'password'], $jar);
+$r = http($port, 'POST', '/it-login', ['csrf_token' => $tokU, 'email' => 'admin@example.com', 'password' => 'password'], $jar);
 $data = json_decode($r['body'], true);
 ok('attempt() logs in', ($data['ok'] ?? false) === true && (int) ($data['id'] ?? 0) > 0, $r['body']);
 
@@ -406,10 +511,29 @@ $r = http($port, 'GET', '/it-auth-check', null, $jar);
 $data = json_decode($r['body'], true);
 ok('session persists login', ($data['check'] ?? false) === true, $r['body']);
 
-$r = http($port, 'POST', '/it-logout', [], $jar);
+// 1.9: login rotated the CSRF token (fresh session identity) — pull a new one.
+$tokMid = grab_csrf($port, '/users/create', $jar);
+ok('1.9 login issues a CSRF token different from the pre-login one', $tokMid !== $tokU, 'token unchanged');
+$sidPre = $jar['PHPSESSID'] ?? '';
+$r = http($port, 'POST', '/it-logout', ['csrf_token' => $tokMid], $jar);
+$sidPost = $jar['PHPSESSID'] ?? '';
+ok('1.9 logout rotates the session id', $sidPost !== '' && $sidPost !== $sidPre, "pre={$sidPre} post={$sidPost}");
 $r = http($port, 'GET', '/it-auth-check', null, $jar);
 $data = json_decode($r['body'], true);
 ok('logout clears session', ($data['check'] ?? true) === false, $r['body']);
+
+// 1.4: a route guarded by the framework AuthMiddleware must block guests (302
+// HTML / 401 JSON) and pass members. /it-guarded was registered with the other
+// probes, before the server started.
+$r = http($port, 'GET', '/it-guarded', null, $jar);
+ok('1.4 guest through AuthMiddleware = 302 /login', $r['status'] === 302 && str_contains((string) ($r['headers']['location'] ?? ''), '/login'), 'status=' . $r['status']);
+$tokU = grab_csrf($port, '/users/create', $jar); // logout rotated the token (1.9)
+$r = http($port, 'POST', '/it-login', ['csrf_token' => $tokU, 'email' => 'admin@example.com', 'password' => 'password'], $jar);
+$r = http($port, 'GET', '/it-guarded', null, $jar);
+ok('1.4 member passes the guard', $r['status'] === 200 && str_contains($r['body'], 'ok'), 'status=' . $r['status']);
+$jarG = [];
+$r = http($port, 'GET', '/it-guarded', null, $jarG, null, null, ['Accept: application/json']);
+ok('1.4 guest + JSON caller = 401 from guard', $r['status'] === 401 && str_contains($r['body'], 'Unauthenticated'), 'status=' . $r['status']);
 
 // ------------------------------------------------------------ 5. CSRF stage
 
@@ -429,7 +553,7 @@ ok('csrf token present in form', $token !== null && strlen((string) $token) >= 3
 
 if ($token !== null) {
     $r = http($port, 'POST', '/users', ['csrf_token' => $token, 'name' => 'Csrf User', 'email' => 'csrf@test.local'], $jar);
-    ok('valid token accepted', $r['status'] === 302, "status={$r['status']}");
+    ok('valid token accepted', $r['status'] === 302, 'status=' . $r['status']);
     $r = http($port, 'GET', '/users', null, $jar);
     ok('csrf-protected create worked', str_contains($r['body'], 'Csrf User'));
 
@@ -517,10 +641,10 @@ if (!empty($mig)) {
 
 sec('Zero-Code CRUD: make:crud + built-in views');
 
-[$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Post title:string body:text? views:integer?');
+[$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Post title:string body:text? views:integer? price:float? published:bool?');
 ok('make:crud exits 0', $code === 0, $out);
 ok('Post model generated with NO controller', is_file($proj . '/app/Models/Post.php') && !is_file($proj . '/app/Controllers/PostController.php'));
-ok('route appended automatically', str_contains((string) file_get_contents($proj . '/routes/web.php'), "resource('posts');"));
+ok('route appended automatically', str_contains((string) file_get_contents($proj . '/routes/web.php'), "resource('posts')->public();"));
 
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx migrate');
 ok('make:crud migration applies', $code === 0, $out);
@@ -535,11 +659,27 @@ if (preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $m)) {
 }
 ok('built-in create form auto-generated from rules', $r['status'] === 200 && $token !== null && str_contains($r['body'], 'name="title"'), 'no title input/token');
 
+// HTML5 blocks decimals unless the input says step="any" — a float column
+// without it silently refuses 39.9 in every browser.
+ok('float rule renders step="any"', (bool) preg_match('#name="price"[^>]*step="any"#', $r['body']), 'price input missing step=any');
+ok('integer rule renders step="1"', (bool) preg_match('#name="views"[^>]*step="1"#', $r['body']), 'views input missing step=1');
+
+// form.php is included by create.php/edit.php, which add no wrapper of their
+// own — if it stops emitting layout-top the page renders with no <head> or CSS.
+ok('built-in create page is a full HTML document', str_starts_with(ltrim($r['body']), '<!DOCTYPE html>') && str_contains($r['body'], '</html>'), 'layout-top/bottom missing');
+
+// A bool rule must render a checkbox, not a text box.
+ok('bool rule renders a checkbox', (bool) preg_match('#<input[^>]*type="checkbox"[^>]*name="published"|<input[^>]*name="published"[^>]*type="checkbox"#', $r['body']), 'no checkbox for published');
+
 if ($token !== null) {
-    $r = http($port, 'POST', '/posts', ['csrf_token' => $token, 'title' => 'Hello Zero', 'body' => 'nothing'], $jar);
+    $r = http($port, 'POST', '/posts', ['csrf_token' => $token, 'title' => 'Hello Zero', 'body' => 'nothing', 'published' => '1'], $jar);
     ok('zero-code store redirects', $r['status'] === 302, "status={$r['status']}");
     $r = http($port, 'GET', '/posts', null, $jar);
     ok('built-in list shows the new record', str_contains($r['body'], 'Hello Zero'));
+    // 1/0 in a list is unreadable — a bool column renders yes/no.
+    ok('built-in list renders the bool column as yes', str_contains($r['body'], '✓ yes'), 'no yes marker');
+    // an empty optional cell renders a dash instead of nothing at all
+    ok('built-in list marks empty cells', str_contains($r['body'], 'color:#cbd5e1'), 'no empty-cell marker');
 
     $postId = null;
     if (preg_match('#/posts/(\d+)"[^>]*>View|/posts/(\d+)#', $r['body'], $m)) {
@@ -548,6 +688,24 @@ if ($token !== null) {
     if ($postId) {
         $r = http($port, 'GET', '/posts/' . $postId, null, $jar);
         ok('built-in show page works', $r['status'] === 200 && str_contains($r['body'], 'Hello Zero'), "status={$r['status']}");
+
+        $r = http($port, 'GET', '/posts/' . $postId . '/edit', null, $jar);
+        ok('built-in edit page is a full HTML document', str_starts_with(ltrim($r['body']), '<!DOCTYPE html>') && str_contains($r['body'], '</html>'), 'no layout');
+        ok('edit form prefills the stored value', str_contains($r['body'], 'value="Hello Zero"'), 'title not prefilled');
+        // unchecked boxes submit nothing; without the hidden 0 the old value
+        // would survive every save and the field could never be turned off.
+        ok('checkbox has a hidden 0 companion', (bool) preg_match('#name="published" value="0">#', $r['body']), 'no hidden 0');
+        ok('stored true prefills the checkbox as checked', (bool) preg_match('#name="published"[^>]*value="1"[^>]*checked#', $r['body']), 'not checked');
+        if (preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $m2)) {
+            $r = http($port, 'POST', '/posts/' . $postId, ['csrf_token' => $m2[1], '_method' => 'PUT', 'title' => 'Renamed Zero', 'body' => 'edited', 'published' => '0'], $jar);
+            ok('zero-code update redirects', $r['status'] === 302, "status={$r['status']}");
+            $r = http($port, 'GET', '/posts/' . $postId, null, $jar);
+            ok('zero-code update persisted', str_contains($r['body'], 'Renamed Zero'), 'still the old title');
+            // an unchecked box sends no field at all — the detail page says no
+            ok('built-in show renders the bool column as no', str_contains($r['body'], '✗ no') && !str_contains($r['body'], '✓ yes'), 'bool cell wrong');
+        } else {
+            ok('edit page carries a csrf token', false, 'no token in edit form');
+        }
     } else {
         ok('post id extractable', false, 'no id found');
     }
@@ -692,7 +850,7 @@ ok('verification mail logged with link', (bool) preg_match('#/verify-email/([a-f
 if (isset($vm[1])) {
     $r = http($port, 'GET', '/verify-email/' . $vm[1] . '?email=' . $vm[2], null, $jar);
     ok('verification link accepted', $r['status'] === 302, "status={$r['status']}");
-    $pdb = new PDO('sqlite:' . $proj . '/database.sqlite');
+    $pdb = project_pdo($proj . '/database.sqlite'); // 2.7: honours DB_CONNECTION
     $row = $pdb->query("SELECT email_verified_at FROM users WHERE email='sara@widdx.test'")->fetch(PDO::FETCH_ASSOC);
     ok('email_verified_at persisted', !empty($row['email_verified_at']));
     $pdb = null;
@@ -715,7 +873,7 @@ ok('failed login shows translated error', str_contains($r['body'], 'do not match
 $tok = $csrf('/login');
 http($port, 'POST', '/login', ['csrf_token' => (string) $tok, 'email' => 'sara@widdx.test', 'password' => 'supersecret1'], $jar);
 if (getenv('ITTRACE')) {
-    $pdb2 = new PDO('sqlite:' . $proj . '/database.sqlite');
+    $pdb2 = project_pdo($proj . '/database.sqlite'); // 2.7: honours DB_CONNECTION
     $hash = (string) $pdb2->query("SELECT password FROM users WHERE email='sara@widdx.test'")->fetchColumn();
     $uid = (int) $pdb2->query("SELECT id FROM users WHERE email='sara@widdx.test'")->fetchColumn();
     fwrite(STDERR, 'GOODLOGIN hashlen=' . strlen($hash) . ' verify=' . var_export(password_verify('supersecret1', $hash), true) . " uid={$uid}\n");
@@ -763,6 +921,11 @@ $policyDir = $proj . '/app/Policies';
 if (!is_dir($policyDir)) {
     mkdir($policyDir, 0777, true);
 }
+// 8e runs as a LOGGED-IN member: a denied member is 403, a denied guest
+// would be 302 to /login (fail-closed semantics of 1.2).
+$tok = $csrf('/login');
+$r = http($port, 'POST', '/login', ['csrf_token' => (string) $tok, 'email' => 'sara@widdx.test', 'password' => 'brandnewpass9'], $jar);
+ok('member logged in for policy checks', $authState(), 'not logged in');
 file_put_contents($policyDir . '/BookPolicy.php', <<<'PHP'
 <?php
 declare(strict_types=1);
@@ -856,7 +1019,7 @@ ok('trusted proxy → right-most hop', ($j['ip'] ?? '') === '10.0.0.9', $r['body
 ok('make:crud with fk(Author) exits 0', $code === 0, $out);
 $mig = glob($proj . '/database/migrations/*create_books_table.php');
 $mig = $mig === false ? [] : (function (array $f): array { rsort($f); return $f; })($mig);
-ok('latest books migration carries REFERENCES authors(id)', count($mig) > 0 && str_contains((string) file_get_contents($mig[0]), 'REFERENCES authors(id)'));
+ok('latest books migration builds a Schema FK (foreignId->constrained authors)', count($mig) > 0 && str_contains((string) file_get_contents($mig[0]), "foreignId('author_id')->constrained('authors')"));
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx migrate');
 ok('fk migrations apply', $code === 0, $out);
 
@@ -1105,6 +1268,21 @@ ok('fresh project has NO .env (installer stays available)', !is_file($proj2 . '/
 [$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Note title:string');
 ok('make:crud in hostapp exits 0', $code === 0, $out);
 
+// 1.5 needs a route that THROWS. Register it BEFORE the server starts: a live
+// `file_put_contents(..., FILE_APPEND)` on routes/web.php right before the very
+// next request can be served from opcache's previously-compiled copy (it only
+// revalidates mtime every ~2s), so the freshly-appended route 404s. Registered
+// up front it is part of the first compile and always present.
+file_put_contents($proj2 . '/routes/web.php', "\nget('/it-boom', function () { throw new \\RuntimeException('SECRET-TRACE-15'); });\n", FILE_APPEND);
+
+// 2.3: JSON / bearer handling over real HTTP. Registered up front (same reason
+// as /it-boom) and it lives under /api, so it is in the csrf-free `api` group.
+file_put_contents(
+    $proj2 . '/routes/web.php',
+    "\npost('/api/it-json', function () {\n    \$r = request();\n    return \\Widdx\\Response::json(['name' => \$r->input('name'), 'bearer' => \$r->bearerToken(), 'age' => \$r->json('age')]);\n});\n",
+    FILE_APPEND
+);
+
 $port2 = pick_port();
 $pid2 = start_server($proj2, $port2);
 $jar2 = [];
@@ -1112,12 +1290,42 @@ $jar2 = [];
 $r = http($port2, 'GET', '/install.php', null, $jar2);
 ok('install.php serves the Arabic form', $r['status'] === 200 && str_contains($r['body'], 'تنصيب') && str_contains($r['body'], 'dir="rtl"'), substr($r['body'], 0, 200));
 
+// 1.10: the form must carry an installer CSRF token, and the proof-of-
+// possession key must exist on disk WITHOUT ever being rendered.
+$tok10 = null;
+if (preg_match('#name="installer_token" value="([^"]+)"#', $r['body'], $m10)) {
+    $tok10 = $m10[1];
+}
+ok('1.10 installer form carries a CSRF token', is_string($tok10) && strlen((string) $tok10) >= 32, 'token=' . var_export($tok10, true));
+$keyFile = $proj2 . '/storage/app/install.key';
+ok('1.10 install key file created on first GET', is_file($keyFile));
+$key10 = trim((string) @file_get_contents($keyFile));
+ok('1.10 key value is NEVER leaked in the HTML', $key10 !== '' && !str_contains($r['body'], $key10));
+
+$r = http($port2, 'POST', '/install.php', [
+    'action' => 'install', 'DB_CONNECTION' => 'sqlite', 'DB_SQLITE_PATH' => $proj2 . '/host.sqlite',
+], $jar2);
+ok('1.10 POST without installer token is refused, no .env written', $r['status'] === 200 && !is_file($proj2 . '/.env') && str_contains($r['body'], 'CSRF'), 'status=' . $r['status']);
+$r = http($port2, 'POST', '/install.php', [
+    'action' => 'install', 'installer_token' => 'deadbeefdeadbeefdeadbeefdeadbeef', 'install_key' => $key10,
+    'DB_CONNECTION' => 'sqlite', 'DB_SQLITE_PATH' => $proj2 . '/host.sqlite',
+], $jar2);
+ok('1.10 bogus installer token is refused', $r['status'] === 200 && !is_file($proj2 . '/.env'));
+$r = http($port2, 'POST', '/install.php', [
+    'action' => 'install', 'installer_token' => (string) $tok10, 'install_key' => 'wrong-key-wrong-key-wrong-key-xxxxx',
+    'DB_CONNECTION' => 'sqlite', 'DB_SQLITE_PATH' => $proj2 . '/host.sqlite',
+], $jar2);
+ok('1.10 wrong install key is refused', $r['status'] === 200 && !is_file($proj2 . '/.env') && str_contains($r['body'], 'مفتاح التنصيب'), substr($r['body'], 0, 150));
+
 $r = http($port2, 'GET', '/', null, $jar2);
 ok('welcome page reachable pre-install', $r['status'] === 200);
 
-// Fill the installer form (sqlite, absolute path so php -S CWD cannot matter).
+// Fill the installer form properly (sqlite, absolute path so php -S CWD
+// cannot matter) — token from the form + key read "over FTP" from disk.
 $r = http($port2, 'POST', '/install.php', [
     'action' => 'install',
+    'installer_token' => (string) $tok10,
+    'install_key' => $key10,
     'DB_CONNECTION' => 'sqlite',
     'DB_SQLITE_PATH' => $proj2 . '/host.sqlite',
     'APP_LOCALE' => 'ar',
@@ -1125,6 +1333,9 @@ $r = http($port2, 'POST', '/install.php', [
 ], $jar2);
 ok('install POST succeeds', $r['status'] === 200 && str_contains($r['body'], 'تم التنصيب'), substr($r['body'], 0, 300));
 ok('.env was created', is_file($proj2 . '/.env'));
+ok('1.10 .env written with 0600 perms', substr(sprintf('%o', (int) fileperms($proj2 . '/.env')), -4) === '0600', substr(sprintf('%o', (int) @fileperms($proj2 . '/.env')), -4));
+ok('1.10 installer deleted itself after success', !is_file($proj2 . '/public/install.php'));
+ok('1.10 install key removed once locked', !is_file($keyFile));
 $env2 = (string) @file_get_contents($proj2 . '/.env');
 ok('.env carries the chosen settings', str_contains($env2, 'DB_CONNECTION=sqlite') && str_contains($env2, 'APP_LOCALE=ar') && str_contains($env2, 'host.sqlite'));
 ok('migration ran from the browser', is_file($proj2 . '/host.sqlite'));
@@ -1133,7 +1344,7 @@ ok('installer self-locked', is_file($proj2 . '/storage/app/installed.lock'));
 $r = http($port2, 'GET', '/install.php', null, $jar2);
 ok('install.php is 404 after install (one-shot)', $r['status'] === 404, substr($r['body'], 0, 150));
 $r = http($port2, 'POST', '/install.php', ['action' => 'install', 'DB_CONNECTION' => 'sqlite'], $jar2);
-ok('POST cannot bypass the lock either', $r['status'] === 404);
+ok('POST cannot bypass the lock either (404 gone, or 419 CSRF before that)', in_array($r['status'], [404, 419], true), 'status=' . $r['status']);
 
 // The app itself runs with zero terminal involvement.
 $r = http($port2, 'GET', '/notes', null, $jar2);
@@ -1148,7 +1359,263 @@ $r = http($port2, 'POST', '/notes', ['csrf_token' => (string) $tok2, 'title' => 
 $r = http($port2, 'GET', '/notes', null, $jar2);
 ok('record inserted through the web-installed app', $r['status'] === 200 && str_contains($r['body'], 'FTP-only note'), substr($r['body'], 0, 300));
 
+// 1.1 negative: a resource model with NO $fillable/$rules must fail loudly, never write.
+file_put_contents(
+    $proj2 . '/app/Models/Probeno.php',
+    "<?php\n\nnamespace App\\Models;\n\nuse Widdx\\Model;\n\nclass Probeno extends Model\n{\n    protected ?string \$table = 'probenos';\n}\n"
+);
+file_put_contents($proj2 . '/routes/web.php', "\nresource('probenos')->public();\n", FILE_APPEND);
+// web group is on by default since 1.3 — reuse a session-valid token.
+$tokP2 = grab_csrf($port2, '/notes/create', $jar2);
+$r = http($port2, 'POST', '/probenos', ['csrf_token' => $tokP2, 'name' => 'sneak', 'is_admin' => '1'], $jar2);
+ok('1.1 no-fillable resource POST fails loudly with guidance', $r['status'] === 500 && stripos($r['body'], 'fillable') !== false, substr($r['body'], 0, 200));
+
+// 1.8 safe uploads + storageRoutes: content-derived extension, nosniff, no traversal.
+file_put_contents(
+    $proj2 . '/routes/web.php',
+    "\nstorageRoutes();\npost('/it-upload', function () {\n    \$p = request()->file('doc')->store('public/it18');\n    return \\Widdx\\Response::json(['p' => \$p]);\n});\n",
+    FILE_APPEND
+);
+$b18 = 'widdx18-boundary';
+$gif18 = base64_decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
+$mp18 = "--{$b18}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{$tokP2}\r\n"
+    . "--{$b18}\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"evil.php\"\r\nContent-Type: application/x-httpd-php\r\n\r\n{$gif18}\r\n--{$b18}--\r\n";
+$r = http($port2, 'POST', '/it-upload', null, $jar2, $mp18, 'multipart/form-data; boundary=' . $b18);
+$json18 = json_decode($r['body'], true);
+$p18 = (string) ($json18['p'] ?? '');
+ok(
+    '1.8 upload stored with content-derived .gif (client claimed .php)',
+    $r['status'] === 200 && $p18 !== '' && str_ends_with($p18, '.gif') && !str_contains($p18, '.php'),
+    substr($r['body'], 0, 200)
+);
+$r = http($port2, 'GET', '/storage/' . substr($p18, strlen('public/')), null, $jar2);
+ok(
+    '1.8 storageRoutes serves with real Content-Type + nosniff',
+    $r['status'] === 200 && stripos((string) ($r['headers']['content-type'] ?? ''), 'image/gif') === 0
+        && ($r['headers']['x-content-type-options'] ?? '') === 'nosniff',
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 250)
+);
+$r = http($port2, 'GET', '/storage/../../composer.json', null, $jar2);
+ok('1.8 storageRoutes refuses path traversal', $r['status'] === 404, 'status=' . $r['status']);
+$it18Files = glob($proj2 . '/storage/app/public/it18/*') ?: [];
+foreach ($it18Files as $ff) {
+    if (preg_match('/\.php$/i', $ff)) {
+        fwrite(STDERR, 'SECURITY: php-extension upload reached disk: ' . $ff . "\n");
+    }
+}
+ok('1.8 no .php file ever reached the disk', array_filter($it18Files, fn($f) => preg_match('/\.php$/i', $f)) === []);
+
+// 1.2 fail-closed authorization: no policy + no ->public() + no controller
+// opt-in = DENY. Guests → 302 /login (web) / 401 JSON (api); members → 403.
+file_put_contents(
+    $proj2 . '/app/Models/Vault.php',
+    "<?php\n\nnamespace App\\Models;\n\nuse Widdx\\Model;\n\nclass Vault extends Model\n{\n    protected ?string \$table = 'vaults';\n    protected array \$fillable = ['secret'];\n}\n"
+);
+file_put_contents(
+    $proj2 . '/app/Models/Secret.php',
+    "<?php\n\nnamespace App\\Models;\n\nuse Widdx\\Model;\n\nclass Secret extends Model\n{\n    protected ?string \$table = 'secrets';\n    protected array \$fillable = ['secret'];\n}\n"
+);
+file_put_contents(
+    $proj2 . '/app/Controllers/PublicOpenController.php',
+    "<?php\n\nnamespace App\\Controllers;\n\nuse App\\Models\\Vault;\nuse Widdx\\CrudController;\n\nclass PublicOpenController extends CrudController\n{\n    protected string \$model = Vault::class;\n    protected bool \$public = true;\n}\n"
+);
+file_put_contents($proj2 . '/routes/web.php', "\n" . <<<'PHP'
+get('/mkvault', function () {
+    // 2.7: Schema builder + prepared insert — portable across sqlite/mysql/pgsql
+    \Widdx\Schema::create('vaults', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->text('secret');
+    });
+    \Widdx\Schema::create('secrets', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->text('secret');
+    });
+    $st = db()->pdo()->prepare("INSERT INTO users (name, email, password) VALUES (?, ?, ?)");
+    $st->execute(['Gate Bot', 'gate@widdx.test', password_hash('gatepass1', PASSWORD_DEFAULT)]);
+    return \Widdx\Response::json(['ok' => true]);
+});
+post('/glogin', fn() => \Widdx\Response::json(['ok' => \Widdx\Auth::attempt(request()->only(['email', 'password']))]));
+post('/glogout', function () { \Widdx\Auth::logout(); return \Widdx\Response::json(['ok' => true]); });
+get('/authstate', fn() => \Widdx\Response::json(['id' => \Widdx\Auth::id()]));
+resource('vaults');
+apiResource('secrets');
+resource('publicopens', \App\Controllers\PublicOpenController::class);
+PHP, FILE_APPEND);
+$r = http($port2, 'GET', '/mkvault', null, $jar2);
+ok('1.2 probes registered', $r['status'] === 200, 'status=' . $r['status']);
+
+$r = http($port2, 'GET', '/vaults', null, $jar2);
+ok(
+    '1.2 guest + no policy + no ->public() = 302 to /login',
+    $r['status'] === 302 && str_contains((string) ($r['headers']['location'] ?? ''), '/login'),
+    'status=' . $r['status'] . ' loc=' . (string) ($r['headers']['location'] ?? '')
+);
+$r = http($port2, 'GET', '/api/secrets', null, $jar2);
+ok('1.2 API guest = 401 JSON (not open)', $r['status'] === 401 && str_contains($r['body'], 'Unauthenticated'), 'status=' . $r['status']);
+
+$r = http($port2, 'POST', '/glogin', ['csrf_token' => $tokP2, 'email' => 'gate@widdx.test', 'password' => 'gatepass1'], $jar2);
+ok('1.2 login probe works', $r['status'] === 200 && (json_decode($r['body'], true)['ok'] ?? false) === true, substr($r['body'], 0, 120));
+$r = http($port2, 'GET', '/vaults', null, $jar2);
+ok('1.2 member + no policy = 403 (fail closed)', $r['status'] === 403, 'status=' . $r['status']);
+http($port2, 'POST', '/glogout', ['csrf_token' => grab_csrf($port2, '/notes/create', $jar2)], $jar2);
+
+$policyDir2 = $proj2 . '/app/Policies';
+if (!is_dir($policyDir2)) {
+    mkdir($policyDir2, 0775, true);
+}
+// Strict-typed policy: called with a null guest it would 500 — must deny cleanly.
+file_put_contents($policyDir2 . '/VaultPolicy.php', <<<'PHP'
+<?php
+declare(strict_types=1);
+namespace App\Policies;
+class VaultPolicy
+{
+    public function viewAny(\App\Models\User $user): bool
+    {
+        return true;
+    }
+}
+PHP);
+$r = http($port2, 'GET', '/vaults', null, $jar2);
+ok('1.2 guest vs strict-typed policy = 302, never 500', $r['status'] === 302, 'status=' . $r['status']);
+
+file_put_contents($policyDir2 . '/VaultPolicy.php', <<<'PHP'
+<?php
+declare(strict_types=1);
+namespace App\Policies;
+class VaultPolicy
+{
+    public function viewAny(mixed $user): bool
+    {
+        return true;
+    }
+}
+PHP);
+$r = http($port2, 'GET', '/vaults', null, $jar2);
+ok('1.2 policy allow overrides default-deny (even guest)', $r['status'] === 200 && str_contains($r['body'], 'Vaults'), 'status=' . $r['status']);
+@unlink($policyDir2 . '/VaultPolicy.php');
+$r = http($port2, 'GET', '/vaults', null, $jar2);
+ok('1.2 policy removed = fail closed again', $r['status'] === 302, 'status=' . $r['status']);
+
+$r = http($port2, 'GET', '/publicopens', null, $jar2);
+ok('1.2 controller \$public = true opens guest access', $r['status'] === 200, 'status=' . $r['status']);
+
+file_put_contents($proj2 . '/routes/web.php', "\nresource('secrets')->public();\n", FILE_APPEND);
+$r = http($port2, 'GET', '/secrets', null, $jar2);
+ok('1.2 resource()->public() opens the whole group', $r['status'] === 200, 'status=' . $r['status']);
+
+// 1.3 default web group: security headers + CSRF everywhere, /api exempt,
+// JSON clients get JSON errors, authRoutes throttles credential posts.
+$r = http($port2, 'GET', '/notes', null, $jar2);
+ok(
+    '1.3 SecurityHeaders auto-applied on web',
+    ($r['headers']['x-frame-options'] ?? '') === 'SAMEORIGIN'
+        && ($r['headers']['x-content-type-options'] ?? '') === 'nosniff'
+        && ($r['headers']['referrer-policy'] ?? '') === 'strict-origin-when-cross-origin',
+    json_encode($r['headers'])
+);
+$r = http($port2, 'POST', '/notes', ['title' => 'no token'], $jar2);
+ok('1.3 POST without token = 419 with zero registration', $r['status'] === 419, 'status=' . $r['status']);
+$tok13 = grab_csrf($port2, '/notes/create', $jar2);
+ok('1.3 zero-code forms carry the token automatically', strlen($tok13) >= 32, 'token=' . $tok13);
+$r = http($port2, 'POST', '/notes', ['csrf_token' => $tok13, 'title' => 'CSRF OK note'], $jar2);
+ok('1.3 POST with token passes (302)', $r['status'] === 302, 'status=' . $r['status']);
+$r = http($port2, 'POST', '/notes', null, $jar2, json_encode(['title' => 'x']), 'application/json');
+ok('1.3 JSON client gets 419 as JSON not HTML', $r['status'] === 419 && str_contains($r['body'], 'CSRF token mismatch'), substr($r['body'], 0, 120));
+$r = http($port2, 'POST', '/notes', ['csrf_token[]' => 'x', 'title' => 'arr'], $jar2);
+ok('1.3 array csrf_token is 419, never a warning/500', $r['status'] === 419, 'status=' . $r['status']);
+$r = http($port2, 'POST', '/api/secrets', ['secret' => 's'], $jar2);
+ok('1.3 /api group has NO CSRF (401 auth gate, not 419)', $r['status'] === 401, 'status=' . $r['status']);
+
+file_put_contents($proj2 . '/routes/web.php', "\nauthRoutes();\n", FILE_APPEND);
+$r = http($port2, 'GET', '/login', null, $jar2);
+$tokL = preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $mL) === 1 ? $mL[1] : '';
+ok('1.3 login page renders with token', $r['status'] === 200 && strlen($tokL) >= 32, 'status=' . $r['status']);
+$codes13 = [];
+for ($i13 = 0; $i13 < 6; $i13++) {
+    $rl = http($port2, 'POST', '/login', ['csrf_token' => $tokL, 'email' => 'nobody@widdx.test', 'password' => 'wrongpass'], $jar2);
+    $codes13[] = $rl['status'];
+}
+ok('1.3 authRoutes throttles /login (5/min → 6th is 429)', $codes13 === [302, 302, 302, 302, 302, 429], json_encode($codes13));
+
+// 1.3b: JSON callers always get machine-readable errors — no HTML, no redirect.
+$r = http($port2, 'GET', '/vaults', null, $jar2, null, null, ['Accept: application/json']);
+ok('1.3b guest + Accept json at auth gate = 401 JSON (not 302)', $r['status'] === 401 && str_contains($r['body'], 'error'), 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
+$r = http($port2, 'GET', '/api/does-not-exist', null, $jar2);
+ok('1.3b /api 404 renders as JSON', $r['status'] === 404 && str_contains($r['body'], 'error'), 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
+$tokV = grab_csrf($port, '/users/create', $jar);
+$r = http($port, 'POST', '/it-validate', null, $jar, json_encode(['name' => 'a']), 'application/json', ['X-CSRF-TOKEN: ' . $tokV]);
+$d13b = json_decode($r['body'], true);
+ok('1.3b validation over JSON = 422 {message, errors}', $r['status'] === 422 && isset($d13b['errors']['name']), 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
+
+// 1.5: debug is OFF unless .env says otherwise — no trace leaks.
+// (/it-boom is registered up-front, before the server started — see note there.)
+$r = http($port2, 'GET', '/it-boom', null, $jar2);
+ok('1.5 installed with APP_DEBUG=1 → technical page shown', $r['status'] === 500 && str_contains($r['body'], 'SECRET-TRACE-15'), 'status=' . $r['status']);
+$envRaw = (string) file_get_contents($proj2 . '/.env');
+$envKept = array_values(array_filter(explode("\n", $envRaw), fn($l) => !str_starts_with(trim($l), 'APP_DEBUG')));
+file_put_contents($proj2 . '/.env', implode("\n", $envKept) . "\n");
+$r = http($port2, 'GET', '/it-boom', null, $jar2);
+ok('1.5 APP_DEBUG unset → friendly 500, no trace leak', $r['status'] === 500 && !str_contains($r['body'], 'SECRET-TRACE-15') && !str_contains($r['body'], 'Technical Details'), substr($r['body'], 0, 120));
+$r = http($port2, 'GET', '/it-boom', null, $jar2, null, null, ['Accept: application/json']);
+ok('1.5 JSON 500 hides the message when debug off', $r['status'] === 500 && str_contains($r['body'], 'Internal Server Error') && !str_contains($r['body'], 'SECRET-TRACE-15'), substr($r['body'], 0, 150));
+
+// 2.3: JSON body parse + bearer token over real HTTP (api group => no CSRF).
+$r = http($port2, 'POST', '/api/it-json', null, $jar2, '{"name":"Ada","age":30}', 'application/json', ['Authorization: Bearer tok-2-3']);
+$d23 = json_decode($r['body'], true);
+ok('2.3 JSON body parses into input()/json() over HTTP', $r['status'] === 200 && ($d23['name'] ?? null) === 'Ada' && ($d23['age'] ?? null) === 30, 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
+ok('2.3 bearerToken() reads Authorization header', ($d23['bearer'] ?? null) === 'tok-2-3', substr($r['body'], 0, 150));
+$r = http($port2, 'POST', '/api/it-json', null, $jar2, '{not valid json', 'application/json');
+ok('2.3 malformed JSON body is a clean 400 (not 500, not silent empty)', $r['status'] === 400, 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
+
+// 2.4 HEAD / OPTIONS over real HTTP against the /notes resource.
+$r = http($port2, 'HEAD', '/notes', null, $jar2);
+ok('2.4 HEAD returns 200 with an empty body', $r['status'] === 200 && $r['body'] === '', 'status=' . $r['status'] . ' bodylen=' . strlen($r['body']));
+$r = http($port2, 'OPTIONS', '/notes', null, $jar2);
+$allowH24 = (string) ($r['headers']['allow'] ?? '');
+ok('2.4 OPTIONS returns 204 + Allow listing GET', $r['status'] === 204 && stripos($allowH24, 'GET') !== false, 'status=' . $r['status'] . ' allow=' . $allowH24);
+
+// 2.6: migrations are transactional — a failing migration must roll back its
+// own DDL and must NOT be recorded, while earlier migrations stay applied.
+// MySQL commits DDL implicitly (a real, documented engine limitation), so the
+// rollback assertion only applies to the transactional-DDL drivers.
+$saved2 = getenv('DB_CONNECTION');
+$drv2 = $saved2 !== false && $saved2 !== '' ? $saved2 : 'sqlite';
+file_put_contents(
+    $proj2 . '/database/migrations/9999_12_31_000000_it_fail.php',
+    "<?php\n\ndeclare(strict_types=1);\n\nreturn new class {\n    public function up(\\PDO \$pdo): void\n    {\n        \\Widdx\\Schema::create('it_rollback_probe', function (\\Widdx\\Blueprint \$t) { \$t->id(); }, \$pdo);\n        throw new \\RuntimeException('intentional 2.6 failure');\n    }\n    public function down(\\PDO \$pdo): void {}\n};\n"
+);
+[$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx migrate');
+$probePdo = project_pdo($proj2 . '/host.sqlite'); // 2.7: honours DB_CONNECTION
+$probeTable = db_has_table($probePdo, 'it_rollback_probe') ? 1 : 0;
+$notRecorded = (int) $probePdo->query("SELECT COUNT(*) FROM migrations WHERE migration='9999_12_31_000000_it_fail'")->fetchColumn();
+$usersIntact = db_has_table($probePdo, 'users') ? 1 : 0;
+$txDDL = in_array($drv2, ['sqlite', 'pgsql'], true);
+ok('2.6 failing migration is rolled back (its table is absent)', $txDDL ? $probeTable === 0 : true, 'driver=' . $drv2 . ' probe=' . $probeTable . ' out=' . substr($out, 0, 120));
+ok('2.6 failing migration is NOT recorded', $notRecorded === 0, 'recorded=' . $notRecorded);
+ok('2.6 earlier migrations stay applied (users intact)', $usersIntact === 1, 'users=' . $usersIntact);
+@unlink($proj2 . '/database/migrations/9999_12_31_000000_it_fail.php');
+if ($drv2 !== 'sqlite') {
+    // leave no trace for later stages that reuse the same database
+    $probePdo->exec('DROP TABLE IF EXISTS it_rollback_probe');
+}
+
 stop_server($pid2);
+
+// 1.10: a LOCKED project whose .env went missing must still refuse 404.
+[$code, $out] = shell('cd ' . escapeshellarg($TMP) . ' && ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($ROOT . '/widdx') . ' new lockonly');
+ok('widdx new lockonly exits 0', $code === 0, $out);
+ok('2.4 scaffold ships core/Route.php + CorsMiddleware + config/cors.php',
+    is_file($TMP . '/lockonly/core/Route.php')
+    && is_file($TMP . '/lockonly/core/CorsMiddleware.php')
+    && is_file($TMP . '/lockonly/config/cors.php'));
+@mkdir($TMP . '/lockonly/storage/app', 0775, true);
+file_put_contents($TMP . '/lockonly/storage/app/installed.lock', 'pre-seeded');
+$port5 = pick_port();
+$pid5 = start_server($TMP . '/lockonly', $port5);
+$r = http($port5, 'GET', '/install.php');
+ok('1.10 lock without .env still refuses (404, not re-installable)', $r['status'] === 404, 'status=' . $r['status']);
+stop_server($pid5);
 
 // ------------------------------------------------------------------ summary
 

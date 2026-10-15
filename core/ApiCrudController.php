@@ -14,9 +14,13 @@ namespace Widdx;
  *   }
  *
  * Pair with: apiResource('posts', PostApiController::class);
+ *            apiResource('posts')->public();  // opt out of the fail-closed gate
  */
 abstract class ApiCrudController
 {
+    use Concerns\HandlesCrudInput;
+    use Concerns\GatesCrudActions;
+
     /** Model class (required) */
     protected string $model = '';
 
@@ -74,11 +78,7 @@ abstract class ApiCrudController
             return $deny;
         }
         $model = $this->model();
-        $rules = $this->rules();
-        $data = !empty($rules)
-            ? request()->validate($rules)
-            : request()->except(['_method', 'csrf_token']);
-        return Response::json($model::create($data)->toArray(), 201);
+        return Response::json($model::create($this->inputData())->toArray(), 201);
     }
 
     public function show(mixed $id): Response
@@ -98,11 +98,7 @@ abstract class ApiCrudController
         if ($deny = $this->deny('update', $item)) {
             return $deny;
         }
-        $rules = $this->rules();
-        $data = !empty($rules)
-            ? request()->validate($rules)
-            : request()->except(['_method', 'csrf_token']);
-        $item->fill($data);
+        $item->fill($this->inputData());
         $item->save();
         return Response::json($item->toArray());
     }
@@ -119,17 +115,19 @@ abstract class ApiCrudController
     }
 
     /**
-     * Policy auto-guard with a JSON answer: null = allowed/un guarded,
-     * otherwise a ready 403 Response. Zero wiring code required.
+     * Fail-closed auto-guard with a JSON answer: null = allowed, otherwise
+     * 401 (guest) or 403. Allowed only when a policy allows, the route was
+     * marked ->public(), or the controller sets $public = true.
      */
     protected function deny(string $ability, mixed $argument = null): ?Response
     {
         $target = $argument ?? $this->model();
-        if (!Gate::has($ability, $target)) {
+        if ($this->crudAuthorized($ability, $target)) {
             return null;
         }
-        return Gate::allows($ability, $target)
-            ? null
-            : Response::json(['error' => 'Forbidden'], 403);
+        if ($this->crudIsGuest()) {
+            return Response::json(['error' => 'Unauthenticated.'], 401);
+        }
+        return Response::json(['error' => 'Forbidden'], 403);
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Widdx;
 
 use Widdx\Contracts\StorageInterface;
+use Widdx\Exceptions\WiddxException;
 
 /**
  * Local filesystem storage driver.
@@ -19,7 +20,7 @@ class LocalStorage implements StorageInterface
         $this->root = $root ?? (dirname(__DIR__) . '/storage/app');
         $this->url = rtrim($url, '/');
         if (!is_dir($this->root)) {
-            mkdir($this->root, 0777, true);
+            mkdir($this->root, 0775, true);
         }
     }
 
@@ -28,7 +29,7 @@ class LocalStorage implements StorageInterface
         $file = $this->fullPath($path);
         $dir = dirname($file);
         if (!is_dir($dir)) {
-            mkdir($dir, 0777, true);
+            mkdir($dir, 0775, true);
         }
         return file_put_contents($file, $contents) !== false;
     }
@@ -99,7 +100,7 @@ class LocalStorage implements StorageInterface
         if (is_dir($dir)) {
             return true;
         }
-        return mkdir($dir, 0777, true);
+        return mkdir($dir, 0775, true);
     }
 
     public function deleteDirectory(string $path): bool
@@ -125,8 +126,44 @@ class LocalStorage implements StorageInterface
         return $this->root;
     }
 
+    /**
+     * Resolve a disk-relative path, SAFELY.
+     * Rejects: NUL bytes, absolute paths, and any '..' segment; then double-
+     * checks via realpath() that the resolved directory stays inside root.
+     * @throws WiddxException
+     */
     protected function fullPath(string $path): string
     {
-        return $this->root . '/' . ltrim($path, '/');
+        if (str_contains($path, "\0")) {
+            throw new WiddxException('Storage path contains a NUL byte.');
+        }
+        $path = str_replace('\\', '/', $path);
+        if (str_starts_with($path, '/') || preg_match('#^[a-zA-Z]:#', $path) === 1) {
+            throw new WiddxException('Absolute paths are not allowed on a storage disk: ' . $path);
+        }
+        $segments = [];
+        foreach (explode('/', $path) as $seg) {
+            if ($seg === '' || $seg === '.') {
+                continue;
+            }
+            if ($seg === '..') {
+                throw new WiddxException('Path traversal rejected: ' . $path);
+            }
+            $segments[] = $seg;
+        }
+        $full = $this->root . '/' . implode('/', $segments);
+        // Belt & braces: verify the deepest existing directory resolves inside root.
+        $realRoot = realpath($this->root);
+        $probe = $segments === [] ? $this->root : dirname($full);
+        while ($probe !== $this->root && !is_dir($probe)) {
+            $probe = dirname($probe);
+        }
+        $realProbe = realpath($probe);
+        if ($realRoot !== false && $realProbe !== false
+            && $realProbe !== $realRoot
+            && !str_starts_with($realProbe, $realRoot . '/')) {
+            throw new WiddxException('Path escapes the storage root: ' . $path);
+        }
+        return $full;
     }
 }

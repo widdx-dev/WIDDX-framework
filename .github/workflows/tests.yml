@@ -11,20 +11,60 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ['8.1', '8.2', '8.3', '8.4']
+        php: ['8.1', '8.2', '8.3', '8.4', '8.5']
+        # 2.7: the full suite runs against every driver we claim to support
+        # out of the box. sqlsrv/oci are best-effort only (see README).
+        db: [sqlite, mysql, pgsql]
+
+    # Real database servers, always up; the job picks one via DB_CONNECTION.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: widdxpass
+          MYSQL_DATABASE: widdx
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pwiddxpass"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: widdx
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s --health-timeout=5s --health-retries=12
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up PHP ${{ matrix.php }}
+      - name: Set up PHP ${{ matrix.php }} (${{ matrix.db }})
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
+          extensions: pdo, pdo_sqlite, sqlite3, pdo_mysql, pdo_pgsql
           coverage: none
           ini-values: session.save_path=/tmp
 
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist
+
+      - name: Point the suite at ${{ matrix.db }}
+        env:
+          WIDDX_DB: ${{ matrix.db }}
+        run: |
+          {
+            echo "DB_CONNECTION=$WIDDX_DB"
+            echo "DB_HOST=127.0.0.1"
+            case "$WIDDX_DB" in
+              mysql) echo "DB_PORT=3306"; echo "DB_DATABASE=widdx"; echo "DB_USERNAME=root"; echo "DB_PASSWORD=widdxpass";;
+              pgsql) echo "DB_PORT=5432"; echo "DB_DATABASE=widdx"; echo "DB_USERNAME=postgres"; echo "DB_PASSWORD=";;
+            esac
+          } >> "$GITHUB_ENV"
 
       - name: Lint every PHP file
         run: |

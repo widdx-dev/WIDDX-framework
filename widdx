@@ -88,7 +88,8 @@ Routes:
   route:list                 List all registered routes
 
 Server:
-  serve [--port=8000]        Start development server
+  serve [--port=8000] [--host=localhost]
+                        Start development server (--host=0.0.0.0 in a container)
 
 Testing:
   test                       Run framework tests
@@ -107,7 +108,7 @@ function write_file(string $path, string $content): void
 {
     $dir = dirname($path);
     if (!is_dir($dir)) {
-        mkdir($dir, 0777, true);
+        mkdir($dir, 0775, true);
     }
     if (is_file($path)) {
         fwrite(STDERR, "File already exists, skipping: {$path}\n");
@@ -140,7 +141,7 @@ function create_project(string $name, bool $isApi = false): void
         'storage/sessions',
     ];
     foreach ($dirs as $dir) {
-        mkdir("{$base}/{$dir}", 0777, true);
+        mkdir("{$base}/{$dir}", 0775, true);
     }
 
     // Copy core framework
@@ -167,7 +168,8 @@ function create_project(string $name, bool $isApi = false): void
         copy(WIDDX_BASE_PATH . '/widdx-test', "{$base}/widdx-test");
         chmod("{$base}/widdx-test", 0755);
         if (is_dir(WIDDX_BASE_PATH . '/tests')) {
-            recursive_copy(WIDDX_BASE_PATH . '/tests', "{$base}/tests");
+            // tmp-debug holds throwaway app trees from debugging runs.
+            recursive_copy(WIDDX_BASE_PATH . '/tests', "{$base}/tests", ['tmp-debug']);
         }
     }
 
@@ -253,6 +255,19 @@ PHP);
         copy(WIDDX_BASE_PATH . '/public/install.php', "{$base}/public/install.php");
     }
 
+    // public/router.php — the dev-server companion for 'php widdx serve'.
+    // Without it, requests whose URI looks like a missing static file
+    // (/storage/img/photo.jpg) die with a raw 404 before the framework runs.
+    if (is_file(WIDDX_BASE_PATH . '/public/router.php')) {
+        copy(WIDDX_BASE_PATH . '/public/router.php', "{$base}/public/router.php");
+    }
+
+    // config/cors.php — generic, opt-in CORS settings (CorsMiddleware is inert
+    // until a route/group enables it AND allowed_origins is filled in).
+    if (is_file(WIDDX_BASE_PATH . '/config/cors.php')) {
+        copy(WIDDX_BASE_PATH . '/config/cors.php', "{$base}/config/cors.php");
+    }
+
     // Agent-facing docs travel with every project (AI assistants read these).
     foreach (['AGENTS.md', 'llms.txt'] as $docFile) {
         if (is_file(WIDDX_BASE_PATH . '/' . $docFile)) {
@@ -265,7 +280,8 @@ PHP);
 <?php
 return [
     'name' => '{$name}',
-    'debug' => filter_var(env('APP_DEBUG', 'true'), FILTER_VALIDATE_BOOLEAN),
+    // Debug OFF unless APP_DEBUG is explicitly set — never leak traces by default.
+    'debug' => filter_var(env('APP_DEBUG', 'false'), FILTER_VALIDATE_BOOLEAN),
     'locale' => env('APP_LOCALE', 'en'),
     'url' => 'http://localhost:8000',
     'trusted_proxies' => array_values(array_filter(array_map('trim', explode(',', (string) env('TRUSTED_PROXIES', ''))))),
@@ -325,6 +341,9 @@ DB_HOST=127.0.0.1
 #DB_PORT=3306
 #DB_USERNAME=root
 #DB_PASSWORD=
+# APP_DEBUG is OFF unless set here — uncomment ONLY on a local machine:
+# it exposes stack traces and technical error pages.
+#APP_DEBUG=true
 ENV);
 
     // routes/web.php
@@ -337,7 +356,9 @@ ENV);
 get('/', fn() => ['app' => config('app.name'), 'status' => 'ok']);
 
 // ZERO-CODE JSON CRUD — one line, no controller (needs 'php widdx migrate').
-apiResource('users');
+// ->public() opts the group out of the fail-closed authorization gate;
+// remove it and every JSON call needs auth or an App\Policies\UserPolicy.
+apiResource('users')->public();
 PHP);
     } else {
         write_file("{$base}/routes/web.php", <<<'PHP'
@@ -351,7 +372,10 @@ get('/', fn() => view('welcome'));
 // ZERO-CODE demo — one line, no controller, no view files.
 // Full CRUD (list/create/show/edit/delete) on App\Models\User using the
 // framework's built-in templates. Run 'php widdx migrate' first.
-resource('users');
+// ->public() = explicit opt-out of the fail-closed auth gate. Drop it and
+// the pages require a logged-in user (or an App\Policies\UserPolicy that
+// allows the visitor) before anyone can see or change anything.
+resource('users')->public();
 
 // Customize later by adding views/users/*.php or a controller class —
 // the framework prefers your files automatically.
@@ -478,19 +502,18 @@ declare(strict_types=1);
 return new class {
     public function up(\PDO $pdo): void
     {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name VARCHAR(255) NOT NULL,
-            email VARCHAR(255) NOT NULL UNIQUE,
-            password VARCHAR(255),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )");
+        \Widdx\Schema::create('users', function (\Widdx\Blueprint $t) {
+            $t->id();
+            $t->string('name');
+            $t->string('email')->unique();
+            $t->string('password')->nullable();
+            $t->timestamps();
+        }, $pdo);
     }
 
     public function down(\PDO $pdo): void
     {
-        $pdo->exec("DROP TABLE IF EXISTS users");
+        \Widdx\Schema::dropIfExists('users', $pdo);
     }
 };
 PHP);
@@ -504,10 +527,19 @@ declare(strict_types=1);
 return new class {
     public function run(\PDO $pdo): void
     {
-        $stmt = $pdo->prepare("INSERT INTO users (name, email, password) VALUES (?, ?, ?)");
-        $stmt->execute(['Admin User', 'admin@example.com', password_hash('password', PASSWORD_DEFAULT)]);
-        $stmt->execute(['John Doe', 'john@example.com', password_hash('password', PASSWORD_DEFAULT)]);
-        $stmt->execute(['Jane Smith', 'jane@example.com', password_hash('password', PASSWORD_DEFAULT)]);
+        // Idempotent: re-running db:seed never clashes on the unique email.
+        $check = $pdo->prepare("SELECT COUNT(*) FROM users WHERE email = ?");
+        $ins = $pdo->prepare("INSERT INTO users (name, email, password) VALUES (?, ?, ?)");
+        foreach ([
+            ['Admin User', 'admin@example.com'],
+            ['John Doe', 'john@example.com'],
+            ['Jane Smith', 'jane@example.com'],
+        ] as [$name, $email]) {
+            $check->execute([$email]);
+            if ((int) $check->fetchColumn() === 0) {
+                $ins->execute([$name, $email, password_hash('password', PASSWORD_DEFAULT)]);
+            }
+        }
     }
 };
 PHP);
@@ -584,8 +616,8 @@ Returns JSON for all CRUD operations.
 
 | Function | Description |
 |---|---|
-| `resource('name')` | Full CRUD routes — zero code (controller optional) |
-| `apiResource('name')` | JSON CRUD routes — zero code (controller optional) |
+| `resource('name')` | Full CRUD routes — zero code; add `->public()` to open them to guests |
+| `apiResource('name')` | JSON CRUD routes — zero code; `->public()` opts out of the 401/403 gate |
 | `view('name', \$data)` | Render template |
 | `redirect('/url')` | Redirect |
 | `request('key')` | Read input |
@@ -608,14 +640,14 @@ MD);
     echo "  (shared hosting without terminal? upload the folder + open /install.php in the browser)\n";
 }
 
-function recursive_copy(string $src, string $dst): void
+function recursive_copy(string $src, string $dst, array $skip = []): void
 {
     $dir = opendir($src);
-    @mkdir($dst, 0777, true);
+    @mkdir($dst, 0775, true);
     while (($file = readdir($dir)) !== false) {
-        if ($file === '.' || $file === '..') continue;
+        if ($file === '.' || $file === '..' || in_array($file, $skip, true)) continue;
         if (is_dir("{$src}/{$file}")) {
-            recursive_copy("{$src}/{$file}", "{$dst}/{$file}");
+            recursive_copy("{$src}/{$file}", "{$dst}/{$file}", $skip);
         } else {
             copy("{$src}/{$file}", "{$dst}/{$file}");
         }
@@ -798,7 +830,14 @@ use Widdx\Model;
  */
 class {$name} extends Model
 {
-    //
+    /** DENY BY DEFAULT: an empty \$fillable blocks create()/fill(). List columns here. */
+    protected array \$fillable = [];
+
+    /** Columns hidden from toArray()/JSON (passwords, tokens…): */
+    protected array \$hidden = [];
+
+    /** Validation rules — also drive the zero-code CRUD form fields: */
+    protected array \$rules = [];
 }
 PHP;
         write_file(WIDDX_BASE_PATH . "/app/Models/{$name}.php", $stub);
@@ -862,21 +901,25 @@ declare(strict_types=1);
 return new class {
     public function up(\PDO \$pdo): void
     {
-        \$pdo->exec("CREATE TABLE IF NOT EXISTS {$tableName} (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )");
+        \Widdx\Schema::create('{$tableName}', function (\Widdx\Blueprint \$t) {
+            \$t->id();
+            // \$t->string('title', 255);
+            // \$t->text('body')->nullable();
+            // \$t->integer('views')->default(0);
+            // \$t->foreignId('user_id');
+            \$t->timestamps();
+        }, \$pdo);
     }
 
     public function down(\PDO \$pdo): void
     {
-        \$pdo->exec("DROP TABLE IF EXISTS {$tableName}");
+        \Widdx\Schema::dropIfExists('{$tableName}', \$pdo);
     }
 };
 PHP;
         $dir = WIDDX_BASE_PATH . '/database/migrations';
         if (!is_dir($dir)) {
-            mkdir($dir, 0777, true);
+            mkdir($dir, 0775, true);
         }
         $filename = date('Y_m_d_His') . "_{$name}.php";
         write_file("{$dir}/{$filename}", $stub);
@@ -913,7 +956,7 @@ return new class {
 PHP;
         $dir = WIDDX_BASE_PATH . '/database/seeders';
         if (!is_dir($dir)) {
-            mkdir($dir, 0777, true);
+            mkdir($dir, 0775, true);
         }
         write_file("{$dir}/{$name}.php", $stub);
         break;
@@ -940,7 +983,12 @@ use Widdx\Model;
 
 class {$name} extends Model
 {
-    //
+    /** DENY BY DEFAULT: an empty \$fillable blocks create()/fill(). List columns here. */
+    protected array \$fillable = [];
+
+    protected array \$hidden = [];
+
+    protected array \$rules = [];
 }
 PHP;
         write_file(WIDDX_BASE_PATH . "/app/Models/{$name}.php", $modelStub);
@@ -1006,7 +1054,8 @@ class {$name}Controller
 PHP;
         write_file(WIDDX_BASE_PATH . "/app/Controllers/{$name}Controller.php", $controllerStub);
 
-        // Create migration
+        // Create migration (2.6/2.7: Schema builder — portable across drivers;
+        // the old raw "INTEGER PRIMARY KEY AUTOINCREMENT" was sqlite-only)
         $migrationStub = <<<PHP
 <?php
 
@@ -1015,22 +1064,22 @@ declare(strict_types=1);
 return new class {
     public function up(\PDO \$pdo): void
     {
-        \$pdo->exec("CREATE TABLE IF NOT EXISTS {$table} (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name VARCHAR(255) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )");
+        \Widdx\Schema::create('{$table}', function (\Widdx\Blueprint \$t) {
+            \$t->id();
+            \$t->string('name');
+            \$t->timestamps();
+        }, \$pdo);
     }
 
     public function down(\PDO \$pdo): void
     {
-        \$pdo->exec("DROP TABLE IF EXISTS {$table}");
+        \Widdx\Schema::dropIfExists('{$table}', \$pdo);
     }
 };
 PHP;
         $dir = WIDDX_BASE_PATH . '/database/migrations';
         if (!is_dir($dir)) {
-            mkdir($dir, 0777, true);
+            mkdir($dir, 0775, true);
         }
         $filename = date('Y_m_d_His') . "_create_{$table}_table.php";
         write_file("{$dir}/{$filename}", $migrationStub);
@@ -1038,7 +1087,7 @@ PHP;
         // Create views (index, create, show, edit)
         $viewsDir = WIDDX_BASE_PATH . "/views/{$table}";
         if (!is_dir($viewsDir)) {
-            mkdir($viewsDir, 0777, true);
+            mkdir($viewsDir, 0775, true);
         }
         write_file("{$viewsDir}/index.php", <<<PHP
 <!DOCTYPE html>
@@ -1116,7 +1165,7 @@ PHP);
         echo "  - Migration: database/migrations/{$filename}\n";
         echo "  - Views: views/{$table}/{index,create,show,edit}.php\n";
         echo "\nAdd to routes/web.php:\n";
-        echo "  resource('{$table}', {$name}Controller::class);\n";
+        echo "  resource('{$table}', {$name}Controller::class)->public();\n";
         break;
     }
 
@@ -1133,18 +1182,18 @@ declare(strict_types=1);
 return new class {
     public function up(\PDO $pdo): void
     {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS auth_tokens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email VARCHAR(255) NOT NULL,
-            type VARCHAR(20) NOT NULL,
-            token_hash VARCHAR(64) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )");
+        \Widdx\Schema::create('auth_tokens', function (\Widdx\Blueprint $t) {
+            $t->id();
+            $t->string('email');
+            $t->string('type', 20);
+            $t->string('token_hash', 64);
+            $t->timestamp('created_at')->useCurrent();
+        }, $pdo);
     }
 
     public function down(\PDO $pdo): void
     {
-        $pdo->exec('DROP TABLE IF EXISTS auth_tokens');
+        \Widdx\Schema::dropIfExists('auth_tokens', $pdo);
     }
 };
 PHP);
@@ -1155,21 +1204,36 @@ PHP);
 declare(strict_types=1);
 
 return new class {
+    private function hasColumn(\PDO $pdo): bool
+    {
+        $driver = \Widdx\Database::connection()->driver();
+        if ($driver === 'sqlite') {
+            $rows = $pdo->query('PRAGMA table_info("users")')->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($rows as $r) {
+                if ((string) ($r['name'] ?? '') === 'email_verified_at') {
+                    return true;
+                }
+            }
+            return false;
+        }
+        // 2.7: never probe-by-throwing — on pgsql a caught PDO error aborts the
+        // whole migration transaction (25P02), so ask the catalog instead.
+        $st = $pdo->prepare('SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_NAME = ? AND COLUMN_NAME = ?');
+        $st->execute(['users', 'email_verified_at']);
+        return (int) $st->fetchColumn() > 0;
+    }
+
     public function up(\PDO $pdo): void
     {
-        try {
+        if (!$this->hasColumn($pdo)) {
             $pdo->exec('ALTER TABLE users ADD COLUMN email_verified_at TIMESTAMP NULL');
-        } catch (\PDOException) {
-            // column already exists — nothing to do
         }
     }
 
     public function down(\PDO $pdo): void
     {
-        try {
+        if ($this->hasColumn($pdo)) {
             $pdo->exec('ALTER TABLE users DROP COLUMN email_verified_at');
-        } catch (\PDOException) {
-            // older engines without DROP COLUMN — leave it in place
         }
     }
 };
@@ -1322,9 +1386,12 @@ PHP;
 
     case 'serve': {
         $port = 8000;
+        $host = 'localhost';
         foreach ($argv as $a) {
             if (str_starts_with($a, '--port=')) {
                 $port = (int) substr($a, 7);
+            } elseif (str_starts_with($a, '--host=')) {
+                $host = substr($a, 7);
             }
         }
         // Some images (e.g. php:cli) ship with an empty session.save_path,
@@ -1334,14 +1401,22 @@ PHP;
         if ($iniSavePath === '' || !is_dir($iniSavePath)) {
             $sessions = WIDDX_BASE_PATH . '/storage/sessions';
             if (!is_dir($sessions)) {
-                @mkdir($sessions, 0777, true);
+                @mkdir($sessions, 0775, true);
             }
             if (is_dir($sessions) && is_writable($sessions)) {
                 $phpOpts = ' -d session.save_path=' . escapeshellarg($sessions);
             }
         }
-        echo "Widdx running at http://localhost:{$port}\n";
-        passthru(PHP_BINARY . $phpOpts . " -S localhost:{$port} -t " . escapeshellarg(WIDDX_BASE_PATH . '/public'));
+        echo "Widdx running at http://{$host}:{$port}\n";
+        // router.php passes real files (install.php, assets) straight through
+        // and sends everything else to the framework — without it the dev
+        // server 404s URIs like /storage/img/photo.jpg that have no physical
+        // counterpart inside public/.
+        $router = WIDDX_BASE_PATH . '/public/router.php';
+        if (!is_file($router)) {
+            $router = WIDDX_BASE_PATH . '/public/index.php';
+        }
+        passthru(PHP_BINARY . $phpOpts . " -S " . escapeshellarg($host) . ":{$port} -t " . escapeshellarg(WIDDX_BASE_PATH . '/public') . ' ' . escapeshellarg($router));
         break;
     }
 

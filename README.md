@@ -10,7 +10,7 @@ Philosophy: **Write minimal code — the framework infers the rest.**
 ## Requirements
 
 - PHP 8.1+
-- Composer
+- Composer — **optional** (`public/index.php` has a built-in fallback autoloader)
 - SQLite (default, zero config) or MySQL/PostgreSQL/SQL Server/Oracle
 
 ## Installation
@@ -38,8 +38,8 @@ Open `http://localhost:8000`
 ```php
 get('/', fn() => 'Welcome to Widdx!');
 
-// One line = full CRUD:
-resource('users', UserController::class);
+// One line = full CRUD (->public() opens it; see "Zero-Code CRUD"):
+resource('users', UserController::class)->public();
 
 // Or explicit routes:
 get('/users', [UserController::class, 'index']);
@@ -117,8 +117,8 @@ Available methods: `all()`, `find($id)`, `findOrFail($id)`, `create([...])`, `wh
 | `transaction(fn() => ...)` | Database transaction |
 | `event('name', ...$args)` | Fire event |
 | `listen('event', fn() => ...)` | Register event listener |
-| `resource('name', Controller::class)` | Full CRUD routes (one line!) |
-| `apiResource('name', Controller::class)` | JSON CRUD routes (one line!) |
+| `resource('name', Controller::class)` | Full CRUD routes (one line!) — add `->public()` to open them |
+| `apiResource('name', Controller::class)` | JSON CRUD routes (one line!) — same `->public()` gate |
 | `session('key')` / `session(['k' => 'v'])` | Read / write session |
 | `flash('success', 'Saved!')` | Flash data for next request |
 | `old('name', $default)` | Old input after validation redirect |
@@ -138,6 +138,12 @@ Available methods: `all()`, `find($id)`, `findOrFail($id)`, `create([...])`, `wh
 ### 6. Database — Works with All Major Databases
 
 Directly supported drivers: **SQLite** (default, zero config), **MySQL/MariaDB**, **PostgreSQL**, **SQL Server**, **Oracle**. For any other PDO driver there is a custom `dsn` option.
+
+> **CI coverage:** the full unit + integration suite runs on **SQLite, MySQL 8 and
+> PostgreSQL 16** in CI (`.github/workflows/tests.yml`). SQL Server and Oracle are
+> **best-effort / not CI-tested** — the code paths exist (identifier quoting,
+> `OFFSET/FETCH`, migrations) but are exercised only when someone runs them.
+> Report an issue if you hit a problem there.
 
 ```bash
 cp .env.example .env
@@ -301,6 +307,22 @@ class Auth
 </form>
 ```
 
+### 12. JSON & API-Friendly Requests
+
+Widdx reads `application/json` (and PUT/PATCH/DELETE urlencoded) bodies
+automatically — `request()->input()`, `all()` and `validate()` work the same
+as with classic form posts. A malformed JSON body gets a clean **400**,
+and when the client expects JSON (via `Accept`/`Content-Type` or an `/api`
+path — see `Request::expectsJson()`) errors like 401/404/419/422 are returned
+as JSON instead of HTML. `Response::json()` pretty-prints only while
+`APP_DEBUG=true`, keeping production payloads compact.
+
+```php
+$data = request()->json();                 // decoded JSON body
+$token = request()->bearerToken();         // Authorization: Bearer ...
+return Response::json(['ok' => true]);      // application/json response
+```
+
 ### 13. Zero-Code CRUD — the whole point of Widdx
 
 **One command, zero written code.** The generator infers everything and the
@@ -316,7 +338,7 @@ What `make:crud` produced for you: a model (with `$fillable` + `$rules` derived
 from the column types), a migration, and one appended route line:
 
 ```php
-resource('posts');   // no controller needed!
+resource('posts')->public();   // no controller needed!
 ```
 
 `resource()` resolves in this order — the framework writes the rest:
@@ -330,6 +352,19 @@ resource('posts');   // no controller needed!
 
 Own the look later without touching logic: just create `views/posts/index.php
 | create.php | edit.php | show.php` — the framework prefers your files.
+
+**Who is allowed to see those pages?** Deny is the default. `resource('posts')`
+with no `->public()` and no `App\Policies\PostPolicy` redirects guests to
+`/login` and answers logged-in users with 403. Three ways to open it, in order
+of how little code they cost:
+
+```php
+resource('posts')->public();                  // 1. open to everyone
+// 2. App\Policies\PostPolicy with viewAny/create/update/delete  — per-user rules
+class PostController extends CrudController { protected bool $public = true; }  // 3. per controller
+```
+
+`make:crud` writes option 1 for you; delete `->public()` the moment you add a policy.
 
 For JSON APIs the same trick:
 
@@ -537,6 +572,7 @@ php widdx db:seed
 php widdx db:wipe
 php widdx route:list
 php widdx serve --port=8080
+php widdx serve --host=0.0.0.0 --port=8080   # inside a container / reachable off-box
 php widdx queue:push 'App\Jobs\MyJob' '{...}'   # dispatch from CLI
 php widdx queue:work --max=50
 php widdx queue:failed / queue:retry <id>|all
@@ -726,55 +762,7 @@ class AppServiceProvider extends ServiceProvider
 | Router | — | — | ✅ |
 | Container | PSR-11 | — | ✅ |
 | Model / QueryBuilder | — | — | ✅ |
-| Database | — | SQLite/MySQL/PostgreSQL/SQLServer/Oracle | ✅ |
-| View | — | PHP | ✅ |
-| Session | SessionInterface | PHP Session | ✅ |
-| Auth | AuthInterface | Session-based | ✅ |
-| Event | EventInterface | In-memory | ✅ |
-| Cache | CacheInterface | File / Array | ✅ |
-| Logger | LoggerInterface | File | ✅ |
-| Storage | StorageInterface | Local filesystem | ✅ |
-| Queue | QueueInterface | Sync / Database | ✅ |
-| Mail | MailInterface | Log / SMTP | ✅ |
-| Migration | — | — | ✅ |
-| Validation | — | — | ✅ |
-| CSRF | — | — | ✅ |
-| Service Provider | — | — | ✅ |
-| CLI | — | — | ✅ |
-| Testing | — | Built-in runner | ✅ |
-
-## Complete Component List
-
-| Component | Contract | Default Driver | Status |
-|-----------|----------|----------------|--------|
-| Router | — | — | ✅ |
-| Container | PSR-11 | — | ✅ |
-| Model / QueryBuilder | — | — | ✅ |
-| Database | — | SQLite/MySQL/PostgreSQL/SQLServer/Oracle | ✅ |
-| View | — | PHP | ✅ |
-| Session | SessionInterface | PHP Session | ✅ |
-| Auth | AuthInterface | Session-based | ✅ |
-| Event | EventInterface | In-memory | ✅ |
-| Cache | CacheInterface | File / Array | ✅ |
-| Logger | LoggerInterface | File | ✅ |
-| Storage | StorageInterface | Local filesystem | ✅ |
-| Queue | QueueInterface | Sync / Database | ✅ |
-| Mail | MailInterface | Log / SMTP | ✅ |
-| Migration | — | — | ✅ |
-| Validation | — | — | ✅ |
-| CSRF | — | — | ✅ |
-| Service Provider | — | — | ✅ |
-| CLI | — | — | ✅ |
-| Testing | — | Built-in runner | ✅ |
-
-## Complete Component List
-
-| Component | Contract | Default Driver | Status |
-|-----------|----------|----------------|--------|
-| Router | — | — | ✅ |
-| Container | PSR-11 | — | ✅ |
-| Model / QueryBuilder | — | — | ✅ |
-| Database | — | SQLite/MySQL/PostgreSQL/SQLServer/Oracle | ✅ |
+| Database | — | SQLite/MySQL/PostgreSQL/SQLServer/Oracle | ✅ (SQLite+MySQL+PgSQL CI-tested; SQLServer/Oracle best-effort) |
 | View | — | PHP | ✅ |
 | Session | SessionInterface | PHP Session | ✅ |
 | Auth | AuthInterface | Session-based | ✅ |
@@ -809,7 +797,9 @@ headers, rate limiting, queued events, the CLI generators, and even drives the r
 `SmtpMail` socket client against a scripted fake SMTP server.
 
 CI (`.github/workflows/tests.yml`) runs lint + the whole suite on PHP 8.1 / 8.2 / 8.3 /
-8.4, plus a separate **PHPStan** job (level 1, `phpstan.dist.neon`):
+8.4 / 8.5, each against every driver shipped out of the box (SQLite, MySQL, PostgreSQL —
+real servers, selected with `DB_CONNECTION`), plus a separate **PHPStan** job (level 1,
+`phpstan.dist.neon`):
 
 ```bash
 composer run phpstan          # static analysis (needs composer install first)
@@ -820,7 +810,7 @@ composer run phpstan          # static analysis (needs composer install first)
 ## Release & License
 
 Widdx is licensed under the **MIT license** (see `LICENSE`) and follows
-[semantic versioning](https://semver.org). The current baseline is **v0.1.0**.
+[semantic versioning](https://semver.org). The current baseline is **v0.3.0**.
 
 Two ways to start a project:
 

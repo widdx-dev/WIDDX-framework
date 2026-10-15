@@ -20,7 +20,7 @@ class FileCache implements CacheInterface
     {
         $this->path = $path ?? (dirname(__DIR__) . '/storage/cache');
         if (!is_dir($this->path)) {
-            mkdir($this->path, 0777, true);
+            mkdir($this->path, 0775, true);
         }
     }
 
@@ -31,7 +31,7 @@ class FileCache implements CacheInterface
             return $default;
         }
         $raw = @file_get_contents($file);
-        $data = $raw === false ? false : @unserialize($raw);
+        $data = $raw === false ? false : @unserialize($raw, ['allowed_classes' => false]);
         // Corrupted or unreadable cache file: drop it and treat as a miss.
         if (!is_array($data) || !array_key_exists('value', $data) || !array_key_exists('expires', $data)) {
             @unlink($file);
@@ -51,7 +51,23 @@ class FileCache implements CacheInterface
             'value' => $value,
             'expires' => $seconds > 0 ? time() + $seconds : 0,
         ];
-        return file_put_contents($file, serialize($data)) !== false;
+        // 2.10: write to a temp file then rename, so a concurrent reader only
+        // ever sees a complete (never half-written) cache entry.
+        return $this->writeAtomic($file, serialize($data));
+    }
+
+    protected function writeAtomic(string $file, string $payload): bool
+    {
+        $tmp = $file . '.' . bin2hex(random_bytes(8)) . '.tmp';
+        if (@file_put_contents($tmp, $payload, LOCK_EX) === false) {
+            return false;
+        }
+        @chmod($tmp, 0640);
+        if (!@rename($tmp, $file)) {
+            @unlink($tmp);
+            return false;
+        }
+        return true;
     }
 
     public function has(string $key): bool
@@ -85,11 +101,40 @@ class FileCache implements CacheInterface
         return $value;
     }
 
-    public function increment(string $key, int $value = 1): int|false
+    public function increment(string $key, int $value = 1, int $ttlOnCreate = 0): int|false
     {
-        $current = (int) $this->get($key, 0);
+        $file = $this->file($key);
+        // 2.10: read-modify-write under an exclusive lock → atomic counter.
+        $fp = @fopen($file, 'c+');
+        if ($fp === false) {
+            return false;
+        }
+        if (!flock($fp, LOCK_EX)) {
+            fclose($fp);
+            return false;
+        }
+        $raw = stream_get_contents($fp);
+        $current = 0;
+        $expires = $ttlOnCreate > 0 ? time() + $ttlOnCreate : 0;
+        if (is_string($raw) && $raw !== '') {
+            $data = @unserialize($raw, ['allowed_classes' => false]);
+            if (is_array($data) && array_key_exists('value', $data) && array_key_exists('expires', $data)) {
+                $expired = $data['expires'] !== 0 && $data['expires'] < time();
+                if (!$expired) {
+                    $current = (int) $data['value'];
+                    $expires = (int) $data['expires']; // fixed window: keep expiry
+                }
+            }
+        }
         $new = $current + $value;
-        $this->put($key, $new);
+        $payload = serialize(['value' => $new, 'expires' => $expires]);
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, $payload);
+        fflush($fp);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        @chmod($file, 0640);
         return $new;
     }
 

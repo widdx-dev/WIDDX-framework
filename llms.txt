@@ -1,9 +1,10 @@
 # Widdx Framework
 
 > A zero-code PHP 8.1+ MVC framework: the programmer writes the fewest possible
-> lines. One line `resource('posts')` produces a complete CRUD web app; `authRoutes()`
-> produces full authentication; `make:crud` produces model + migration + route from
-> one shell command. Runs on shared hosting without composer or a terminal.
+> lines. One line `resource('posts')->public()` produces a complete CRUD web app;
+> `authRoutes()` produces full authentication; `make:crud` produces model +
+> migration + route from one shell command. Runs on shared hosting without
+> composer or a terminal.
 
 - [AGENTS.md](AGENTS.md): the complete AI-agent handbook — conventions, inference
   rules, API reference, CLI, pitfalls. THIS IS THE PRIMARY DOCUMENT for any LLM.
@@ -21,6 +22,9 @@
   policies, and view overrides are all INFERRED from names (full list in AGENTS.md PART 4).
 - Templates execute in the GLOBAL namespace — use helpers (`auth()`, `e()`), never bare classes.
 - Validation rules drive both server-side checks and the auto-generated HTML form.
-- `php widdx test` = 50 unit + 144 integration assertions.
+- CRUD pages are FAIL-CLOSED: `resource('x')` without `->public()` (and without a policy)
+  sends guests to `/login` and gives logged-in users 403. Generators emit `->public()`.
+- `php widdx test` = 77 unit tests + the integration suite (real HTTP, CSRF, auth, SMTP, CLI).
+  It refuses to start when the PHP PDO driver is missing, so env problems never look like bugs.
 - Deployment: VPS (`php widdx migrate`) or shared hosting without terminal
   (`/install.php` one-shot web installer).

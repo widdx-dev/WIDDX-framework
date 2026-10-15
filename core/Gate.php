@@ -60,15 +60,26 @@ class Gate
         // Policy wins when a model argument has one.
         $policy = static::policyFor($args[0] ?? null);
         if ($policy !== null) {
+            // Guests ARE passed through (as null): a policy declaring
+            // ?User/mixed may still allow them; a strict User $user
+            // signature TypeErrors, which is caught below and denied.
             $instance = new $policy();
             if (method_exists($instance, $ability)) {
-                return (bool) $instance->{$ability}($user, ...$args);
+                try {
+                    return (bool) $instance->{$ability}($user, ...$args);
+                } catch (\TypeError) {
+                    return false; // malformed policy call must deny, never 500
+                }
             }
             return false; // policy exists but does not allow this ability
         }
 
         if (isset(static::$abilities[$ability])) {
-            return (bool) (static::$abilities[$ability])($user, ...$args);
+            try {
+                return (bool) (static::$abilities[$ability])($user, ...$args);
+            } catch (\TypeError) {
+                return false;
+            }
         }
 
         return false; // unguarded abilities must be defined before use

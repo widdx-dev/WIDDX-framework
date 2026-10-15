@@ -8,6 +8,7 @@ foreach ($fields as $f) {
         $hasFile = true;
     }
 }
+include __DIR__ . '/layout-top.php';
 ?>
 <div class="card">
 <h1><?= $editing ? 'Edit ' . e($title) : 'New ' . e($title) ?></h1>
@@ -32,6 +33,10 @@ foreach ($fields as $f) {
             <?php endforeach; ?>
         </select>
     <?php elseif ($f['type'] === 'checkbox'): ?>
+        <!-- an unchecked box submits nothing at all, so the old value would
+             survive the save; the hidden 0 (overridden by the box per pitfall 7)
+             is what makes "uncheck and save" work. -->
+        <input type="hidden" name="<?= e($f['name']) ?>" value="0">
         <input type="checkbox" id="f_<?= e($f['name']) ?>" name="<?= e($f['name']) ?>" value="1" <?= $current ? 'checked' : '' ?>>
     <?php elseif ($f['type'] === 'file'): ?>
         <input type="file" id="f_<?= e($f['name']) ?>" name="<?= e($f['name']) ?>" <?= $f['required'] ? 'required' : '' ?>>
@@ -40,7 +45,7 @@ foreach ($fields as $f) {
         <?php endif; ?>
     <?php else: ?>
         <input type="<?= e($f['type']) ?>" id="f_<?= e($f['name']) ?>" name="<?= e($f['name']) ?>"
-               value="<?= e((string) ($current ?? '')) ?>" <?= $f['required'] ? 'required' : '' ?>>
+               value="<?= e((string) ($current ?? '')) ?>" <?= $f['required'] ? 'required' : '' ?><?= ($f['step'] ?? null) !== null ? ' step="' . e((string) $f['step']) . '"' : '' ?>>
     <?php endif; ?>
 <?php endforeach; ?>
 <p style="margin-top:18px">

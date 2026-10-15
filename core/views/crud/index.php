@@ -2,6 +2,10 @@
 /** Zero-code list view. @var iterable $items @var array $columns @var string $routeBase @var string $title */
 include __DIR__ . '/layout-top.php';
 $columns = $columns ?? [];
+$types = [];
+foreach ($fields ?? [] as $f) {
+    $types[$f['name']] = $f['type'];
+}
 ?>
 <div class="card">
 <h1><?= e($title ?? 'Items') ?></h1>
@@ -14,7 +18,13 @@ $columns = $columns ?? [];
 <tbody>
 <?php foreach ($items as $item): ?>
 <tr>
-<?php foreach ($columns as $c): ?><td><?= e((string) ($item->{$c} ?? '')) ?></td><?php endforeach; ?>
+<?php foreach ($columns as $c): $v = $item->{$c} ?? null; ?>
+<td><?php if (($types[$c] ?? null) === 'checkbox'): ?>
+<span style="color:<?= $v ? '#16a34a' : '#94a3b8' ?>"><?= $v ? '✓ yes' : '✗ no' ?></span>
+<?php elseif ($v === null || $v === ''): ?>
+<span style="color:#cbd5e1">—</span>
+<?php else: ?><?= e((string) $v) ?><?php endif; ?></td>
+<?php endforeach; ?>
 <td style="white-space:nowrap;text-align:right">
 <a href="<?= e($routeBase) ?>/<?= e((string) $item->id) ?>">View</a> ·
 <a href="<?= e($routeBase) ?>/<?= e((string) $item->id) ?>/edit">Edit</a> ·

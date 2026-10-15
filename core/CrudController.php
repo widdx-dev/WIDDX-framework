@@ -22,6 +22,9 @@ namespace Widdx;
  */
 abstract class CrudController
 {
+    use Concerns\HandlesCrudInput;
+    use Concerns\GatesCrudActions;
+
     /** Model class (optional — inferred from the controller name) */
     protected string $model = '';
 
@@ -115,6 +118,7 @@ abstract class CrudController
             $type = 'text';
             $options = [];
             $required = false;
+            $decimal = false;
             foreach ($parts as $r) {
                 if ($r === 'required') {
                     $required = true;
@@ -125,6 +129,7 @@ abstract class CrudController
                     $type = 'select';
                 } elseif (in_array($r, ['int', 'integer', 'float', 'double', 'numeric'], true)) {
                     $type = 'number';
+                    $decimal = $decimal || in_array($r, ['float', 'double', 'numeric'], true);
                 } elseif ($r === 'email') {
                     $type = 'email';
                 } elseif ($r === 'url') {
@@ -178,6 +183,7 @@ abstract class CrudController
                 'type' => $type,
                 'required' => $required,
                 'options' => $options,
+                'step' => $type === 'number' ? ($decimal ? 'any' : '1') : null,
                 'value' => $value,
             ];
         }
@@ -206,10 +212,7 @@ abstract class CrudController
     {
         $this->authorizeAction('create');
         $model = $this->model();
-        $rules = $this->rules();
-        $data = !empty($rules)
-            ? request()->validate($rules)
-            : request()->except(['_method', 'csrf_token']);
+        $data = $this->inputData();
         $data = $this->persistUploads($data);
         $model::create($data);
         return redirect($this->routeBase());
@@ -236,10 +239,7 @@ abstract class CrudController
         $model = $this->model();
         $item = $model::findOrFail($id);
         $this->authorizeAction('update', $item);
-        $rules = $this->rules();
-        $data = !empty($rules)
-            ? request()->validate($rules)
-            : request()->except(['_method', 'csrf_token']);
+        $data = $this->inputData();
         $data = $this->persistUploads($data);
         $item->fill($data);
         $item->save();
@@ -256,19 +256,24 @@ abstract class CrudController
     }
 
     /**
-     * Auto-authorization: once App\Policies\{Model}Policy exists (or the
-     * ability was defined on the Gate) every action is guarded — with NO
-     * wiring code. With no policy at all this is a silent no-op.
+     * Fail-closed auto-authorization — still with NO wiring code:
+     *   - once App\Policies\{Model}Policy exists, its verdict rules;
+     *   - with no policy, access is DENIED unless the route group was
+     *     marked ->public() or this controller sets $public = true;
+     *   - guests get a 302 to /login, logged-in users a 403.
      */
     protected function authorizeAction(string $ability, mixed $argument = null): void
     {
         $target = $argument ?? $this->model();
-        if (!Gate::has($ability, $target)) {
+        if ($this->crudAuthorized($ability, $target)) {
             return;
         }
-        if (!Gate::allows($ability, $target)) {
-            throw new Exceptions\HttpException('This action is unauthorized.', 403);
+        if ($this->crudIsGuest()) {
+            throw new Exceptions\AuthenticationException(
+                'Sign in to manage ' . $ability . '.'
+            );
         }
+        throw new Exceptions\HttpException('This action is unauthorized.', 403);
     }
 
     /**
