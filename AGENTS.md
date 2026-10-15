@@ -240,7 +240,8 @@ Writing data:
 - `Post::create(['title' => 'x', 'body' => 'y'])` — validates `$rules`, honors `$fillable`, sets timestamps.
 - `$p->save()` after changing attributes. `$p->delete()` to remove.
 
-Columns exist at runtime: `Post::columns()` from the live DB — forms and selects use them.
+Columns exist at runtime: `$post->columns()` — an INSTANCE method, `Post::columns()` is a
+fatal error. Forms and selects use it.
 
 ---
 

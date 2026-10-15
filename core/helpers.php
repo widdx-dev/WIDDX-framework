@@ -390,8 +390,8 @@ if (!function_exists('storageRoutes')) {
             if (function_exists('finfo_open')) {
                 $finfo = finfo_open(FILEINFO_MIME_TYPE);
                 if ($finfo !== false) {
+                    // No finfo_close(): deprecated in 8.5, the object frees itself.
                     $detected = finfo_file($finfo, $real);
-                    finfo_close($finfo);
                     if (is_string($detected) && $detected !== '') {
                         $mime = $detected;
                     }

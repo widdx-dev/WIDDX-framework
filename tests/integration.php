@@ -383,6 +383,11 @@ get('/it-id', function () {
 });
 // 1.4 guard: the framework middleware itself, available in every project.
 get('/it-guarded', fn() => Response::json(['ok' => true]))->middleware(\Widdx\AuthMiddleware::class);
+// Ops probe: trusted proxies + the real peer IP. Registered here, before the
+// server starts — a live append to routes/web.php is not reliably picked up by
+// php -S, which made these assertions flake.
+\Widdx\Request::setTrustedProxies(['127.0.0.1']);
+get('/it-ip', fn() => Response::json(['ip' => request()->ip()]));
 ROUTES;
 file_put_contents($proj . '/routes/web.php', $probes . "\n", FILE_APPEND);
 
@@ -981,11 +986,8 @@ ok('policy allow → list visible again', $r['status'] === 200 && str_contains($
 
 sec('Ops: trusted proxies, foreign keys, queue retry, scheduler');
 
-// live-append probes (routes re-required per request — no server restart)
-file_put_contents($proj . '/routes/web.php', "\n" . <<<'PHP'
-\Widdx\Request::setTrustedProxies(['127.0.0.1']);
-get('/it-ip', fn() => Response::json(['ip' => request()->ip()]));
-PHP, FILE_APPEND);
+// /it-ip + setTrustedProxies were registered with the other probes, before the
+// server started (see the note in that block).
 mkdir($proj . '/app/Jobs', 0777, true);
 file_put_contents($proj . '/app/Jobs/ItFailingJob.php', <<<'PHP'
 <?php
@@ -1023,6 +1025,16 @@ ok('latest books migration builds a Schema FK (foreignId->constrained authors)',
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx migrate');
 ok('fk migrations apply', $code === 0, $out);
 
+// php -S serves every request from ONE worker process, so a class it already
+// loaded stays loaded: the Book model rewritten by make:crud above would still
+// be the earlier version (no exists rule) and the fk probes below would test a
+// stale class — which is exactly how this section flaked between PHP versions.
+stop_server($pid);
+// Same port: the $csrf helper captured $port by value, so a new port would make
+// every token it grabs come back empty (419 everywhere).
+$pid = start_server($proj, $port);
+$jar = [];
+
 $tok = $csrf('/authors/create');
 $r = http($port, 'POST', '/authors', ['csrf_token' => (string) $tok, 'name' => 'Ursula'], $jar);
 ok('author created', $r['status'] === 302, "status={$r['status']}");
@@ -1040,13 +1052,20 @@ if (preg_match('#/authors/(\d+)#', $r['body'], $m)) {
 // exists: rule rejects a dangling author id
 $tok = $csrf('/books/create');
 $r = http($port, 'POST', '/books', ['csrf_token' => (string) $tok, 'title' => 'Ghost', 'author_id' => '999999'], $jar);
+// validation failure → back to /books/create; a store → /books. Keep the target
+// so a failure here says which path ran instead of just "Ghost is present".
+$ghostTo = (string) ($r['headers']['location'] ?? '');
 if ($aid !== null) {
     $tok = $csrf('/books/create');
     $r = http($port, 'POST', '/books', ['csrf_token' => (string) $tok, 'title' => 'The Enchanted Night', 'author_id' => (string) $aid], $jar);
     ok('valid fk value stored', $r['status'] === 302, "status={$r['status']}");
 }
 $r = http($port, 'GET', '/books', null, $jar);
-ok('exists-rule rejected dangling fk (Ghost absent)', !str_contains($r['body'], 'Ghost'));
+// The proof is the row itself: a stored Ghost appears as a ">Ghost<" table cell,
+// while a flashed old input on the list page never does. The redirect target is
+// reported for diagnosis only.
+ok('exists-rule rejected dangling fk (Ghost not stored)', !str_contains($r['body'], '>Ghost<'),
+    "location={$ghostTo}");
 ok('valid book listed', str_contains($r['body'], 'The Enchanted Night'), substr($r['body'], 0, 160));
 
 // 3) queue: dispatch via the CLI (fresh process, real driver resolution),
