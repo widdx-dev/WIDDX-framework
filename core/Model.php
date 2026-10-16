@@ -147,14 +147,21 @@ abstract class Model implements \JsonSerializable
         return $cols;
     }
 
-    /** Simple English pluralization covering most cases */
+    /**
+     * Simple English pluralization covering most cases.
+     * The same rules live in Widdx\Cli\MakeCrud::pluralize() and the global singular();
+     * gate 2.24 in widdx-test fails if the three ever disagree.
+     */
     protected static function pluralize(string $word): string
     {
-        if (str_ends_with($word, 'y') && !str_ends_with($word, 'ey') && !str_ends_with($word, 'ay')) {
-            return substr($word, 0, -1) . 'ies'; // category → categories
+        if (in_array(strtolower($word), ['news', 'series'], true)) {
+            return $word; // newss / serieses would be a table nothing can read back
         }
-        if (str_ends_with($word, 's') || str_ends_with($word, 'x') || str_ends_with($word, 'ch') || str_ends_with($word, 'sh')) {
-            return $word . 'es';
+        if (str_ends_with($word, 'y') && !preg_match('/[aeiou]y$/', $word)) {
+            return substr($word, 0, -1) . 'ies'; // category → categories, but toy → toys
+        }
+        if (preg_match('/(s|x|z|ch|sh)$/', $word)) {
+            return $word . 'es'; // status → statuses
         }
         return $word . 's'; // user → users
     }

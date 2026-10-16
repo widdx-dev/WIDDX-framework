@@ -189,9 +189,12 @@ class MakeCrud
         return str_replace(' ', '', ucwords(str_replace(['-', '_'], ' ', $value)));
     }
 
-    /** Same rules as Widdx\Model::pluralize() */
+    /** Same rules as Widdx\Model::pluralize() — gate 2.24 in widdx-test proves they agree */
     protected static function pluralize(string $word): string
     {
+        if (in_array(strtolower($word), ['news', 'series'], true)) {
+            return $word;
+        }
         if (str_ends_with($word, 'y') && !preg_match('/[aeiou]y$/', $word)) {
             return substr($word, 0, -1) . 'ies';
         }
