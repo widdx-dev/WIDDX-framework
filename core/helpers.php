@@ -467,11 +467,23 @@ if (!function_exists('singular')) {
     function singular(string $word): string
     {
         $w = strtolower($word);
+        // Shaped like a plural, used as a singular: stripping one letter invents a table.
+        if (in_array($w, ['news', 'series'], true)) {
+            return $w;
+        }
         if (strlen($w) > 4 && str_ends_with($w, 'ies')) {
             return substr($w, 0, -3) . 'y';
         }
         if (preg_match('/(ch|sh|x|z|ss)es$/', $w)) {
             return substr($w, 0, -2);
+        }
+        // Only the plural ends in "-uses" (bus → buses, status → statuses); a bare
+        // "-us" word is already singular and must survive the strip below.
+        if (preg_match('/[^aeiou]uses$/', $w)) {
+            return substr($w, 0, -2);
+        }
+        if (preg_match('/[^aeiou]us$/', $w)) {
+            return $w;
         }
         if (str_ends_with($w, 's') && !str_ends_with($w, 'ss')) {
             return substr($w, 0, -1);

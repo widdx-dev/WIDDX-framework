@@ -2115,6 +2115,58 @@ test('2.23 the five production findings: installer debug default, upload dir esc
     assert_true(!str_contains($authCfg, "'session_key'"), 'config/auth.php must not offer an inert key');
 });
 
+/**
+ * 2.24 the Inflector: the three English rules in the framework agree and are reversible.
+ * Why this test exists: a table name is written by one of them (Model::pluralize through
+ * inferTable(), MakeCrud::pluralize through make:crud) and read back by another (the global
+ * singular(), which resource() uses to name the controller and model). When the rules differed,
+ * `make:crud Guy` and the model itself disagreed about the table, and status/bus/news came back
+ * as statu/bu/new — a 404 that points at nothing.
+ */
+test('2.24 Inflector: irregular plurals agree across the three call sites and round-trip', function () {
+    $pluralize = static function (string $class, string $word): string {
+        $m = (new \ReflectionMethod($class, 'pluralize'));
+        $m->setAccessible(true);
+        return (string) $m->invoke(null, $word);
+    };
+
+    // 1. singularization: the measured failures, plus every case the old rule already got right
+    foreach ([
+        'toys' => 'toy', 'guys' => 'guy', 'boys' => 'boy',           // vowel + y: never "toies"
+        'status' => 'status', 'bus' => 'bus', 'news' => 'news',       // already singular in shape
+        'buses' => 'bus', 'statuses' => 'status', 'boxes' => 'box',   // the -es plurals
+        'posts' => 'post', 'categories' => 'category', 'addresses' => 'address', 'users' => 'user',
+    ] as $plural => $want) {
+        assert_equals($want, singular($plural), "singular('{$plural}')");
+    }
+
+    // 2. pluralization: both implementations must emit the same table name for the same model
+    foreach (['toy', 'guy', 'boy', 'status', 'bus', 'news', 'series', 'category',
+              'address', 'user', 'post', 'box', 'quiz'] as $word) {
+        assert_equals(
+            $pluralize(\Widdx\Model::class, $word),
+            $pluralize(\Widdx\Cli\MakeCrud::class, $word),
+            "Model::pluralize() and MakeCrud::pluralize() disagree about '{$word}'"
+        );
+    }
+
+    // 3. the plural forms the docs teach, proved rather than asserted
+    foreach ([
+        'toy' => 'toys', 'guy' => 'guys', 'boy' => 'boys', 'post' => 'posts', 'user' => 'users',
+        'category' => 'categories', 'address' => 'addresses', 'box' => 'boxes',
+        'status' => 'statuses', 'bus' => 'buses', 'news' => 'news', 'series' => 'series',
+    ] as $word => $want) {
+        assert_equals($want, $pluralize(\Widdx\Model::class, $word), "pluralize('{$word}')");
+    }
+
+    // 4. round trip: model name → table → back to the model name, for every word above
+    foreach (['toy', 'guy', 'boy', 'post', 'user', 'category', 'address', 'box',
+              'status', 'bus', 'news', 'series'] as $word) {
+        $table = $pluralize(\Widdx\Model::class, $word);
+        assert_equals($word, singular($table), "round trip {$word} -> {$table} -> ?");
+    }
+});
+
 widdx_reset_networked_db();
 
 echo "\n===== Running integration suite (this boots real servers) =====\n";
