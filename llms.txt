@@ -24,7 +24,13 @@
 - Validation rules drive both server-side checks and the auto-generated HTML form.
 - CRUD pages are FAIL-CLOSED: `resource('x')` without `->public()` (and without a policy)
   sends guests to `/login` and gives logged-in users 403. Generators emit `->public()`.
-- `php widdx test` = the unit suite + the integration suite (real HTTP, CSRF, auth, SMTP, CLI).
-  It refuses to start when the PHP PDO driver is missing, so env problems never look like bugs.
-- Deployment: VPS (`php widdx migrate`) or shared hosting without terminal
-  (`/install.php` one-shot web installer).
+- `php widdx test` = unit + integration suite (real HTTP, CSRF, auth, SMTP, CLI). It refuses to start
+  when the PHP PDO driver is missing, so env problems never look like bugs.
+- Deployment: VPS (`php widdx migrate`) or shared hosting without terminal (`/install.php`).
+
+## Binding laws (full text in AGENTS.md PART 2A; PART 23 = the whole callable API)
+
+- NEVER edit `core/` from inside a project. App code lives in `app/`, `views/`, `routes/`, `database/`.
+- Call only what PART 23 lists: `Model` has no `__callStatic`, so a guessed name is a fatal error.
+- Task order: name the files → generator → `migrate` → restart `serve` → prove it with `curl -i`.
+  A 404 right after an edit is the stale dev server, not broken code.

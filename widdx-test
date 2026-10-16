@@ -1674,6 +1674,132 @@ test('2.18 every Model:: static promised in AGENTS.md PART 8 exists', function (
 
 // ---------- Integration suite (real HTTP, scaffold, SMTP) ----------
 
+/**
+ * 2.19: the LAWS (AGENTS.md PART 2A) and the callable-API list (PART 23) are enforced as written.
+ * Why this test exists: prose laws do not stop an agent from breaking them, and a handbook that
+ * lists a name the code does not have teaches a fatal error (`Model` has no __callStatic). So the
+ * doc is checked against reflection: it can neither quietly lose a law nor keep a phantom API.
+ */
+test('2.19 the LAWS in PART 2A and the API surface in PART 23 are enforceable as written', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/AGENTS.md');
+
+    // 1) The law sections exist, by their exact headings, and every law number is still there.
+    foreach (['## PART 2A — THE LAWS', '### Laws about the code you write',
+              '### Law of file placement', '### Law of execution', '### Definition of done',
+              '## PART 23 — The real API surface', '## PART 24 — Expert notes'] as $heading) {
+        assert_true(str_contains($doc, $heading), "AGENTS.md lost the heading: {$heading}");
+    }
+    for ($n = 1; $n <= 13; $n++) {
+        assert_true(str_contains($doc, "**L{$n} —"), "AGENTS.md lost law L{$n}");
+    }
+
+    // 2) The file-placement map still names every folder the scaffold creates, plus the two the
+    //    handbook tells you to create yourself (policies/jobs) and the two it routes to.
+    foreach (['app/Models/Post.php', 'app/Controllers/PostController.php', 'app/Middleware/',
+              'app/Policies/PostPolicy.php', 'app/Jobs/', 'views/partials/', 'views/layouts/app.php',
+              'database/migrations/', 'database/seeders/', 'routes/web.php', 'routes/console.php',
+              'lang/<locale>.php', 'public/assets/', 'config/*.php'] as $path) {
+        assert_true(str_contains($doc, $path), "the PART 2A file map lost {$path}");
+    }
+
+    // 3) Every gate file must send the agent to the laws, not merely to the handbook.
+    foreach (['CLAUDE.md', '.cursorrules', 'GEMINI.md', '.github/copilot-instructions.md', 'llms.txt'] as $g) {
+        assert_true(str_contains((string) file_get_contents(__DIR__ . '/' . $g), 'PART 2A'),
+            "{$g} must point at the LAWS (PART 2A)");
+    }
+
+    // 4) PART 23: every listed name must really exist, in the class that bullet names.
+    $start = strpos($doc, '## PART 23');
+    $end = strpos($doc, '## PART 24');
+    assert_true($start !== false && $end !== false && $end > $start, 'PART 23 section found in AGENTS.md');
+    $section = substr($doc, $start, $end - $start);
+
+    $sources = [
+        'Global helpers' => 'function',
+        'Model statics' => \Widdx\Model::class,
+        'Model instance methods' => \Widdx\Model::class,
+        'QueryBuilder' => \Widdx\QueryBuilder::class,
+        'Blueprint' => \Widdx\Blueprint::class,
+        'Column modifiers' => \Widdx\Column::class,
+    ];
+    $checked = 0;
+    foreach (preg_split('/\n- \*\*/', $section) as $bullet) {
+        $label = null;
+        $target = null;
+        foreach ($sources as $key => $value) {
+            if (str_starts_with($bullet, $key)) {
+                $label = $key;
+                $target = $value;
+                break;
+            }
+        }
+        if ($label === null) {
+            continue;
+        }
+        // Everything after "There is NO" is the negative list — real code, not the promise.
+        $stop = strpos($bullet, 'There is NO');
+        if ($stop !== false) {
+            $bullet = substr($bullet, 0, $stop);
+        }
+        preg_match_all('/`([^`]*)`/', $bullet, $m);
+        foreach ($m[1] as $run) {
+            $run = (string) preg_replace('/\s+/', ' ', trim($run));
+            // Only a pure space-separated name list counts; snippets like `db('users')` do not.
+            if ($run === '' || preg_match('/^[a-z][a-zA-Z_]*(?: [a-z][a-zA-Z_]*)*$/i', $run) !== 1) {
+                continue;
+            }
+            foreach (explode(' ', $run) as $name) {
+                $checked++;
+                $ok = $target === 'function' ? function_exists($name) : method_exists($target, $name);
+                assert_true($ok, "PART 23 lists \"{$name}\" under {$label}, but it does not exist");
+            }
+        }
+    }
+    assert_true($checked >= 100, "PART 23 documents only {$checked} names — the section has been gutted");
+
+    // A wrongly-labelled bullet is a fatal error in the reader's app, so static-ness is pinned too.
+    foreach ([['query', true], ['create', true], ['count', true], ['where', true],
+              ['save', false], ['delete', false], ['columns', false]] as [$name, $wantStatic]) {
+        $rm = new \ReflectionMethod(\Widdx\Model::class, $name);
+        assert_true($rm->isStatic() === $wantStatic,
+            "Model::{$name}() changed static-ness — PART 23 now teaches it wrong");
+    }
+
+    // 5) The APIs the doc forbids must stay forbidden AND stay named, so the warning cannot rot.
+    foreach (['Model::update', 'Model::destroy', 'Model::truncate',
+              'QueryBuilder::pluck', 'Blueprint::unsignedBigInteger'] as $phantom) {
+        [$short, $method] = explode('::', $phantom);
+        assert_true(!method_exists('Widdx\\' . $short, $method),
+            "{$phantom}() exists now — rewrite PART 23 instead of deleting this guard blind");
+        assert_true(stripos($section, $method) !== false,
+            "PART 23 must keep warning that {$phantom}() does not exist");
+    }
+
+    // 6) The two measured traps the laws rest on, proved here rather than asserted in prose.
+    $controller = new class extends \Widdx\CrudController {
+        protected string $model = \Widdx\Tests\Team::class;
+    };
+    $viewFolder = new \ReflectionMethod(\Widdx\CrudController::class, 'viewFolder');
+    $viewFolder->setAccessible(true);
+    assert_equals('teams', (string) $viewFolder->invoke($controller),
+        'the CRUD view-override folder is the PLURAL table name');
+    assert_true(str_contains($doc, 'views/products/index.php'),
+        'PART 5 must teach the plural override folder');
+    assert_true(!str_contains($doc, 'views/product/index.php'),
+        'PART 5 revived the singular folder, which is silently never loaded');
+
+    $coreTemplateReachable = true;
+    try {
+        view('crud.index', ['items' => []]);
+    } catch (\Throwable) {
+        $coreTemplateReachable = false;
+    }
+    assert_true(!$coreTemplateReachable,
+        'view() must not reach a core template from the project — PART 22 tells agents that');
+    assert_true(str_contains($doc, 'Never `view(\'crud.index\')`'),
+        'PART 22 keeps the replacement recipe for a custom list page');
+});
+
 widdx_reset_networked_db();
 
 echo "\n===== Running integration suite (this boots real servers) =====\n";

@@ -64,6 +64,9 @@ earlier steps. If you need more than a list of records, read PART 4 + PART 22.
 
 ## PART 2 — The five golden rules
 
+> These five become binding laws in PART 2A, with a file map, a command order and a definition of done.
+> Read PART 2A before writing a single line.
+
 1. Before writing code, check if the framework already does it (PART 4 list).
 2. Prefer one model file + one route line over a controller + views.
 3. Every template (.php file in views/) runs in the GLOBAL namespace.
@@ -71,6 +74,91 @@ earlier steps. If you need more than a list of records, read PART 4 + PART 22.
    - WRONG: `<?= \Widdx\Auth::user()->name ?>` (this is a fatal error)
 4. Escape all user data: `<?= e($value) ?>`. Always. In every template.
 5. When unsure, run `php widdx test` — the answer is inside the test files.
+
+---
+
+## PART 2A — THE LAWS (non-negotiable; read before writing a single line)
+
+These are not advice. A task that breaks one of them is a FAILED task, even when the page renders.
+Every law below is numbered so you can cite it, and every one is checkable by a third party.
+
+### Laws about the code you write
+
+- **L1 — NEVER edit `core/` from inside a project.** It is the framework, not your app. If you think it is
+  wrong: keep your workaround in `app/`, in one place, and report the file, the line, and the command output
+  that proves the bug. Do not patch core, do not copy a core file into the project and edit that.
+- **L2 — Call only what this handbook documents.** `Model` has no `__callStatic`, so an undocumented
+  `Post::pluck()` is a fatal error, not a soft failure. The full callable list is PART 23; if a name is not
+  there, it does not exist. Guessing a name from Laravel is a law break, even when it happens to work.
+  The two most-guessed names that are NOT real: `Model::update()` and `Model::destroy()` as statics.
+- **L3 — NEVER hand-write what a generator emits.** `make:crud`, `make:model`, `make:auth`, `make:view`
+  produce the model, `$fillable`, `$rules`, the migration and the route line. Hand-written copies drift from
+  them and miss the parts you did not know were required (the `csrf_field()`, the `_method` field, `->public()`).
+- **L4 — Every value printed in a template goes through `e()`. Every POST form carries `<?= csrf_field() ?>`.**
+  A missing field is a silent 419: the page still looks perfect until someone presses submit. The field is
+  named `csrf_token`, never `_token`; use the helper, never type the input by hand.
+- **L5 — NEVER rename what the framework infers.** Tables plural, models singular PascalCase, controllers
+  `XController`, pivot alphabetical (`permission_role`), `_id` columns for FKs. Renaming breaks inference and
+  the failure looks unrelated to the rename.
+- **L6 — No SQL built by concatenation.** Use the builder, `Model`, or bound parameters. `WHERE name = "x"`
+  is not even valid on PostgreSQL — `"x"` is an identifier there.
+- **L7 — Build what was asked, nothing else.** No extra feature, no new dependency, no drive-by refactor.
+  Match the file's existing style, and write comments in the language the project's comments already use.
+
+### Law of file placement — one kind of code, exactly one folder
+
+| The code you are writing | The ONLY place it goes |
+|---|---|
+| a table + its rules | `app/Models/Post.php`, `namespace App\Models` |
+| logic bigger than a redirect | `app/Controllers/PostController.php` |
+| a request guard | `app/Middleware/` |
+| who may do what | `app/Policies/PostPolicy.php` — define all five abilities |
+| a background task | `app/Jobs/` |
+| HTML | `views/<plural-table>/<name>.php` — global namespace, no `use` statements |
+| the chrome around a page | `views/layouts/app.php` |
+| a repeated piece of HTML | `views/partials/` + `<?= component('partials.row', $data) ?>` |
+| a schema change | `database/migrations/<ts>_create_x_table.php` |
+| test data | `database/seeders/` |
+| URLs | `routes/web.php` |
+| cron + scheduled work | `routes/console.php` |
+| settings | `config/*.php` or `.env` — NEVER a new config file anywhere else |
+| translations | `lang/<locale>.php` |
+| css / js / images | `public/assets/` |
+
+- **L8 — NEVER put logic in `routes/web.php`.** A route action is one line (`[XController::class, 'method']`
+  or a redirect). No DB call, no loop, no HTML built as a string inside a route closure. If two routes share
+  more than a name, that shared code is a controller method or a model method.
+- **L9 — NEVER add a top-level folder, a scratch file, or a copy of a framework file.** No `test.php`,
+  `debug.php`, `x.bak`, `notes.md` left behind. Delete your own scratch files before you report done. The tree
+  the generator made is the tree you ship.
+- **L10 — Put the fix where the file owns it.** The bug is in the view → the view changes; a controller that
+  returns an array is not a fix for a broken template. A file you did not need to change, you did not change.
+
+### Law of execution — the order IS part of the task
+
+- **L11 — Follow this sequence for every task, in this order, skipping nothing:**
+  1. Name the files you will create or change (one line each) BEFORE touching them.
+  2. Check PART 4 + PART 22; if the framework infers the thing, do not code it.
+  3. Run the generator instead of writing its output (`php widdx make:crud Post title:string`).
+  4. `php widdx migrate` — `make:crud` creates the migration file but does NOT run it. This step is never optional.
+  5. Restart `php widdx serve` (Ctrl-C, run it again) after editing routes, models, controllers or views.
+  6. Prove it over HTTP: `curl -i http://localhost:8000/<url>` — read the status AND the body.
+  7. If any step failed: fix that step, re-run it, then continue. Do not move on and hope.
+- **L12 — When it fails, read the error; fix THAT step; run it again.** NEVER rewrite code that was working
+  because a page suddenly 404s or shows the old text — that is the stale dev-server worker (PART 0), and
+  rewriting working code over it destroys real work. Restart first, then look.
+- **L13 — Say what you cannot do.** If a step is impossible, blocked, or the request is ambiguous about the
+  data model: stop and state it in one sentence with the command output. Never invent a workaround silently,
+  and never report "done" for a page you did not load.
+
+### Definition of done — all six, or the task is not finished
+
+1. `php -l` clean on every file you touched (`php -l widdx` for the CLI file — it has no extension).
+2. `php widdx migrate` says there is nothing pending (or your task created no migration).
+3. The dev server was restarted after your last edit.
+4. `curl -i` on the real URL returns the status you expect and the expected text in the body — quoted, not assumed.
+5. Any POST form you added returns 200/302, not 419 (and `PUT`/`DELETE` forms include the `_method` field).
+6. Nothing in `core/` changed, no scratch file remains, no `e()` was skipped.
 
 ---
 
@@ -172,7 +260,10 @@ Done. `/products` already does list/create/show/edit/delete. (URL is ALWAYS the 
 
 Step 4 — only if the user asked for custom design:
 
-- copy `core/views/crud/index.php` to `views/product/index.php` and edit it.
+- copy `core/views/crud/index.php` to `views/products/index.php` and edit it.
+  The folder name is the PLURAL table name (`posts`, `products`), never the model name:
+  `views/posts/index.php`, `views/posts/create.php`, `views/posts/edit.php`, `views/posts/show.php`.
+  A file named `views/post/index.php` is silently never loaded — you get the built-in page and no error.
 
 That is the whole job. Never write a controller for plain CRUD.
 
@@ -565,6 +656,11 @@ group; that line makes it run twice. RIGHT: only use `Router::middlewareGroup()`
 15. WRONG: trusting a route or view edited while `php widdx serve` was running (it 404s or shows the
     old page — unreliably, which is worse than always failing). RIGHT: restart the server. Never
     "fix" a 404 by rewriting working code; restart first, then look.
+16. WRONG: calling `Post::pluck()`, `Model::update()`, `$t->unsignedBigInteger()` because Laravel has them.
+    RIGHT: PART 23 is the whole callable surface. Anything not listed there does not exist, and an
+    undocumented static call is a fatal error on the request that touches it — not a caught exception.
+17. WRONG: leaving business logic, DB calls or HTML built as a string inside a `routes/web.php` closure.
+    RIGHT: it is a controller method (L8) — the next agent must be able to find it by the folder name.
 
 ---
 
@@ -573,7 +669,7 @@ group; that line makes it run twice. RIGHT: only use `Router::middlewareGroup()`
 | Asked feature | Your move |
 |---|---|
 | A website with any list of records | `make:crud` (PART 5) |
-| Search / filter / sort on a list | `resource('posts', PostController::class)` + your `index()` using `Post::where(…)` and `view('crud.index', $data)` — built-in pages are reusable |
+| Search / filter / sort on a list | `resource('posts', PostController::class)` + your `index()` returning `view('posts.index', ['items' => $list])`, having copied `core/views/crud/index.php` to `views/posts/index.php`. Never `view('crud.index')` from a project — `view()` only looks in the project's `views/` and throws when the file is not there. |
 | Login / accounts / password reset | `authRoutes()` once + `make:auth` |
 | "Only admins can delete" | a policy (PART 10) |
 | Attach a PDF / photo upload | one `file`/`image` rule (PART 13) |
@@ -590,3 +686,97 @@ group; that line makes it run twice. RIGHT: only use `Router::middlewareGroup()`
 
 When in doubt: make the model, add ONE route line, run `php widdx migrate`, open the page.
 The framework probably already built what you were about to code.
+
+---
+
+## PART 23 — The real API surface (L2: call nothing outside this list)
+
+Read from the code, not from memory. If you need a name that is not here, grep `core/` or run
+`php widdx test` and read the test files — do NOT guess; `Model` has no `__callStatic`, so a guessed
+static is a fatal error on the first request that touches it.
+
+- **Global helpers** (usable anywhere, and the only functions a view may call):
+  `abort apiResource app auth authorize authRoutes back cache component config csrf_field csrf_token
+  db dd delete e env errors event flash get lang_attrs layout listen logger mail old paginate patch post
+  put queue redirect request resource response route session singular storage storageRoutes transaction view`
+- **Model statics**: `query all find findOrFail where create firstOrCreate updateOrCreate with count
+  getRules inferTable forgetSchemaCache`.
+  There is NO `Model::update()`, NO `Model::destroy()`, NO `Model::all()->pluck()`, NO `Model::truncate()`.
+  Update = `$m->fill([...])->save()` (or `Model::where(...)->update([...])`, which is a QueryBuilder call).
+  Delete many = `Model::where(...)->delete()`.
+  The QueryBuilder forms skip `$rules`, `$fillable` AND `updated_at` — they are raw SQL with bindings, and
+  they refuse to run without a `where()` first. Prefer `save()` unless you mean to bypass the model.
+- **Model instance methods**: `save delete fill forceFill getFillable validate columns formColumns
+  getTable getPrimaryKey relationLoaded setRelation getRelation toArray toJson
+  hasMany hasOne belongsTo belongsToMany`. `columns()` is an INSTANCE method — `Post::columns()` is fatal.
+- **QueryBuilder** (what `Model::query()` / `Model::where()` / `db('users')` gives you):
+  `select allowColumns where orWhere orderBy limit offset with get first find insert update delete
+  count exists toSelectSql`. There is NO `pluck chunk sum avg min max in whereRaw groupBy having join`.
+  For an aggregate the builder lacks, use `->get()` and count in PHP, or raw PDO:
+  `db('users')->get()` / `\Widdx\Database::connection()->pdo()`.
+- **Blueprint** (inside `Schema::create('x', function (Blueprint $t) { … })`):
+  `id bigId increments string char text longText integer tinyInteger smallInteger mediumInteger bigInteger
+  foreignId float double decimal boolean date datetime timestamp time json uuid enum timestamps index unique
+  primary`. There is NO `unsignedBigInteger()` / `unsignedInteger()` — use `foreignId('user_id')` or
+  `integer('user_id')`.
+- **Column modifiers** (chained on the Blueprint call above):
+  `nullable default useCurrent unique index primary autoIncrement constrained`.
+- **CRUD view variables** (what your `views/<table>/…php` receives):
+  index → `$items`, `$pagination`, `$routeBase`, `$title`, `$columns`, `$fields`;
+  create/edit/show → `$item` (null on create) + the same four.
+- **Auth view overrides**: `views/auth/login.php register.php forgot.php reset.php verify.php`.
+
+---
+
+## PART 24 — Expert notes (each one measured, not assumed)
+
+1. **The router takes the FIRST match.** A specific `post('/login', …)` registered before `authRoutes()`
+   wins; the one `authRoutes()` registers afterwards is never reached. Order your route file accordingly,
+   and keep the specific routes at the top.
+2. **`php widdx serve` is one long-lived worker.** An edit to a file it already served is NOT reliably
+   seen (measured: stale in 9/9 trials when the edit landed more than a second after the first request).
+   New files it never loaded are fine. Restart is the whole fix — see PART 0.
+3. **A 404 right after an edit is the stale worker, not your code.** Restart before you change anything.
+   Rewriting working code to "fix" a stale 404 is how an agent destroys a project.
+4. **Eager loading**: `Post::with('comments.author')->get()` — dots are depth, and N relations cost N+1
+   queries total, not N×rows. After `with(...)`, `$post->comments` runs zero further queries.
+5. **Relation return shapes**: `hasMany`/`belongsToMany` give an ARRAY (`count($u->roles)` is right);
+   `hasOne`/`belongsTo` give one object or `null` (`count()` on them is a TypeError).
+6. **`isset($post->comments)` and `$post->comments ?? []` see relations too** — from v0.3.7. On an older
+   copy, `??` on a relation silently returned the default while the rows were there; if the project pins a
+   pre-0.3.7 `core/`, read relations directly, not through `??`.
+7. **Timestamps are automatic only when both columns exist.** `created_at` + `updated_at` → `save()` fills
+   them. Raw-PDO DDL that adds them needs `Model::forgetSchemaCache('table')` in the same process;
+   `Schema::` calls already do that.
+8. **Validation on update needs the ignored id**: `unique:users,email` fails on the row you are editing, so
+   build the rule as `unique:users,email,{that id}` — the third part is the id to skip (PART 11). If you do
+   not need the rule, `Model::updateOrCreate($attributes, $values)` is usually what you meant.
+9. **`file` / `image` / `mimes` deliberately PASS a stored path string**, because the update form re-submits
+   the old value when no new file was chosen. Do not "fix" the rule — records lose their attachment.
+10. **A hand-written checkbox needs a hidden twin**: `<input type="hidden" name="active" value="0">`
+    before `<input type="checkbox" name="active" value="1">`, or unchecking saves nothing at all.
+    (The built-in form already does this.)
+11. **A hand-written PUT/DELETE form needs `<input type="hidden" name="_method" value="PUT">`** — browsers
+    only send GET/POST; the framework rewrites the method from that field.
+12. **A non-fillable field is dropped in silence.** `Post::create(['title' => 'x'])` without `'title'` in
+    `$fillable` validates fine, saves the row, and the column stays NULL. No error, nothing in the log.
+13. **A policy is deny-by-default per ability**: define `viewAny view create update delete` all five, or the
+    missing one 403s. That is intended, not a bug to work around.
+14. **`resource('x')` you typed by hand is LOCKED** (guests → `/login`, users → 403) until you add
+    `->public()`, a policy, or `protected bool $public = true` in your controller. Generators emit
+    `->public()`; hand-written lines do not.
+15. **`$this->viewFolder()` is the plural table name** — the view override folder is `views/posts/`,
+    never `views/post/`, and a wrong folder fails silently (the built-in page just keeps rendering).
+16. **RTL for free**: `APP_LOCALE=ar` (or he/fa/ur/…) makes every built-in page render `dir="rtl"`. Your own
+    layout must put `<?= lang_attrs() ?>` on the `<html>` tag or it will not.
+17. **`db:wipe` drops every table** — never run it on a database with data you have not backed up; and
+    `install.php` self-locks (404) after one successful run by design.
+18. **Diagnostics that answer the question**: `php widdx route:list` (every route + name + middleware),
+    `php -l <file>` (syntax), `php widdx test` (behavior), `curl -i` (what the visitor actually gets).
+    `php widdx test` on the framework repo is the source of truth for how any feature works.
+19. **The generated `views/layouts/app.php` has no hooks.** There is no `pageScripts`, `slot`, `push`, or
+    section system — a data key your controller passes is only visible if the layout actually reads it.
+    Want per-page JS? Add `<script src="<?= e($script) ?>"></script>` inside your own layout and keep
+    passing `['pageScripts' => [...]]`, or just put the script tag in the page view.
+20. **`public/` is the docroot.** `/assets/js/x.js` is the file `public/assets/js/x.js` — the dev server
+    serves real files and hands everything else to the framework. Never reference a path from `views/`.

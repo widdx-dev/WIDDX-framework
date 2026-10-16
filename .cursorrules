@@ -1,1 +1,7 @@
-Read AGENTS.md at the repository root. It is the complete, authoritative handbook for working with the Widdx PHP framework, written as one atomic fact per line for small AI models: PART 4 = the inference rules, PART 21 = known pitfalls, PART 22 = feature-to-command cheat sheet. Follow PART 2 golden rules before writing any boilerplate.
+Read AGENTS.md at the repository root BEFORE writing any code. It is the complete, authoritative
+handbook for the Widdx PHP framework, one atomic fact per line. PART 2A = the LAWS (binding: a task
+that breaks one has failed, even if the page renders — it also holds the file-placement map, the
+task order and the definition of done). PART 23 = the only callable API list; a name outside it does
+not exist. PART 24 = measured traps. PART 0 = the five-command start, PART 2 = golden rules,
+PART 4 = inference, PART 21 = pitfalls, PART 22 = feature cheat sheet.
+This file only points at AGENTS.md; never restate its facts here.
