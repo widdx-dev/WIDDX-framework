@@ -639,9 +639,9 @@ Every core component has an interface in `core/Contracts/`. Swap any implementat
 
 ```php
 // In a service provider or App::run():
-Container::getInstance()->singleton(CacheInterface::class, RedisCache::class);
-Container::getInstance()->singleton(MailInterface::class, MailgunMail::class);
-Container::getInstance()->singleton(StorageInterface::class, S3Storage::class);
+Container::getInstance()->singleton(CacheInterface::class, FileCache::class);
+Container::getInstance()->singleton(MailInterface::class, SmtpMail::class);
+Container::getInstance()->singleton(StorageInterface::class, LocalStorage::class);
 ```
 
 Available contracts:

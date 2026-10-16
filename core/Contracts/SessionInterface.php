@@ -7,7 +7,8 @@ namespace Widdx\Contracts;
 /**
  * Session contract — any session driver must implement this.
  *
- * Example drivers: FileSession, DatabaseSession, RedisSession, ArraySession (testing)
+ * Widdx uses PHP's native session mechanism (core/Session.php), file-backed via
+ * session_save_path() and overridable with WIDDX_SESSION_PATH. No driver class ships.
  */
 interface SessionInterface
 {

@@ -7,7 +7,7 @@ namespace Widdx\Contracts;
 /**
  * Cache contract — any cache driver must implement this.
  *
- * Example drivers: FileCache, RedisCache, MemcachedCache, ArrayCache (testing)
+ * Shipped drivers: FileCache, ArrayCache (testing)
  */
 interface CacheInterface
 {

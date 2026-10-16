@@ -7,7 +7,7 @@ namespace Widdx\Contracts;
 /**
  * Storage contract — any filesystem driver must implement this.
  *
- * Example drivers: LocalStorage, S3Storage, FtpStorage
+ * Shipped driver: LocalStorage
  */
 interface StorageInterface
 {

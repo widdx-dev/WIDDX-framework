@@ -7,7 +7,7 @@ namespace Widdx\Contracts;
 /**
  * Queue contract — any queue driver must implement this.
  *
- * Example drivers: DatabaseQueue, RedisQueue, SyncQueue (immediate execution)
+ * Shipped drivers: DatabaseQueue (persistent), SyncQueue (immediate execution)
  */
 interface QueueInterface
 {
