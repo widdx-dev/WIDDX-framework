@@ -120,6 +120,21 @@ abstract class Model implements \JsonSerializable
         return self::$timestampTables[$table];
     }
 
+    /**
+     * Forget the probed "does this table have created_at/updated_at?" answers.
+     * Schema::create/table/drop call this automatically; call it after DDL run
+     * through raw PDO in a migration, or in a long-lived worker whose table
+     * changed underneath it. Pass null to clear every table.
+     */
+    public static function forgetSchemaCache(?string $table = null): void
+    {
+        if ($table === null) {
+            self::$timestampTables = [];
+            return;
+        }
+        unset(self::$timestampTables[$table]);
+    }
+
     /** Editable columns: table columns minus pk/timestamps/hidden. */
     public function formColumns(): array
     {

@@ -531,7 +531,7 @@ class Request
                     return count($value) == (int) $n ? null : ['replace' => ['size' => $n]];
                 }
                 if (is_string($value)) {
-                    return mb_strlen($value) == (int) $n ? null : ['replace' => ['size' => $n]];
+                    return self::textLength($value) == (int) $n ? null : ['replace' => ['size' => $n]];
                 }
                 return [];
             case 'between':
@@ -548,6 +548,28 @@ class Request
         }
     }
 
+    /**
+     * Character count for min/max/size, without requiring ext-mbstring.
+     * Shared hosting often ships PHP with no mbstring, and an unguarded
+     * mb_strlen() there is a fatal error inside a form validation, not a
+     * failed rule. PCRE unicode support is always compiled in on PHP 8.
+     */
+    protected static function textLength(string $value): int
+    {
+        if (function_exists('mb_strlen')) {
+            return mb_strlen($value);
+        }
+        return static::textLengthPcre($value);
+    }
+
+    /** The no-mbstring path, kept separate so the suite can exercise it here. */
+    protected static function textLengthPcre(string $value): int
+    {
+        $chars = preg_match_all('/./su', $value);
+        // Invalid UTF-8 bytes: fall back to bytes rather than throwing.
+        return $chars === false ? strlen($value) : $chars;
+    }
+
     /** Validate a min: rule across value types. */
     protected function validateMin(mixed $value, ?string $param, array $rules = []): ?array
     {
@@ -561,7 +583,7 @@ class Request
         if ($rules !== [] && array_intersect($rules, ['int', 'integer', 'numeric', 'float', 'double']) !== [] && is_numeric($value)) {
             return (float) $value < $min ? ['langKey' => 'min.numeric', 'replace' => ['min' => $min]] : null;
         }
-        if (is_string($value) && mb_strlen($value) < $min) {
+        if (is_string($value) && self::textLength($value) < $min) {
             return ['langKey' => 'min.string', 'replace' => ['min' => $min]];
         }
         if (is_numeric($value) && $value < $min) {
@@ -583,7 +605,7 @@ class Request
         if ($rules !== [] && array_intersect($rules, ['int', 'integer', 'numeric', 'float', 'double']) !== [] && is_numeric($value)) {
             return (float) $value > $max ? ['langKey' => 'max.numeric', 'replace' => ['max' => $max]] : null;
         }
-        if (is_string($value) && mb_strlen($value) > $max) {
+        if (is_string($value) && self::textLength($value) > $max) {
             return ['langKey' => 'max.string', 'replace' => ['max' => $max]];
         }
         if (is_numeric($value) && $value > $max) {

@@ -42,6 +42,7 @@ class Schema
         foreach ($blueprint->toSql($driver) as $sql) {
             $pdo->exec($sql);
         }
+        Model::forgetSchemaCache($table);
     }
 
     /** Add columns/indexes to an existing table. */
@@ -67,11 +68,13 @@ class Schema
             $kw = $idx['type'] === 'unique' ? 'CREATE UNIQUE INDEX' : 'CREATE INDEX';
             $pdo->exec("{$kw} {$idx['name']} ON {$table} ({$cols})");
         }
+        Model::forgetSchemaCache($table);
     }
 
     public static function drop(string $table, ?\PDO $pdo = null): void
     {
         ($pdo ?? static::connection())->exec("DROP TABLE {$table}");
+        Model::forgetSchemaCache($table);
     }
 
     public static function dropIfExists(string $table, ?\PDO $pdo = null): void
@@ -84,9 +87,11 @@ class Schema
             } catch (\Throwable) {
                 // does not exist — nothing to do
             }
+            Model::forgetSchemaCache($table);
             return;
         }
         $pdo->exec("DROP TABLE IF EXISTS {$table}");
+        Model::forgetSchemaCache($table);
     }
 
     public static function hasTable(string $table, ?\PDO $pdo = null): bool

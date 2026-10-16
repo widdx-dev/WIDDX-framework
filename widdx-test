@@ -1512,6 +1512,78 @@ test('2.14 a relative DB_DATABASE resolves to the project, never to the process 
     @rmdir($far);
 });
 
+/**
+ * 2.15: the timestamps column probe is cached per table, so this process has to
+ * drop that answer whenever it changes the schema. A migration adding or removing
+ * the pair after a model already wrote a row used to keep the old answer for the
+ * rest of the run — which is exactly what `php widdx migrate` followed by a
+ * create in the same process does.
+ */
+test('2.15 changing a table invalidates the cached timestamp probe', function () {
+    \Widdx\Schema::dropIfExists('ts_cache');
+    \Widdx\Schema::create('ts_cache', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('label');
+    });
+    $model = new class extends \Widdx\Model {
+        protected ?string $table = 'ts_cache';
+        protected array $fillable = ['label'];
+    };
+
+    $before = $model::create(['label' => 'no columns yet']);
+    assert_true(empty($before->created_at), 'bare table: nothing filled');
+
+    \Widdx\Schema::table('ts_cache', function (\Widdx\Blueprint $t) {
+        $t->timestamps();
+    });
+    $after = $model::create(['label' => 'pair added inside this process']);
+    assert_true(!empty($after->created_at), 'after adding the pair, the same model fills them');
+
+    // And the other direction: recreating the table bare must not leave "yes" cached.
+    \Widdx\Schema::dropIfExists('ts_cache');
+    \Widdx\Schema::create('ts_cache', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('label');
+    });
+    $again = $model::create(['label' => 'recreated bare']);
+    assert_true(empty($again->created_at), 'after recreating without the pair, nothing fills');
+
+    \Widdx\Schema::dropIfExists('ts_cache');
+});
+
+/**
+ * 2.16: min/max/size count characters without ext-mbstring. Shared hosting often
+ * builds PHP without it, and an unguarded mb_strlen() there is a fatal error in the
+ * middle of validating a form, not a failed rule.
+ */
+test('2.16 string length rules count characters without ext-mbstring', function () {
+    $pcre = new \ReflectionMethod(\Widdx\Request::class, 'textLengthPcre');
+    $pcre->setAccessible(true);
+    $count = fn (string $s): int => (int) $pcre->invoke(null, $s);
+
+    assert_equals(3, $count('abc'), 'ascii');
+    assert_equals(5, $count('مرحبا'), 'arabic counts characters, not bytes');
+    assert_equals(5, $count('👋👋👋👋👋'), 'emoji count as one character each');
+    if (function_exists('mb_strlen')) {
+        assert_equals(mb_strlen('مرحبا بالعالم'), $count('مرحبا بالعالم'), 'matches mb_strlen');
+    }
+    // Undecodable bytes must fall back to a length, never a fatal or false.
+    assert_equals(4, $count("a\xFFb\xFF"), 'invalid UTF-8 falls back to byte length');
+
+    // The rules reach it through a real request, not just the helper.
+    $r = fn (string $rules) => (new \Widdx\Request([], ['title' => 'مرحبا'], ['REQUEST_METHOD' => 'POST']))
+        ->validate(['title' => $rules]);
+    $passed = $r('required|string|max:5');
+    assert_equals('مرحبا', $passed['title'], 'max:5 accepts a 5-character arabic word');
+    $rejected = false;
+    try {
+        $r('required|string|max:4');
+    } catch (\Widdx\Exceptions\ValidationException) {
+        $rejected = true;
+    }
+    assert_true($rejected, 'max:4 rejects it');
+});
+
 // ---------- Integration suite (real HTTP, scaffold, SMTP) ----------
 
 widdx_reset_networked_db();

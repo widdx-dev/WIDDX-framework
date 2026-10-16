@@ -58,7 +58,7 @@ earlier steps. If you need more than a list of records, read PART 4 + PART 22.
 - One line `resource('posts')->public()` = a full working CRUD website for posts.
 - One line `authRoutes()` = register + login + logout + password reset + email verify.
 - One command `make:crud` = model + database table + routes, all at once.
-- Version: v0.3.5. All behavior below is tested (the unit suite + the integration suite; the runner prints its own totals).
+- Version: v0.3.6. All behavior below is tested (the unit suite + the integration suite; the runner prints its own totals).
 
 ---
 
@@ -145,7 +145,9 @@ Each item: "if you do X" → "Widdx does Y". Memorize these; they replace all co
 24. Your table has `created_at` + `updated_at` → `save()` fills them by itself. Every generator
     adds those columns, so you never set anything. `protected bool $timestamps = false;` turns
     it off; there is no way to force them onto a table that lacks the columns (the INSERT would
-    fail), so the property is only ever an opt-out.
+    fail), so the property is only ever an opt-out. `Schema::` calls clear the cached answer, so a
+    migration that adds the pair works in the same process; only raw-PDO DDL needs
+    `Model::forgetSchemaCache('table')` afterwards.
 
 ---
 

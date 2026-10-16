@@ -12,6 +12,8 @@ Philosophy: **Write minimal code — the framework infers the rest.**
 ## Requirements
 
 - PHP 8.1+
+- `ext-pdo` plus one driver (`pdo_sqlite` is the default and needs no config)
+- `ext-mbstring` — **optional**; string length rules count characters through PCRE when it is absent
 - Composer — **optional** (`public/index.php` has a built-in fallback autoloader)
 - SQLite (default, zero config) or MySQL/PostgreSQL/SQL Server/Oracle
 
@@ -424,6 +426,15 @@ class Post extends Model
 }
 ```
 
+Checking whether the columns exist costs one query per table, and the answer is remembered for the
+rest of the process. `Schema::create/table/drop/dropIfExists` clear it for the table they touch, so a
+migration that adds the pair takes effect immediately. Only DDL run through raw PDO in the same
+process can go unnoticed — clear it by hand there:
+
+```php
+Model::forgetSchemaCache('posts'); // or forgetSchemaCache() for every table
+```
+
 Handy shortcuts:
 
 ```php
@@ -821,7 +832,7 @@ composer run phpstan          # static analysis (needs composer install first)
 ## Release & License
 
 Widdx is licensed under the **MIT license** (see `LICENSE`) and follows
-[semantic versioning](https://semver.org). The current baseline is **v0.3.5**.
+[semantic versioning](https://semver.org). The current baseline is **v0.3.6**.
 
 Two ways to start a project:
 
