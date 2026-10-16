@@ -137,9 +137,9 @@ class Installer
             if ($driver === 'sqlite') {
                 $db = $db !== '' ? $db : './database.sqlite';
                 if ($db !== ':memory:') {
-                    if (!preg_match('#^(/|[a-z]:[\\\\/])#i', $db)) {
-                        $db = $base . '/' . ltrim($db, './');
-                    }
+                    // Same resolver the running app uses, so the file this form tests and
+                    // the file .env points at can never be two different files.
+                    $db = Database::resolveSqlitePath($db, $base);
                     $dir = dirname($db);
                     if (!is_dir($dir)) {
                         @mkdir($dir, 0775, true);

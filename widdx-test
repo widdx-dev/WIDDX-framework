@@ -1308,7 +1308,8 @@ test('2.12 the measured doc facts stay written down and the dead ones stay out',
     $required = [
         'AGENTS.md' => ['is NOT reliably seen', 'Restart is the whole fix',
                         'CSRF + security headers are already ON', 'that line makes it run twice',
-                        'is named `csrf_token`', 'fills them by itself'],
+                        'is named `csrf_token`', 'fills them by itself',
+                        'resolved against the project'],
         'README.md' => ['if it was already running, restart it', 'that runs the middleware twice',
                         'unpublished on Packagist'],
         'core/Cli/MakeCrud.php' => ['restart is required'],
@@ -1477,6 +1478,38 @@ test('2.13 save() fills created_at/updated_at on any table that has them', funct
 
     \Widdx\Schema::dropIfExists('ts_auto');
     \Widdx\Schema::dropIfExists('ts_bare');
+});
+
+test('2.14 a relative DB_DATABASE resolves to the project, never to the process CWD', function () {
+    // .env.example ships DB_DATABASE=./database.sqlite, and neither the CLI nor the
+    // web entry point chdirs, so cron or a web server with another CWD used to open
+    // (and silently create) a second database: migrate wrote one file, the app read
+    // the other, and the failure surfaced as "no such table: users".
+    $base = \Widdx\Database::projectDirectory();
+    assert_equals($base . '/database.sqlite', \Widdx\Database::resolveSqlitePath('./database.sqlite', $base));
+    assert_equals($base . '/database.sqlite', \Widdx\Database::resolveSqlitePath('database.sqlite', $base));
+    assert_equals($base . '/storage/app/my.db', \Widdx\Database::resolveSqlitePath('storage/app/my.db', $base));
+    assert_equals('/var/data/x.sqlite', \Widdx\Database::resolveSqlitePath('/var/data/x.sqlite', $base));
+    assert_equals(':memory:', \Widdx\Database::resolveSqlitePath(':memory:', $base));
+    assert_equals('C:\\widdx\\db.sqlite', \Widdx\Database::resolveSqlitePath('C:\\widdx\\db.sqlite', $base));
+
+    // The behaviour that matters, measured by opening a real connection from a foreign CWD.
+    $far = sys_get_temp_dir() . '/widdx-cwd-far';
+    @mkdir($far, 0775, true);
+    @unlink($far . '/cwd_probe.sqlite');
+    @unlink($base . '/cwd_probe.sqlite');
+    $previous = getcwd();
+    chdir($far);
+    try {
+        $db = new \Widdx\Database(['driver' => 'sqlite', 'database' => 'cwd_probe.sqlite']);
+        $db->pdo()->exec('create table if not exists cwd_probe (id integer primary key, x text)');
+    } finally {
+        chdir($previous);
+    }
+    assert_true(is_file($base . '/cwd_probe.sqlite'), 'the project file is the one that opened');
+    assert_true(!is_file($far . '/cwd_probe.sqlite'), 'no stray database was created in the CWD');
+    @unlink($base . '/cwd_probe.sqlite');
+    @rmdir($far);
 });
 
 // ---------- Integration suite (real HTTP, scaffold, SMTP) ----------

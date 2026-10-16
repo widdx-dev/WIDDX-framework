@@ -58,7 +58,7 @@ earlier steps. If you need more than a list of records, read PART 4 + PART 22.
 - One line `resource('posts')->public()` = a full working CRUD website for posts.
 - One line `authRoutes()` = register + login + logout + password reset + email verify.
 - One command `make:crud` = model + database table + routes, all at once.
-- Version: v0.3.4. All behavior below is tested (the unit suite + the integration suite; the runner prints its own totals).
+- Version: v0.3.5. All behavior below is tested (the unit suite + the integration suite; the runner prints its own totals).
 
 ---
 
@@ -494,6 +494,9 @@ TRUSTED_PROXIES=
 ```
 
 - Production checklist: set `APP_DEBUG=false`, `TRUSTED_PROXIES` behind any proxy, real DB credentials.
+- A relative `DB_DATABASE` (the shipped `./database.sqlite`) is resolved against the project
+  folder, never against the current directory — so `php /full/path/widdx schedule:run` from cron
+  uses the same file the website does. Never assume a bare relative path elsewhere.
 - Full key list with comments also lives in `.env.example`.
 
 ---

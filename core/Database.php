@@ -195,7 +195,10 @@ class Database
 
     protected function connectSqlite(array $cfg): \PDO
     {
-        $path = $cfg['database'] ?? (dirname(__DIR__) . '/database.sqlite');
+        $path = self::resolveSqlitePath(
+            (string) ($cfg['database'] ?? 'database.sqlite'),
+            self::projectDirectory()
+        );
         if ($path !== ':memory:' && !is_file($path)) {
             $dir = dirname($path);
             if (!is_dir($dir)) {
@@ -204,6 +207,42 @@ class Database
             touch($path); // Auto-create for zero-config experience
         }
         return new \PDO('sqlite:' . $path);
+    }
+
+    /**
+     * The project root: what App::boot() recorded, else the constant every entry point
+     * defines, else this file's parent (core/ lives inside the project).
+     */
+    public static function projectDirectory(): string
+    {
+        $base = App::basePath();
+        if ($base === '' && defined('WIDDX_BASE_PATH')) {
+            $base = (string) WIDDX_BASE_PATH;
+        }
+        return $base !== '' ? rtrim($base, '/\\') : dirname(__DIR__);
+    }
+
+    /**
+     * A relative SQLite path means "inside the project", never "wherever this process
+     * happened to start": cron and a web server run with a CWD nobody chose, and SQLite
+     * would otherwise open (and silently create) a second database somewhere else, so
+     * `php widdx migrate` and the app would talk to two different files.
+     */
+    public static function resolveSqlitePath(string $path, ?string $base = null): string
+    {
+        $path = trim($path);
+        if ($path === '' || $path === ':memory:') {
+            return $path === '' ? 'database.sqlite' : $path;
+        }
+        // Absolute POSIX path, a UNC path, or a Windows drive path — leave alone.
+        if ($path[0] === '/' || $path[0] === '\\' || preg_match('#^[a-zA-Z]:[\\\\/]#', $path)) {
+            return $path;
+        }
+        $base ??= self::projectDirectory();
+        if (str_starts_with($path, './')) {
+            $path = substr($path, 2);
+        }
+        return rtrim($base, '/') . '/' . ltrim($path, '/');
     }
 
     protected function mysqlDsn(array $cfg): string
