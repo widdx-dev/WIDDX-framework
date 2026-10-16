@@ -230,7 +230,7 @@ class App
             } catch (\Throwable) {
                 // Ignore — redirect without old input
             }
-            $back = $_SERVER['HTTP_REFERER'] ?? '/';
+            $back = Request::sameSiteReferer();
             return Response::redirect($back);
         }
 

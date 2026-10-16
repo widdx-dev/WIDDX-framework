@@ -501,6 +501,12 @@ $r = http($port, 'GET', '/users/create', null, $jar);
 ok('validation error flashed', str_contains($r['body'], 'valid email'), substr($r['body'], 0, 120));
 ok('old input repopulated', str_contains($r['body'], 'value="not-an-email"'));
 
+// A1 — the validation-redirect in App::run() must use the same same-site door as
+// back(). A failing POST carrying an off-site Referer must land on '/', never on
+// the attacker's host (this path bypassed the hardened back() helper before v0.3.8).
+$r = http($port, 'POST', '/users', ['csrf_token' => $tokU, 'name' => '', 'email' => 'not-an-email'], $jar, null, null, ['Referer: http://evil.test/phish']);
+ok('validation redirect with an off-site Referer stays local', (string) ($r['headers']['location'] ?? '') === '/', 'location=' . ($r['headers']['location'] ?? '(none)'));
+
 // --------------------------------------------- 4. rules, columns, events, auth
 
 sec('Validation rules (JSON probes)');

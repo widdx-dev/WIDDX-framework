@@ -1939,10 +1939,14 @@ test('2.20 back() follows the Referer only when it points at this site', functio
         assert_equals('/', $at('http://evil.test/phish', 'shop.test'), 'off-site referer must be refused');
         assert_equals('/', $at('http://shop.test.evil.net/x', 'shop.test'), 'suffix-spoofed host must be refused');
         assert_equals('/', $at('//evil.net/x', 'shop.test'), 'protocol-relative referer must be refused');
+        assert_equals('/', $at('/\\evil.net/x', 'shop.test'), 'backslash in a path-only referer must be refused');
+        assert_equals('/', $at('/\\/evil.net/x', 'shop.test'), 'backslash before a scheme-like path must be refused');
+        assert_equals('/', $at('javascript:alert(1)', 'shop.test'), 'a non-http(s) scheme must be refused');
+        assert_equals('/', $at('ftp://shop.test/x', 'shop.test'), 'an ftp scheme must be refused');
         assert_equals('/', $at('http://user@shop.test/x', 'shop.test'), 'userinfo in the referer must be refused');
         assert_equals('/', $at('http://localhost:8000/x', 'evil.test:8000'), 'same port, different host is refused');
         assert_equals('/', $at('http://shop.test:8080/x', 'shop.test'), 'same host, different port is refused');
-        assert_equals('/', $at('https://shop.test/x', 'shop.test'), 'scheme change is refused');
+        assert_equals('https://shop.test/x', $at('https://shop.test/x', 'shop.test'), 'same host over another http(s) scheme is allowed — HTTPS probes must not break the redirect');
         assert_equals('/products', $at('/products', 'shop.test'), 'a path-only referer stays local');
         assert_equals('/', $at('', 'shop.test'), 'empty referer goes home');
     } finally {

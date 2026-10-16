@@ -686,4 +686,52 @@ class Request
         }
         return $this->validateCsrf();
     }
+
+    /**
+     * Resolve a same-site redirect target from an (attacker-controlled) URL.
+     * Returns '/' unless it is unmistakably this host — the only place the
+     * Referer trust decision lives. back() and the validation-redirect in
+     * App::run() must both go through here, or one of them re-opens the bug.
+     */
+    public static function sameSiteUrl(mixed $url): string
+    {
+        if (!is_string($url) || trim($url) === '') {
+            return '/';
+        }
+        $url = trim($url);
+        $local = strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
+        if ($local === '') {
+            return '/';
+        }
+        // Same-host absolute path. Reject protocol-relative (//) and any
+        // backslash — browsers treat \ as /, so /\evil.com becomes //evil.com.
+        if ($url[0] === '/') {
+            if (str_starts_with($url, '//') || str_contains($url, '\\')) {
+                return '/';
+            }
+            return $url;
+        }
+        $parts = parse_url($url);
+        if (!is_array($parts) || isset($parts['user'])) {
+            return '/';
+        }
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        if ($scheme !== '' && $scheme !== 'http' && $scheme !== 'https') {
+            return '/';
+        }
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        if ($host === '') {
+            return '/';
+        }
+        if (isset($parts['port'])) {
+            $host .= ':' . $parts['port'];
+        }
+        return $host === $local ? $url : '/';
+    }
+
+    /** The safe target for a validation-failed or back() redirect. */
+    public static function sameSiteReferer(): string
+    {
+        return self::sameSiteUrl($_SERVER['HTTP_REFERER'] ?? '');
+    }
 }

@@ -267,41 +267,12 @@ if (!function_exists('back')) {
     /**
      * Redirect to previous page — the local page, never wherever a client
      * claims. Referer is attacker-controlled, so an unchecked back() turns any
-     * POST into an open redirect off-site.
+     * POST into an open redirect off-site. The trust decision lives in
+     * Request::sameSiteUrl(); keep back() and App::run() on the same door.
      */
     function back(): Response
     {
-        $ref = $_SERVER['HTTP_REFERER'] ?? '';
-        if (!is_string($ref) || $ref === '') {
-            return redirect('/');
-        }
-        $local = strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
-        if ($local === '') {
-            return redirect('/');
-        }
-        // Same-host paths are the common case and carry no host to compare.
-        if ($ref[0] === '/') {
-            return str_starts_with($ref, '//') ? redirect('/') : redirect($ref);
-        }
-        $parts = parse_url($ref);
-        if (!is_array($parts) || isset($parts['user'])) {
-            return redirect('/');
-        }
-        $host = strtolower((string) ($parts['host'] ?? ''));
-        if ($host === '') {
-            return redirect('/');
-        }
-        if (isset($parts['port'])) {
-            $host .= ':' . $parts['port'];
-        }
-        if ($host !== $local) {
-            return redirect('/');
-        }
-        $scheme = strtolower((string) ($_SERVER['HTTPS'] ?? '')) === 'on' ? 'https' : 'http';
-        if (isset($parts['scheme']) && $parts['scheme'] !== $scheme) {
-            return redirect('/');
-        }
-        return redirect($ref);
+        return redirect(\Widdx\Request::sameSiteReferer());
     }
 }
 
