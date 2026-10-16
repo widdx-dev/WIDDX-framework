@@ -1275,6 +1275,74 @@ test('2.12 every AI agent entry point points at AGENTS.md', function () {
     foreach ($gates as $g) {
         assert_true(str_contains($cli, "'{$g}'"), "{$g} is not shipped by `php widdx new` — agents in a real project never see it");
     }
+    // AGENTS.md is now a two-layer handbook: the binding layer plus .agents/*.md reference. If the
+    // reference folder is not copied, every ROUTER row in a generated project points at nothing.
+    assert_true(str_contains($cli, "/.agents'"),
+        '.agents/ is not shipped by `php widdx new` — the ROUTER table is dead in a real project');
+    assert_true(is_dir($root . '/.agents'), 'the .agents/ reference layer is missing');
+});
+
+/**
+ * 2.12b: the split must not lose or duplicate anything.
+ * Every PART heading the handbook used to carry still exists in exactly one file, every reference
+ * file is reachable from the AGENTS.md router, and the binding layer stays small — that size is the
+ * whole reason for the split (a long instruction file is one a model stops following).
+ */
+test('2.12b the two-layer handbook keeps every section, reachable and only once', function () {
+    $root = __DIR__;
+    if (!str_starts_with(rtrim((string) @file_get_contents($root . '/README.md')), '# Widdx')) {
+        return; // scaffolded project
+    }
+    $layer1 = (string) file_get_contents($root . '/AGENTS.md');
+    $files = (array) glob($root . '/.agents/*.md');
+    assert_true(count($files) >= 13, 'the reference layer shrank to ' . count($files) . ' files');
+
+    // One PART heading, one home — no section may exist in two files or in none.
+    $homes = [];
+    foreach ($files as $f) {
+        $homes['.agents/' . basename($f)] = (string) file_get_contents($f);
+    }
+    $all = array_merge(['AGENTS.md' => $layer1], $homes);
+    $homesByPart = [];
+    foreach ($all as $name => $body) {
+        preg_match_all('/^## (PART [0-9A-Z]+) —/m', $body, $m);
+        foreach ($m[1] as $part) {
+            if (!isset($homesByPart[$part])) {
+                $homesByPart[$part] = [];
+            }
+            $homesByPart[$part][] = $name;
+        }
+    }
+    foreach ($homesByPart as $part => $where) {
+        assert_true(count($where) === 1,
+            "{$part} lives in " . count($where) . ' files (' . implode(', ', $where) . ') — one home each');
+    }
+    // The section list the handbook had before the split must all still be present.
+    foreach (['PART 0', 'PART 1', 'PART 2', 'PART 2A', 'PART 3', 'PART 4', 'PART 5', 'PART 6', 'PART 7',
+              'PART 8', 'PART 9', 'PART 10', 'PART 11', 'PART 12', 'PART 13', 'PART 14', 'PART 15',
+              'PART 16', 'PART 17', 'PART 18', 'PART 19', 'PART 20', 'PART 21', 'PART 22', 'PART 23',
+              'PART 24'] as $part) {
+        assert_true(isset($homesByPart[$part]), "{$part} vanished from the handbook in the split");
+    }
+
+    // Every reference file is routed to from the binding layer, and links back.
+    foreach ($files as $f) {
+        $rel = '.agents/' . basename($f);
+        assert_true(str_contains($layer1, $rel), "{$rel} is not in the AGENTS.md ROUTER table");
+        assert_true(str_contains((string) file_get_contents($f), 'AGENTS.md'),
+            "{$rel} does not point back at the binding layer");
+        $size = strlen((string) file_get_contents($f));
+        assert_true($size < 9000, "{$rel} is {$size} bytes — split it further, the point is one focused read");
+    }
+
+    // The binding layer is the file every tool loads on every request. Keep it small.
+    assert_true(strlen($layer1) < 12000,
+        'AGENTS.md grew to ' . strlen($layer1) . ' bytes — move prose into .agents/ and route to it');
+    // And it must still hold the binding content, not just links.
+    foreach (['## PART 2A — THE LAWS', '### Law of file placement', '### Definition of done',
+              '## SILENT FAILURES', '## ROUTER'] as $h) {
+        assert_true(str_contains($layer1, $h), "AGENTS.md lost the binding section \"{$h}\"");
+    }
 });
 
 test('2.12 the measured doc facts stay written down and the dead ones stay out', function () {
@@ -1289,6 +1357,10 @@ test('2.12 the measured doc facts stay written down and the dead ones stay out',
         'routes/web.php' => (string) file_get_contents($root . '/routes/web.php'),
         'core/Cli/MakeCrud.php' => (string) file_get_contents($root . '/core/Cli/MakeCrud.php'),
     ];
+    // The reference layer is documentation too: a false claim moved there is still a false claim.
+    foreach ((array) glob($root . '/.agents/*.md') as $f) {
+        $docs['.agents/' . basename($f)] = (string) file_get_contents($f);
+    }
     // Sentences measured as FALSE and removed on 2026-10-15. If one reappears, the person
     // adding it has not run the probe — this is the whole reason the test exists.
     $forbidden = [
@@ -1304,26 +1376,32 @@ test('2.12 the measured doc facts stay written down and the dead ones stay out',
             );
         }
     }
-    // The corrections themselves must not silently vanish.
+    // The corrections themselves must not silently vanish — each pinned to the file that now holds it.
     $required = [
-        'AGENTS.md' => ['is NOT reliably seen', 'Restart is the whole fix',
-                        'CSRF + security headers are already ON', 'that line makes it run twice',
-                        'is named `csrf_token`', 'fills them by itself',
-                        'resolved against the project'],
+        'AGENTS.md' => ['is NOT reliably seen', 'Restart is the whole fix', 'is named `csrf_token`'],
+        '.agents/02-routes-middleware.md' => ['CSRF + security headers are already ON'],
+        '.agents/07-inference.md' => ['fills them by itself'],
+        '.agents/09-helpers-env-cli.md' => ['resolved against the project'],
+        '.agents/11-pitfalls.md' => ['that line makes it run twice'],
         'README.md' => ['if it was already running, restart it', 'that runs the middleware twice',
                         'unpublished on Packagist'],
         'core/Cli/MakeCrud.php' => ['restart is required'],
         'routes/web.php' => ['ALREADY on'],
     ];
     foreach ($required as $name => $phrases) {
+        assert_true(isset($docs[$name]), "{$name} is missing from the repo");
         foreach ($phrases as $phrase) {
             assert_true(str_contains($docs[$name], $phrase), "{$name} must keep: \"{$phrase}\"");
         }
     }
     // PART 0 is the recipe small models execute verbatim: every command in it must be a real
     // CLI verb, and the restart step must be inside the recipe, not only in the prose.
-    $part0 = (string) preg_replace('/^.*## PART 0.*$/m', '', file_get_contents($root . '/AGENTS.md'));
-    $part0 = substr($part0, 0, (int) strpos($part0, '## PART 1'));
+    $layer1 = (string) file_get_contents($root . '/AGENTS.md');
+    $part0 = (string) preg_replace('/^## PART 0.*$\n/m', '', $layer1, 1);
+    $cut = preg_match('/^## PART /m', $part0, $mm, PREG_OFFSET_CAPTURE);
+    if ($cut === 1) {
+        $part0 = substr($part0, 0, $mm[0][1]);
+    }
     preg_match_all('/^\s*php widdx ([a-z:]+)\b/m', $part0, $m);
     $verbs = array_unique($m[1]);
     assert_true(count($verbs) >= 3, 'PART 0 lost its commands: ' . implode(',', $verbs));
@@ -1638,11 +1716,11 @@ test('2.17 isset() and ?? see relations, not only columns', function () {
  * PART 8 promised `Post::count()`; the suite never called it, so it stayed a fatal error
  * until a project written by another agent tripped on it. The doc is now the input.
  */
-test('2.18 every Model:: static promised in AGENTS.md PART 8 exists', function () {
-    $doc = (string) file_get_contents(__DIR__ . '/AGENTS.md');
+test('2.18 every Model:: static promised in the models reference exists', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/.agents/03-models-relations.md');
     $start = strpos($doc, '## PART 8');
     $end = strpos($doc, '## PART 9');
-    assert_true($start !== false && $end !== false && $end > $start, 'PART 8 section found in AGENTS.md');
+    assert_true($start !== false && $end !== false && $end > $start, 'PART 8 section found in the reference layer');
     $section = substr($doc, $start, $end - $start);
 
     $seen = 0;
@@ -1655,7 +1733,7 @@ test('2.18 every Model:: static promised in AGENTS.md PART 8 exists', function (
         preg_match_all('/[A-Z]\w*::([a-z]\w+)\(/', $line, $m);
         foreach ($m[1] as $method) {
             $seen++;
-            assert_true(method_exists(\Widdx\Model::class, $method), "AGENTS.md PART 8 promises Model::{$method}()");
+            assert_true(method_exists(\Widdx\Model::class, $method), "PART 8 promises Model::{$method}()");
         }
     }
     assert_true($seen >= 6, "PART 8 documents real statics (found {$seen})");
@@ -1682,16 +1760,25 @@ test('2.18 every Model:: static promised in AGENTS.md PART 8 exists', function (
  */
 test('2.19 the LAWS in PART 2A and the API surface in PART 23 are enforceable as written', function () {
     $doc = (string) file_get_contents(__DIR__ . '/AGENTS.md');
+    $api = (string) file_get_contents(__DIR__ . '/.agents/12-api-surface.md');
+    $startDoc = (string) file_get_contents(__DIR__ . '/.agents/01-start.md');
+    $pitfalls = (string) file_get_contents(__DIR__ . '/.agents/11-pitfalls.md');
+    $scaffold = (string) file_get_contents(__DIR__ . '/widdx');
 
-    // 1) The law sections exist, by their exact headings, and every law number is still there.
-    foreach (['## PART 2A — THE LAWS', '### Laws about the code you write',
-              '### Law of file placement', '### Law of execution', '### Definition of done',
-              '## PART 23 — The real API surface', '## PART 24 — Expert notes'] as $heading) {
-        assert_true(str_contains($doc, $heading), "AGENTS.md lost the heading: {$heading}");
+    // 1) The binding layer must still hold its binding sections, by their exact headings.
+    foreach (['## PART 2A — THE LAWS', '### Law of file placement', '### Definition of done',
+              '## SILENT FAILURES', '## ROUTER'] as $heading) {
+        assert_true(str_contains($doc, $heading), "AGENTS.md lost the binding heading: {$heading}");
     }
+    assert_true(str_contains($api, '## PART 23 — The real API surface'),
+        'the reference layer lost the API-surface heading');
+    assert_true(str_contains((string) file_get_contents(__DIR__ . '/.agents/13-expert-notes.md'),
+                             '## PART 24 — Expert notes'), 'the reference layer lost the expert-notes heading');
     for ($n = 1; $n <= 13; $n++) {
         assert_true(str_contains($doc, "**L{$n} —"), "AGENTS.md lost law L{$n}");
     }
+    // L2 is only a law if the list it points at is reachable from the binding layer.
+    assert_true(str_contains($doc, '.agents/12-api-surface.md'), 'law L2 no longer routes to the API surface file');
 
     // 2) The file-placement map still names every folder the scaffold creates, plus the two the
     //    handbook tells you to create yourself (policies/jobs) and the two it routes to.
@@ -1702,6 +1789,25 @@ test('2.19 the LAWS in PART 2A and the API surface in PART 23 are enforceable as
         assert_true(str_contains($doc, $path), "the PART 2A file map lost {$path}");
     }
 
+    // 2b) Every app/ folder the scaffold creates must have a row in the handbook, or the agent has
+    //     a place to put code and no instruction about it (and vice versa: the map cannot invent one).
+    preg_match('/\$dirs = \[(.*?)\];/s', $scaffold, $dm);
+    $created = array_values(array_filter(array_map(
+        fn (string $s): string => trim($s, " '\"\r\n\t"),
+        preg_split('/,/', $dm[1] ?? '') ?: []
+    ), fn (string $s): bool => $s !== ''));
+    assert_true(count($created) >= 8, 'could not read the scaffold folder list out of `widdx new`');
+    $handbook = $doc . PHP_EOL . implode(PHP_EOL, array_map(
+        fn (string $f): string => (string) file_get_contents($f),
+        (array) glob(__DIR__ . '/.agents/*.md')
+    ));
+    $appDirs = array_values(array_filter($created, fn (string $d): bool => str_starts_with($d, 'app/')));
+    assert_true(count($appDirs) >= 3, 'the scaffold lost its app/ folders');
+    foreach ($appDirs as $dir) {
+        assert_true(str_contains($handbook, $dir),
+            "`php widdx new` creates {$dir} but no handbook file says what belongs there");
+    }
+
     // 3) Every gate file must send the agent to the laws, not merely to the handbook.
     foreach (['CLAUDE.md', '.cursorrules', 'GEMINI.md', '.github/copilot-instructions.md', 'llms.txt'] as $g) {
         assert_true(str_contains((string) file_get_contents(__DIR__ . '/' . $g), 'PART 2A'),
@@ -1709,10 +1815,9 @@ test('2.19 the LAWS in PART 2A and the API surface in PART 23 are enforceable as
     }
 
     // 4) PART 23: every listed name must really exist, in the class that bullet names.
-    $start = strpos($doc, '## PART 23');
-    $end = strpos($doc, '## PART 24');
-    assert_true($start !== false && $end !== false && $end > $start, 'PART 23 section found in AGENTS.md');
-    $section = substr($doc, $start, $end - $start);
+    $start = strpos($api, '## PART 23');
+    assert_true($start !== false, 'PART 23 section found in .agents/12-api-surface.md');
+    $section = substr($api, $start);
 
     $sources = [
         'Global helpers' => 'function',
@@ -1783,10 +1888,12 @@ test('2.19 the LAWS in PART 2A and the API surface in PART 23 are enforceable as
     $viewFolder->setAccessible(true);
     assert_equals('teams', (string) $viewFolder->invoke($controller),
         'the CRUD view-override folder is the PLURAL table name');
-    assert_true(str_contains($doc, 'views/products/index.php'),
+    assert_true(str_contains($startDoc, 'views/products/index.php'),
         'PART 5 must teach the plural override folder');
-    assert_true(!str_contains($doc, 'views/product/index.php'),
+    assert_true(!str_contains($startDoc, 'views/product/index.php'),
         'PART 5 revived the singular folder, which is silently never loaded');
+    assert_true(str_contains($doc, 'views/post/index.php') && str_contains($doc, 'views/posts/'),
+        'the binding layer must keep the silent-failure row about the plural view folder');
 
     $coreTemplateReachable = true;
     try {
@@ -1796,7 +1903,7 @@ test('2.19 the LAWS in PART 2A and the API surface in PART 23 are enforceable as
     }
     assert_true(!$coreTemplateReachable,
         'view() must not reach a core template from the project — PART 22 tells agents that');
-    assert_true(str_contains($doc, 'Never `view(\'crud.index\')`'),
+    assert_true(str_contains($pitfalls, 'Never `view(\'crud.index\')`'),
         'PART 22 keeps the replacement recipe for a custom list page');
 });
 

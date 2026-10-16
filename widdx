@@ -290,6 +290,12 @@ PHP);
         copy($src, $dst);
     }
 
+    // AGENTS.md is the binding layer; the reference lives in .agents/ and every
+    // project must carry it too, or the ROUTER table points at nothing.
+    if (is_dir(WIDDX_BASE_PATH . '/.agents')) {
+        recursive_copy(WIDDX_BASE_PATH . '/.agents', "{$base}/.agents");
+    }
+
     // config/app.php
     write_file("{$base}/config/app.php", <<<PHP
 <?php

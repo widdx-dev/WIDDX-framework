@@ -305,6 +305,19 @@ sec('Scaffold: php widdx new app');
 ok('widdx new exits 0', $code === 0, $out);
 $proj = $TMP . '/app';
 
+// The agent handbook is two layers now: AGENTS.md binds, .agents/*.md is the reference
+// it routes to. A scaffold that ships the router without the files behind it hands every
+// AI assistant in the project dead links, so check the real generated tree — not the CLI source.
+$router = (string) @file_get_contents($proj . '/AGENTS.md');
+ok('scaffold ships the binding handbook', str_contains($router, '## PART 2A — THE LAWS'));
+$linked = [];
+preg_match_all('#`(\.agents/[0-9A-Za-z._-]+\.md)`#', $router, $routerMatches);
+foreach (array_unique($routerMatches[1]) as $rel) {
+    $linked[] = $rel;
+    ok("scaffold ships {$rel}", is_file($proj . '/' . $rel));
+}
+ok('the router points at at least 10 reference files', count($linked) >= 10, implode(',', $linked));
+
 // Bring the demo app files from the framework repo into the scaffold. A
 // scaffolded project ships a bare app/, so without them the suite exercises the
 // zero-code fallback path (model + built-in pages) instead.
