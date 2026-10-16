@@ -1683,7 +1683,7 @@ test('2.16 string length rules count characters without ext-mbstring', function 
 
 /**
  * 2.17: isset() has to answer about relations the same way __get does.
- * Found by an outside agent working a real ERP project: `$user->roles ?? []` returned the
+ * `$user->roles ?? []` returned the
  * default while `count($user->roles)` returned the rows, because __isset looked at
  * attributes only. Any guard or list written with ?? therefore saw NOTHING — no error,
  * no log line, just an empty permission check on a user who has roles.
