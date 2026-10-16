@@ -30,6 +30,12 @@ class CorsMiddleware
         }
 
         $credentials = (bool) config('cors.allow_credentials', false);
+        // '*' + credentials is a combination browsers reject outright, so
+        // granting it here would only produce a confusing failed request:
+        // credentials are honoured only when the origin list is explicit.
+        if ($credentials && in_array('*', $origins, true)) {
+            $credentials = false;
+        }
         $headers = [
             'Access-Control-Allow-Origin' => $credentials ? $origin : (in_array('*', $origins, true) ? '*' : $origin),
             'Vary' => 'Origin',
@@ -45,7 +51,20 @@ class CorsMiddleware
             $reqHeaders = (string) ($request->header('Access-Control-Request-Headers') ?? '');
             $allowHeaders = (array) config('cors.allowed_headers', []);
             if ($reqHeaders !== '') {
-                $allowHeaders = array_values(array_unique(array_merge($allowHeaders, array_map('trim', explode(',', $reqHeaders)))));
+                // Answer with the INTERSECTION, never with what the client asked
+                // for: echoing every requested header turns allowed_headers from
+                // an allowlist into decoration, and lets any page from an allowed
+                // origin push arbitrary (sensitive) headers through.
+                $granted = [];
+                foreach (array_map('trim', explode(',', $reqHeaders)) as $requested) {
+                    foreach ($allowHeaders as $permitted) {
+                        if ($requested !== '' && strcasecmp($requested, (string) $permitted) === 0) {
+                            $granted[] = (string) $permitted;
+                            break;
+                        }
+                    }
+                }
+                $allowHeaders = $granted;
             }
             $headers['Access-Control-Allow-Headers'] = implode(', ', $allowHeaders);
             $headers['Access-Control-Max-Age'] = (string) config('cors.max_age', 86400);

@@ -281,6 +281,11 @@ class Auth
     public static function createToken(string $email, string $type): string
     {
         $plain = bin2hex(random_bytes(32));
+        // Nothing else ever deletes an UNUSED token, so without this sweep the
+        // table grows forever and every lookup walks it. 7 days is the longest
+        // lifetime the framework issues (email verification), so pruning
+        // anything older can never invalidate a link still worth clicking.
+        db('auth_tokens')->where('created_at', '<', date('Y-m-d H:i:s', time() - 60 * 60 * 24 * 7))->delete();
         db('auth_tokens')->insert([
             'email' => $email,
             'type' => $type,

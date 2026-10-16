@@ -221,7 +221,7 @@ li{margin:4px 0}
     <option value="ar" <?= ($val('APP_LOCALE', 'ar') === 'ar') ? 'selected' : '' ?>>العربية (RTL)</option>
     <option value="en" <?= $val('APP_LOCALE') === 'en' ? 'selected' : '' ?>>English (LTR)</option>
 </select></label>
-<label style="font-weight:400"><input type="checkbox" name="APP_DEBUG" value="1" style="width:auto" <?= $old === [] ? 'checked' : '' ?>> وضع التصحيح (APP_DEBUG)</label>
+<label style="font-weight:400"><input type="checkbox" name="APP_DEBUG" value="1" style="width:auto" <?= !empty($old['APP_DEBUG']) ? 'checked' : '' ?>> وضع التصحيح (APP_DEBUG)</label>
 <p style="color:#b91c1c;font-size:.85rem;margin:4px 0 12px">⚠ تحذير: وضع التصحيح يعرض للزوار تفاصيل الأخطاء ومسارات الملفات الداخلية — مناسب للتجربة المحلية فقط. اتركه معطّلًا في أي موقع فعلي (الافتراضي في الإطار: OFF).</p>
 
 <button class="btn" type="submit">تنصيب الآن</button>

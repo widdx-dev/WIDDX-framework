@@ -12,14 +12,18 @@ return [
     // Exact origins allowed to call you, or ['*'] for any site (rarely wise).
     'allowed_origins' => [],
 
-    // Methods echoed on a preflight, e.g. ['GET', 'POST', 'PUT', 'DELETE'].
+    // Methods a preflight may be granted (only these are ever answered).
     'allowed_methods' => ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 
-    // Headers echoed on a preflight, e.g. ['Content-Type', 'Authorization'].
+    // ALLOWLIST, not a suggestion: a preflight is answered with the intersection
+    // of this list and what the browser asked for. A header missing here (or an
+    // empty list) is never granted, so a cross-origin page cannot push arbitrary
+    // headers — e.g. ['Content-Type', 'Authorization'].
     'allowed_headers' => ['Content-Type', 'Authorization', 'X-Requested-With'],
 
-    // Whether cookies/Authorization may be sent cross-origin. Cannot be used
-    // with allowed_origins = ['*'] (browsers reject that combination).
+    // Whether cookies/Authorization may be sent cross-origin. Ignored (treated as
+    // false) when allowed_origins contains '*', because browsers reject that
+    // combination anyway — list the exact origins if you need credentials.
     'allow_credentials' => false,
 
     // How long (seconds) a browser may cache the preflight answer.

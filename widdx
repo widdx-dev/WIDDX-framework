@@ -1217,6 +1217,10 @@ return new class {
             $t->string('type', 20);
             $t->string('token_hash', 64);
             $t->timestamp('created_at')->useCurrent();
+            // Auth::tokenValid() filters on these columns on every reset/verify,
+            // and the table only grows — so both pairs are indexed at creation.
+            $t->index(['email', 'type']);
+            $t->index(['token_hash', 'type']);
         }, $pdo);
     }
 

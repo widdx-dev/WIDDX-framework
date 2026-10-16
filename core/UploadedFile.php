@@ -217,11 +217,59 @@ class UploadedFile
         $stem = strtolower((string) pathinfo($sanitized, PATHINFO_FILENAME));
         $stem = substr((string) preg_replace('/[^a-z0-9]+/', '-', $stem), 0, 40);
         $name = date('Ymd') . '_' . bin2hex(random_bytes(4)) . ($stem !== '' && $stem !== '-' ? rtrim($stem, '-') : '') . '.' . $ext;
-        $relative = ($directory === '' ? '' : trim($directory, '/') . '/') . $name;
+        // The disk's own guard (LocalStorage::fullPath()) rejects '..', NUL and
+        // absolute paths — but store() builds its target from root(), so the same
+        // rules are enforced HERE, otherwise a caller that passes user input as
+        // $directory ('../../public') writes outside the storage root.
+        $directory = $this->safeDirectory($directory, (string) $disk->root());
+        $relative = ($directory === '' ? '' : $directory . '/') . $name;
 
         $target = $disk->root() . '/' . $relative;
         if (!$this->move($target)) {
             throw new Exceptions\HttpException('Failed to store uploaded file: ' . $relative, 500);
+        }
+        return $relative;
+    }
+
+    /**
+     * Normalize a storage directory to disk-relative form, or refuse it.
+     * Allowed: '', 'covers', 'covers/2026' — anything that stays inside root().
+     */
+    protected function safeDirectory(string $directory, string $root): string
+    {
+        if (str_contains($directory, "\0")) {
+            throw new Exceptions\HttpException('Upload directory contains a NUL byte.', 400);
+        }
+        $normalized = str_replace('\\', '/', $directory);
+        if (str_starts_with($normalized, '/') || preg_match('#^[a-zA-Z]:#', $normalized) === 1) {
+            throw new Exceptions\HttpException(
+                'Upload directory must be relative to the storage disk, got an absolute path: ' . $directory, 400
+            );
+        }
+        $segments = [];
+        foreach (explode('/', $normalized) as $seg) {
+            if ($seg === '' || $seg === '.') {
+                continue;
+            }
+            if ($seg === '..') {
+                throw new Exceptions\HttpException(
+                    'Upload directory must stay inside the storage disk: ' . $directory, 400
+                );
+            }
+            $segments[] = $seg;
+        }
+        $relative = implode('/', $segments);
+        // Last line of defence: if root() already exists, prove the target dir
+        // resolves inside it (realpath also defeats a symlinked 'uploads').
+        $absRoot = realpath($root);
+        if ($absRoot !== false && $relative !== '') {
+            $probe = $absRoot . '/' . $relative;
+            $resolved = realpath($probe);
+            if ($resolved !== false && !str_starts_with($resolved, $absRoot . DIRECTORY_SEPARATOR)) {
+                throw new Exceptions\HttpException(
+                    'Upload directory escapes the storage disk: ' . $directory, 400
+                );
+            }
         }
         return $relative;
     }

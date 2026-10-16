@@ -2015,6 +2015,106 @@ test('2.22 silent-failure guards: count() limit, array where, stale save, missin
     \Widdx\Schema::dropIfExists('wc2_items');
 });
 
+test('2.23 the five production findings: installer debug default, upload dir escape, CORS allowlist, token indexes + prune, dead config key', function () {
+    // 1. SEC-01 — a first run of public/install.php must not pre-check APP_DEBUG:
+    // the page warns that the framework defaults to OFF while the box said ON.
+    $install = (string) file_get_contents(__DIR__ . '/public/install.php');
+    assert_true(str_contains($install, "!empty(\$old['APP_DEBUG']) ? 'checked'"), 'install page must start with debug OFF');
+    assert_true(!str_contains($install, "\$old === [] ? 'checked'"), 'a first GET must not pre-check the debug box');
+    $envOff = \Widdx\Installer::buildEnv(['DB_CONNECTION' => 'sqlite', 'APP_URL' => 'http://localhost']);
+    assert_true(str_contains($envOff, 'APP_DEBUG=false'), 'unticked box writes APP_DEBUG=false: ' . $envOff);
+    $envOn = \Widdx\Installer::buildEnv(['DB_CONNECTION' => 'sqlite', 'APP_DEBUG' => '1']);
+    assert_true(str_contains($envOn, 'APP_DEBUG=true'), 'a ticked box still means ON');
+
+    // 2. SEC-02 — store() built its target from root() and skipped the disk's own
+    // traversal guard, so a caller passing user input could write outside it.
+    $gif = base64_decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
+    $uploadSrc = tempnam(sys_get_temp_dir(), 'widdx-esc');
+    file_put_contents($uploadSrc, $gif);
+    $mk = static fn () => new \Widdx\UploadedFile($uploadSrc, 'sea.gif', 'image/gif', UPLOAD_ERR_OK, strlen($gif));
+    foreach (['../../public', '../outside', '/etc/passwd-dir', 'a/../../b', '..\\..\\public'] as $bad) {
+        $threw = false;
+        try {
+            $mk()->store($bad);
+        } catch (\Widdx\Exceptions\HttpException) {
+            $threw = true;
+        }
+        assert_true($threw, 'store() must refuse a directory that escapes the disk: ' . $bad);
+    }
+    $stored = $mk()->store('unittest/2026');
+    assert_true(str_starts_with($stored, 'unittest/2026/'), 'a normal nested directory still stores: ' . $stored);
+    @unlink(WIDDX_BASE_PATH . '/storage/app/' . $stored);
+    @unlink($uploadSrc);
+
+    // 3. SEC-03 — the preflight answer is the intersection of what is allowed and
+    // what was asked, never a copy of the request.
+    $prop = (new \ReflectionClass(\Widdx\App::class))->getProperty('config');
+    $savedConfig = $prop->getValue();
+    try {
+        $prop->setValue(null, ['cors' => [
+            'allowed_origins' => ['https://app.test'],
+            'allowed_methods' => ['GET', 'POST'],
+            'allowed_headers' => ['Content-Type', 'Authorization'],
+            'allow_credentials' => false,
+            'max_age' => 60,
+        ]]);
+        $pre = new \Widdx\Request([], [], [
+            'REQUEST_METHOD' => 'OPTIONS',
+            'HTTP_ORIGIN' => 'https://app.test',
+            'HTTP_ACCESS_CONTROL_REQUEST_METHOD' => 'POST',
+            'HTTP_ACCESS_CONTROL_REQUEST_HEADERS' => 'authorization, X-evil, Cookie',
+        ]);
+        $grant = (new \Widdx\CorsMiddleware())->handle($pre, static fn () => \Widdx\Response::make(''))->getHeaders();
+        $allowHeaders = (string) ($grant['Access-Control-Allow-Headers'] ?? '');
+        assert_true(!str_contains($allowHeaders, 'X-evil'), 'a header outside the allowlist must not be granted: ' . $allowHeaders);
+        assert_true(!str_contains($allowHeaders, 'Cookie'), 'Cookie must never be echoed: ' . $allowHeaders);
+        assert_equals('Authorization', trim($allowHeaders), 'the answer is exactly the intersection, matched case-insensitively');
+
+        // '*' + credentials is the combination browsers reject — it must not be sent.
+        $prop->setValue(null, ['cors' => [
+            'allowed_origins' => ['*'], 'allowed_methods' => ['GET'],
+            'allowed_headers' => [], 'allow_credentials' => true, 'max_age' => 60,
+        ]]);
+        $wild = (new \Widdx\CorsMiddleware())->handle(
+            new \Widdx\Request([], [], ['REQUEST_METHOD' => 'GET', 'HTTP_ORIGIN' => 'https://app.test']),
+            static fn () => \Widdx\Response::make('')
+        )->getHeaders();
+        assert_true(!isset($wild['Access-Control-Allow-Credentials']), 'credentials must not be granted for a wildcard origin');
+        assert_equals('*', (string) ($wild['Access-Control-Allow-Origin'] ?? ''), 'the wildcard itself stays a wildcard');
+    } finally {
+        $prop->setValue(null, $savedConfig);
+    }
+
+    // 4. PERF-01 — the auth_tokens stub must index the columns tokenValid() filters
+    // on, and an unused token must not accumulate forever.
+    $cli = (string) file_get_contents(__DIR__ . '/widdx');
+    $stub = substr($cli, (int) strpos($cli, '_create_auth_tokens_table.php'), 1800);
+    assert_true(str_contains($stub, "\$t->index(['email', 'type'])"), 'the stub must index (email, type)');
+    assert_true(str_contains($stub, "\$t->index(['token_hash', 'type'])"), 'the stub must index (token_hash, type)');
+
+    \Widdx\Schema::create('auth_tokens', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('email');
+        $t->string('type');
+        $t->string('token_hash');
+        $t->timestamp('created_at')->nullable();
+    });
+    db('auth_tokens')->insert([
+        'email' => 'stale@widdx.test', 'type' => 'reset', 'token_hash' => 'deadbeef',
+        'created_at' => date('Y-m-d H:i:s', time() - 60 * 60 * 24 * 30),
+    ]);
+    \Widdx\Auth::createToken('fresh@widdx.test', 'reset');
+    assert_equals(0, db('auth_tokens')->where('email', 'stale@widdx.test')->count(), 'a 30-day-old token must be pruned when a new one is issued');
+    assert_equals(1, db('auth_tokens')->where('email', 'fresh@widdx.test')->count(), 'the fresh token is still stored');
+    db('auth_tokens')->where('email', 'fresh@widdx.test')->delete();
+    \Widdx\Schema::dropIfExists('auth_tokens');
+
+    // 5. CONFIG-01 — a config key no code reads is a setting that silently does nothing.
+    assert_true(!array_key_exists('session_key', (array) config('auth')), 'auth.session_key promised nothing and is gone');
+    $authCfg = (string) file_get_contents(__DIR__ . '/config/auth.php');
+    assert_true(!str_contains($authCfg, "'session_key'"), 'config/auth.php must not offer an inert key');
+});
+
 widdx_reset_networked_db();
 
 echo "\n===== Running integration suite (this boots real servers) =====\n";

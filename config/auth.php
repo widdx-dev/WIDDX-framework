@@ -3,7 +3,7 @@
 return [
     // User model class
     'model' => 'App\\Models\\User',
-
-    // Session key for user ID
-    'session_key' => 'auth_user_id',
+    // The session keys Auth writes ('auth_user_id', 'auth_user_class') are
+    // internal, not settings: a per-project key would need every reader
+    // (Auth, middleware, views, the built-in auth views) to consult config.
 ];
