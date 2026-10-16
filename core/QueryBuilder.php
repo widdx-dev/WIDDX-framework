@@ -81,7 +81,7 @@ class QueryBuilder
     {
         if (func_num_args() === 2) {
             $value = $operatorOrValue;
-            $operator = '=';
+            $operator = is_array($value) ? 'IN' : '=';
         } else {
             $operator = strtoupper((string) $operatorOrValue);
         }
@@ -95,7 +95,7 @@ class QueryBuilder
     {
         if (func_num_args() === 2) {
             $value = $operatorOrValue;
-            $operator = '=';
+            $operator = is_array($value) ? 'IN' : '=';
         } else {
             $operator = strtoupper((string) $operatorOrValue);
         }
@@ -226,6 +226,17 @@ class QueryBuilder
 
     public function count(): int
     {
+        // count() is the total of everything matching the WHERE clause — unless the
+        // caller set a limit/offset, in which case it means "how many rows THIS page
+        // has", so `where(...)->limit(10)->count()` no longer silently returns the
+        // global total.
+        if ($this->limit !== null || $this->offset !== null) {
+            [$inner, $bindings] = $this->toSelectSql();
+            // Bare alias, no AS: Oracle rejects `FROM (...) AS x` while every other
+            // supported driver accepts both spellings.
+            $rows = $this->run('SELECT COUNT(*) AS aggregate FROM (' . $inner . ') __w', $bindings);
+            return (int) ($rows[0]['aggregate'] ?? 0);
+        }
         // NOTE: build the SQL directly — the aggregate must NOT go through
         // wrap(), which quotes identifiers and would turn COUNT(*) into a
         // string literal (making every count() silently return 0).
@@ -343,7 +354,13 @@ class QueryBuilder
                 continue;
             }
             // IN / NOT IN with an array value: expand to a placeholder list.
-            if (($op === 'IN' || $op === 'NOT IN') && is_array($val)) {
+            if (is_array($val)) {
+                if ($op !== 'IN' && $op !== 'NOT IN') {
+                    throw new Exceptions\DatabaseException(
+                        "Array value for [{$col}] needs an IN or NOT IN operator, got [{$op}]. "
+                        . 'Use where($col, $array) for "in this list", or where($col, \'IN\', $array).'
+                    );
+                }
                 if ($val === []) {
                     // Empty set: IN matches nothing, NOT IN matches everything.
                     $parts[] = $prefix . ' ' . ($op === 'IN' ? '(1 = 0)' : '(1 = 1)');

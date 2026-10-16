@@ -1970,6 +1970,51 @@ test('2.21 a relation naming a class that does not exist says which file is miss
     assert_equals('user', \Widdx\Relations\Relation::snake(\App\Models\User::class));
 });
 
+test('2.22 silent-failure guards: count() limit, array where, stale save, missing table', function () {
+    \Widdx\App::basePath(WIDDX_BASE_PATH);
+    \Widdx\Schema::create('wc2_items', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('name');
+    });
+    $clean = static function () {
+        try { db('wc2_items')->where('id', '>', 0)->delete(); } catch (\Throwable) {}
+    };
+    $clean();
+    db('wc2_items')->insert(['name' => 'a']);
+    db('wc2_items')->insert(['name' => 'b']);
+    db('wc2_items')->insert(['name' => 'c']);
+
+    // 1. count() respects limit/offset — silently returning the global total is gone
+    assert_equals(2, db('wc2_items')->limit(2)->count(), 'count() with limit counts that page, not the whole table');
+    assert_equals(3, db('wc2_items')->count(), 'count() without limit stays the total');
+
+    // 3. where(col, [array]) means IN, not an array jammed into a scalar bind
+    assert_equals(2, count(db('wc2_items')->where('name', ['a', 'b'])->get()), 'where(col, [array]) must behave as IN');
+
+    // 3b. an array value with a non-IN operator throws clearly instead of 0 rows
+    $threw = false;
+    try {
+        db('wc2_items')->where('name', '=', ['a'])->get();
+    } catch (\Widdx\Exceptions\DatabaseException $e) {
+        $threw = true;
+        assert_true(str_contains($e->getMessage(), 'IN'), 'must name IN/NOT IN: ' . $e->getMessage());
+    }
+    assert_true($threw, 'array value with non-IN operator must throw, not silently return nothing');
+
+    // 2. save() on a row deleted behind its back reports false, not a silent "true"
+    $model = new class extends \Widdx\Model { protected ?string $table = 'wc2_items'; protected array $fillable = ['*']; };
+    $m = $model::create(['name' => 'target']);
+    $loaded = $model::find($m->id);
+    db('wc2_items')->where('id', $m->id)->delete();
+    $loaded->name = 'changed-after-delete';
+    assert_equals(false, $loaded->save(), 'save() must not claim success when the row no longer exists');
+
+    // 4. a genuinely missing table is the documented []; a real failure is NOT swallowed
+    assert_equals([], \Widdx\Database::connection()->tableColumns('wc2_no_such_table'), 'missing table => empty array contract');
+
+    \Widdx\Schema::dropIfExists('wc2_items');
+});
+
 widdx_reset_networked_db();
 
 echo "\n===== Running integration suite (this boots real servers) =====\n";

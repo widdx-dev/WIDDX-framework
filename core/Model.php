@@ -405,7 +405,13 @@ abstract class Model implements \JsonSerializable
             if (empty($data)) {
                 return true;
             }
-            static::query()->where($this->primaryKey, $id)->update($data);
+            $affected = static::query()->where($this->primaryKey, $id)->update($data);
+            // 0 rows can mean "nothing changed" (MySQL rowCount) OR "the row is gone".
+            // Only the latter is a lie worth surfacing — check existence, not rowCount.
+            if ($affected === 0 && !static::query()->where($this->primaryKey, $id)->exists()) {
+                $this->exists = false;
+                return false;
+            }
             return true;
         }
 

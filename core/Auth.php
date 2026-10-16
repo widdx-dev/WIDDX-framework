@@ -232,11 +232,14 @@ class Auth
 
     public static function verificationAvailable(mixed $user): bool
     {
-        try {
-            return $user !== null && in_array('email_verified_at', $user->columns(), true);
-        } catch (\Throwable) {
+        if ($user === null) {
             return false;
         }
+        // columns() returns [] only for a genuinely missing table (the "no
+        // verification column" case); any real database failure propagates now,
+        // so a transient introspection error is never mistaken for "already
+        // verified" — which would silently skip the verification email.
+        return in_array('email_verified_at', $user->columns(), true);
     }
 
     public static function verified(mixed $user): bool
