@@ -1584,6 +1584,94 @@ test('2.16 string length rules count characters without ext-mbstring', function 
     assert_true($rejected, 'max:4 rejects it');
 });
 
+/**
+ * 2.17: isset() has to answer about relations the same way __get does.
+ * Found by an outside agent working a real ERP project: `$user->roles ?? []` returned the
+ * default while `count($user->roles)` returned the rows, because __isset looked at
+ * attributes only. Any guard or list written with ?? therefore saw NOTHING — no error,
+ * no log line, just an empty permission check on a user who has roles.
+ */
+test('2.17 isset() and ?? see relations, not only columns', function () {
+    // The ORM test above drops its tables when it finishes, so this one builds its own.
+    \Widdx\Schema::create('teams', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->string('name');
+    });
+    \Widdx\Schema::create('players', function (\Widdx\Blueprint $t) {
+        $t->id();
+        $t->integer('team_id');
+        $t->string('name');
+    });
+    $team = \Widdx\Tests\Team::create(['name' => 'IssetAlpha']);
+    \Widdx\Tests\Player::create(['name' => 'IssetP1', 'team_id' => $team->id]);
+    $fresh = \Widdx\Tests\Team::find($team->id);
+
+    assert_true(isset($fresh->players), 'a hasMany relation answers isset');
+    assert_equals(1, count($fresh->players ?? []), '?? yields the rows, never the default');
+    assert_true(($fresh->players ?? null) !== null, '?? does not fall back on a loaded relation');
+
+    // A relation that resolves to null is genuinely absent and must keep ?? semantics.
+    $bare = \Widdx\Tests\Team::find(\Widdx\Tests\Team::create(['name' => 'IssetBeta'])->id);
+    assert_true(!isset($bare->captain), 'a hasOne with no row is not set');
+    assert_equals('none', $bare->captain ?? 'none', '?? falls back for a null relation');
+
+    // ?? must not cost a second query after it resolved the relation.
+    $probe = \Widdx\Tests\Team::find($team->id);
+    $probe->players ?? [];
+    assert_true($probe->relationLoaded('players'), '?? cached the relation like __get does');
+
+    // Plain attribute semantics unchanged.
+    assert_true(isset($fresh->name), 'column is set');
+    assert_true(!isset($fresh->no_such_column), 'unknown name is still not set');
+    // Bound parameters: `name = "x"` parses as an identifier on PostgreSQL.
+    $pdo = \Widdx\Database::connection()->pdo();
+    $del = $pdo->prepare('DELETE FROM players WHERE name = ?');
+    $del->execute(['IssetP1']);
+    $del->closeCursor();
+    $del2 = $pdo->prepare('DELETE FROM teams WHERE name IN (?, ?)');
+    $del2->execute(['IssetAlpha', 'IssetBeta']);
+    $del2->closeCursor();
+});
+
+/**
+ * 2.18: every Model static AGENTS.md PART 8 teaches must be callable.
+ * PART 8 promised `Post::count()`; the suite never called it, so it stayed a fatal error
+ * until a project written by another agent tripped on it. The doc is now the input.
+ */
+test('2.18 every Model:: static promised in AGENTS.md PART 8 exists', function () {
+    $doc = (string) file_get_contents(__DIR__ . '/AGENTS.md');
+    $start = strpos($doc, '## PART 8');
+    $end = strpos($doc, '## PART 9');
+    assert_true($start !== false && $end !== false && $end > $start, 'PART 8 section found in AGENTS.md');
+    $section = substr($doc, $start, $end - $start);
+
+    $seen = 0;
+    foreach (explode("\n", $section) as $line) {
+        // The section deliberately contains a NEGATIVE example ("Post::columns() is a
+        // fatal error"), which must not be held to the promise it is warning about.
+        if (stripos($line, 'fatal') !== false || str_contains($line, 'WRONG')) {
+            continue;
+        }
+        preg_match_all('/[A-Z]\w*::([a-z]\w+)\(/', $line, $m);
+        foreach ($m[1] as $method) {
+            $seen++;
+            assert_true(method_exists(\Widdx\Model::class, $method), "AGENTS.md PART 8 promises Model::{$method}()");
+        }
+    }
+    assert_true($seen >= 6, "PART 8 documents real statics (found {$seen})");
+
+    // And the promised one really runs.
+    assert_equals(
+        \Widdx\Tests\Team::query()->count(),
+        \Widdx\Tests\Team::count(),
+        'count() forwards to the query builder'
+    );
+    assert_true(is_int(\Widdx\Tests\Team::count()), 'count() is an int');
+
+    \Widdx\Schema::dropIfExists('players');
+    \Widdx\Schema::dropIfExists('teams');
+});
+
 // ---------- Integration suite (real HTTP, scaffold, SMTP) ----------
 
 widdx_reset_networked_db();

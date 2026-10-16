@@ -214,7 +214,20 @@ abstract class Model implements \JsonSerializable
 
     public function __isset(string $name): bool
     {
-        return isset($this->attributes[$name]);
+        if (array_key_exists($name, $this->attributes)) {
+            return isset($this->attributes[$name]);
+        }
+        if (array_key_exists($name, $this->relations)) {
+            return isset($this->relations[$name]);
+        }
+        // A relation reachable by __get must be reachable here too. Before this,
+        // $user->roles ?? [] asked isset(), got false, and returned the default —
+        // an empty list where rows existed, with no error and nothing in the log.
+        // Resolving it also caches it, so the ?? read that follows costs no second query.
+        if ($this->isRelationMethod($name)) {
+            return $this->__get($name) !== null;
+        }
+        return false;
     }
 
     public function __toString(): string
@@ -292,6 +305,12 @@ abstract class Model implements \JsonSerializable
     public static function all(): array
     {
         return static::query()->get();
+    }
+
+    /** Post::count() — AGENTS.md PART 8 promises it, so it has to exist as a static. */
+    public static function count(): int
+    {
+        return static::query()->count();
     }
 
     public static function find(mixed $id): ?static

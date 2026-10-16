@@ -58,7 +58,7 @@ earlier steps. If you need more than a list of records, read PART 4 + PART 22.
 - One line `resource('posts')->public()` = a full working CRUD website for posts.
 - One line `authRoutes()` = register + login + logout + password reset + email verify.
 - One command `make:crud` = model + database table + routes, all at once.
-- Version: v0.3.6. All behavior below is tested (the unit suite + the integration suite; the runner prints its own totals).
+- Version: v0.3.7. All behavior below is tested (the unit suite + the integration suite; the runner prints its own totals).
 
 ---
 
@@ -282,6 +282,8 @@ Inside the model, one method per relation:
 - `return $this->belongsToMany(Tag::class);` → `$post->tags`. Pivot table `post_tag` (alphabetical!).
 
 Lazy access is free: `$post->comments` runs one query, only once, then caches.
+`isset($post->comments)` and `$post->comments ?? []` see relations too (they resolve and
+cache like the read itself), so a relation never looks empty to a `??` default.
 
 Eager (kills N+1):
 
