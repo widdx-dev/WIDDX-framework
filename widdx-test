@@ -477,6 +477,25 @@ test('2.1 numeric-string min/max compares as number, not length', function () {
     try { (new \Widdx\Request([], ['code' => 'AB'], ['REQUEST_METHOD' => 'POST']))->validate(['code' => 'required|string|min:3']); }
     catch (\Widdx\Exceptions\ValidationException $e) { $msg3 = $e->errors['code'][0]; }
     assert_true(str_contains($msg3, 'at least 3 characters'), 'string min stays length-based: ' . $msg3);
+    // A string that PASSED the length check must not be re-read as a number —
+    // measured in a real project: '100' under string|max:50 was rejected (3
+    // characters, but 100 > 50), and '0001' under string|min:3 likewise.
+    $req = fn(array $d) => new \Widdx\Request([], $d, ['REQUEST_METHOD' => 'POST']);
+    $fails = function (\Widdx\Request $r, array $rules): bool {
+        try { $r->validate($rules); return false; } catch (\Widdx\Exceptions\ValidationException $e) { return true; }
+    };
+    assert_true(!$fails($req(['p' => '100']), ['p' => 'required|string|max:50']), "'100' passes string|max:50 (3 chars)");
+    assert_true(!$fails($req(['c' => '0001']), ['c' => 'required|string|min:3']), "'0001' passes string|min:3 (4 chars)");
+    assert_true($fails($req(['p' => '1000000']), ['p' => 'required|string|max:6']), 'long digit string still fails on length');
+    // size: and between: measure the SAME way — they used to read any digit string as
+    // a number first, so '100' failed string|size:3 and a 10-character word passed
+    // string|between:1,5 without a single check.
+    assert_true(!$fails($req(['c' => '100']), ['c' => 'required|string|size:3']), "'100' passes string|size:3 (3 chars)");
+    assert_true($fails($req(['c' => '100']), ['c' => 'required|string|size:4']), 'string|size counts characters');
+    assert_true(!$fails($req(['n' => '100']), ['n' => 'required|numeric|size:100']), 'numeric|size still counts value');
+    assert_true($fails($req(['t' => 'abcdefghij']), ['t' => 'required|string|between:1,5']), 'a 10-char word fails string|between:1,5 on length');
+    assert_true(!$fails($req(['t' => 'abcd']), ['t' => 'required|string|between:1,5']), 'a 4-char word passes string|between:1,5');
+    assert_true($fails($req(['n' => '50']), ['n' => 'required|numeric|between:1,10']), 'numeric|between still compares by value');
 });
 
 test('2.2 unknown rule throws WiddxException; new rules validate', function () {
@@ -1905,6 +1924,46 @@ test('2.19 the LAWS in PART 2A and the API surface in PART 23 are enforceable as
         'view() must not reach a core template from the project — PART 22 tells agents that');
     assert_true(str_contains($pitfalls, 'Never `view(\'crud.index\')`'),
         'PART 22 keeps the replacement recipe for a custom list page');
+});
+
+test('2.20 back() follows the Referer only when it points at this site', function () {
+    $server = $_SERVER;
+    $at = static function (string $referer, string $host): string {
+        $_SERVER['HTTP_REFERER'] = $referer;
+        $_SERVER['HTTP_HOST'] = $host;
+        unset($_SERVER['HTTPS']);
+        return (string) (back()->getHeaders()['Location'] ?? '(none)');
+    };
+    try {
+        assert_equals('http://shop.test/products', $at('http://shop.test/products', 'shop.test'), 'same-host referer is followed as given');
+        assert_equals('/', $at('http://evil.test/phish', 'shop.test'), 'off-site referer must be refused');
+        assert_equals('/', $at('http://shop.test.evil.net/x', 'shop.test'), 'suffix-spoofed host must be refused');
+        assert_equals('/', $at('//evil.net/x', 'shop.test'), 'protocol-relative referer must be refused');
+        assert_equals('/', $at('http://user@shop.test/x', 'shop.test'), 'userinfo in the referer must be refused');
+        assert_equals('/', $at('http://localhost:8000/x', 'evil.test:8000'), 'same port, different host is refused');
+        assert_equals('/', $at('http://shop.test:8080/x', 'shop.test'), 'same host, different port is refused');
+        assert_equals('/', $at('https://shop.test/x', 'shop.test'), 'scheme change is refused');
+        assert_equals('/products', $at('/products', 'shop.test'), 'a path-only referer stays local');
+        assert_equals('/', $at('', 'shop.test'), 'empty referer goes home');
+    } finally {
+        $_SERVER = $server;
+    }
+});
+
+test('2.21 a relation naming a class that does not exist says which file is missing', function () {
+    $kind = '';
+    $msg = '';
+    try {
+        \Widdx\Relations\Relation::snake('App\Models\WidgetMissing');
+    } catch (\Throwable $e) {
+        $kind = get_class($e);
+        $msg = $e->getMessage();
+    }
+    assert_true(!str_contains($kind, 'Reflection'), 'must not surface as ' . ($kind ?: 'no error'));
+    assert_true(str_contains($msg, 'app/Models/WidgetMissing.php'), 'names the file to create: ' . $msg);
+    assert_true(str_contains($msg, 'php widdx make:model WidgetMissing'), 'names the command to run: ' . $msg);
+    // The live path is unchanged: an existing class still infers its snake name.
+    assert_equals('user', \Widdx\Relations\Relation::snake(\App\Models\User::class));
 });
 
 widdx_reset_networked_db();

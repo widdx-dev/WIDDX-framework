@@ -524,24 +524,34 @@ class Request
                 if ($value instanceof UploadedFile) {
                     return $value->sizeKb() == $n ? null : ['replace' => ['size' => $n]];
                 }
-                if (is_numeric($value)) {
-                    return (float) $value == $n ? null : ['replace' => ['size' => $n]];
-                }
-                if (is_array($value)) {
-                    return count($value) == (int) $n ? null : ['replace' => ['size' => $n]];
+                $fail = ['replace' => ['size' => $n]];
+                if (self::comparesByValue($ruleList, $value)) {
+                    return (float) $value == $n ? null : $fail;
                 }
                 if (is_string($value)) {
-                    return self::textLength($value) == (int) $n ? null : ['replace' => ['size' => $n]];
+                    return self::textLength($value) == (int) $n ? null : $fail;
                 }
-                return [];
+                if (is_array($value)) {
+                    return count($value) == (int) $n ? null : $fail;
+                }
+                return is_numeric($value) && (float) $value != $n ? $fail : [];
             case 'between':
                 [$bLo, $bHi] = array_pad(explode(',', (string) $param), 2, null);
-                if (!is_numeric($value) || $bLo === null || $bHi === null) {
+                if ($bLo === null || $bHi === null) {
                     return [];
                 }
-                $bf = (float) $value;
-                return ($bf >= (float) $bLo && $bf <= (float) $bHi)
-                    ? null : ['replace' => ['min' => (float) $bLo, 'max' => (float) $bHi]];
+                $range = ['min' => (float) $bLo, 'max' => (float) $bHi];
+                $within = static fn(float $x): ?array => ($x >= (float) $bLo && $x <= (float) $bHi) ? null : $range;
+                if (self::comparesByValue($ruleList, $value)) {
+                    return $within((float) $value);
+                }
+                if (is_string($value)) {
+                    return $within((float) self::textLength($value));
+                }
+                if (is_array($value)) {
+                    return $within((float) count($value));
+                }
+                return is_numeric($value) ? $within((float) $value) : [];
             default:
                 // A typo'd rule name ('emial') must fail LOUD, not silently pass.
                 throw new Exceptions\WiddxException('Unknown validation rule [' . $rule . '] on field [' . $field . '].');
@@ -570,6 +580,22 @@ class Request
         return $chars === false ? strlen($value) : $chars;
     }
 
+    /**
+     * Do min/max/size/between measure this value by NUMBER? Only when the rule list
+     * declares the field numeric, or the value is a real int/float (which has no
+     * length to count). A digit string under `string` is TEXT: '0001' is four
+     * characters and '100' is three — reading them as 1 and 100 rejected valid input.
+     */
+    protected static function comparesByValue(array $rules, mixed $value): bool
+    {
+        if (is_string($value)) {
+            return $rules !== []
+                && array_intersect($rules, ['int', 'integer', 'numeric', 'float', 'double']) !== []
+                && is_numeric($value);
+        }
+        return is_numeric($value);
+    }
+
     /** Validate a min: rule across value types. */
     protected function validateMin(mixed $value, ?string $param, array $rules = []): ?array
     {
@@ -577,17 +603,13 @@ class Request
         if ($value instanceof UploadedFile && $value->sizeKb() < $min) {
             return ['langKey' => 'min.file', 'replace' => ['min' => $min]];
         }
-        // 2.1: a numerically-typed field compares as a NUMBER even when the
-        // value arrives as a string, so '25' with int|min:18 passes instead of
-        // failing on strlen('25') === 2.
-        if ($rules !== [] && array_intersect($rules, ['int', 'integer', 'numeric', 'float', 'double']) !== [] && is_numeric($value)) {
+        // A numerically-typed field compares as a NUMBER even when the value arrives
+        // as a string, so '25' with int|min:18 passes instead of strlen('25') === 2.
+        if (self::comparesByValue($rules, $value)) {
             return (float) $value < $min ? ['langKey' => 'min.numeric', 'replace' => ['min' => $min]] : null;
         }
         if (is_string($value) && self::textLength($value) < $min) {
             return ['langKey' => 'min.string', 'replace' => ['min' => $min]];
-        }
-        if (is_numeric($value) && $value < $min) {
-            return ['langKey' => 'min.numeric', 'replace' => ['min' => $min]];
         }
         if (is_array($value) && count($value) < $min) {
             return ['langKey' => 'min.array', 'replace' => ['min' => $min]];
@@ -602,14 +624,11 @@ class Request
         if ($value instanceof UploadedFile && $value->sizeKb() > $max) {
             return ['langKey' => 'max.file', 'replace' => ['max' => $max]];
         }
-        if ($rules !== [] && array_intersect($rules, ['int', 'integer', 'numeric', 'float', 'double']) !== [] && is_numeric($value)) {
+        if (self::comparesByValue($rules, $value)) {
             return (float) $value > $max ? ['langKey' => 'max.numeric', 'replace' => ['max' => $max]] : null;
         }
         if (is_string($value) && self::textLength($value) > $max) {
             return ['langKey' => 'max.string', 'replace' => ['max' => $max]];
-        }
-        if (is_numeric($value) && $value > $max) {
-            return ['langKey' => 'max.numeric', 'replace' => ['max' => $max]];
         }
         if (is_array($value) && count($value) > $max) {
             return ['langKey' => 'max.array', 'replace' => ['max' => $max]];

@@ -179,8 +179,16 @@ function create_project(string $name, bool $isApi = false): void
     }
 
     // composer.json
+    // A package name is "<vendor>/<package>" and only [a-z0-9._-] are legal in it.
+    // `php widdx new /abs/path/app` is a valid call, and using that argument whole
+    // produced "widdx//abs/path/app" — a name composer refuses. The folder is the
+    // package.
+    $package = trim(strtolower((string) preg_replace('/[^a-z0-9._-]+/', '-', basename($base))), '-');
+    if ($package === '' || $package === '.' || $package === '..') {
+        $package = 'project';
+    }
     write_file("{$base}/composer.json", json_encode([
-        'name' => "widdx/{$name}",
+        'name' => "widdx/{$package}",
         'description' => "Widdx project: {$name}",
         'type' => 'project',
         'license' => 'MIT',

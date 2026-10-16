@@ -20,6 +20,15 @@ if (PHP_OS_FAMILY === 'Windows') {
 }
 
 $ROOT = dirname(__DIR__);
+// Is this the FRAMEWORK source repo, or a project built with it? composer.json says:
+// the source repo is type=framework, every scaffold is type=project. Nothing may read
+// app/ or views/ off $ROOT unless this is true — a real project's own demo files are
+// not the framework's demo files.
+$composerType = (static function (string $root): string {
+    $json = json_decode((string) @file_get_contents($root . '/composer.json'), true);
+    return is_array($json) ? (string) ($json['type'] ?? '') : '';
+})($ROOT);
+$isFrameworkSource = $composerType === 'framework';
 $TMP = (getenv('ITTMP') !== false ? getenv('ITTMP') : sys_get_temp_dir() . '/widdx-it') . '-' . getmypid() . '-' . random_int(1000, 9999);
 @mkdir($TMP, 0777, true);
 
@@ -305,6 +314,16 @@ sec('Scaffold: php widdx new app');
 ok('widdx new exits 0', $code === 0, $out);
 $proj = $TMP . '/app';
 
+// A project made from an absolute path (`php widdx new /tmp/x/pkg-name`) must still
+// get a legal composer package name. The whole argument used to be pasted into it,
+// giving "widdx//tmp/x/pkg-name", which composer refuses to load.
+[$pkgCode, $pkgOut] = shell('cd ' . escapeshellarg($TMP) . ' && ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($ROOT . '/widdx') . ' new ' . escapeshellarg($TMP . '/pkg-name'));
+ok('widdx new with an absolute path exits 0', $pkgCode === 0, $pkgOut);
+$pkgJson = json_decode((string) @file_get_contents($TMP . '/pkg-name/composer.json'), true);
+$pkgName = is_array($pkgJson) ? (string) ($pkgJson['name'] ?? '') : '';
+ok('the scaffolded package name is composer-legal',
+    preg_match('#^[a-z0-9._-]+/[a-z0-9._-]+$#', $pkgName) === 1, $pkgName);
+
 // The agent handbook is two layers now: AGENTS.md binds, .agents/*.md is the reference
 // it routes to. A scaffold that ships the router without the files behind it hands every
 // AI assistant in the project dead links, so check the real generated tree — not the CLI source.
@@ -320,8 +339,11 @@ ok('the router points at at least 10 reference files', count($linked) >= 10, imp
 
 // Bring the demo app files from the framework repo into the scaffold. A
 // scaffolded project ships a bare app/, so without them the suite exercises the
-// zero-code fallback path (model + built-in pages) instead.
-$repoDemo = is_file($ROOT . '/app/Controllers/UserController.php')
+// zero-code fallback path (model + built-in pages) instead. Guarded by
+// $isFrameworkSource: copied from a real project, the scaffold inherits a User
+// that relates to classes the scaffold never receives.
+$repoDemo = $isFrameworkSource
+    && is_file($ROOT . '/app/Controllers/UserController.php')
     && is_dir($ROOT . '/views/users');
 if ($repoDemo) {
     copy($ROOT . '/app/Controllers/UserController.php', $proj . '/app/Controllers/UserController.php');

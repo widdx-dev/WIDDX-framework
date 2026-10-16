@@ -14,6 +14,8 @@ Part of the Widdx agent handbook. The binding laws and the routing table live in
 - `event('name', $data)` + `listen('name', fn…)` — app events, flushed at shutdown.
 - `paginate(Post::query(), 20)` — array with items/total/page/pages/perPage/hasMore.
 - `redirect('/x')` `back()` `abort(404)` `transaction(fn() => …)`.
+- `back()` follows the browser's Referer only when it names THIS host and port; an
+  off-site, protocol-relative or scheme-changed Referer redirects to `/` instead. From v0.3.8.
 - `response('text', 200)` `Response::json($data)` `Response::redirect('/x')`.
 
 ---

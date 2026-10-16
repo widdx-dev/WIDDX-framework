@@ -55,3 +55,7 @@ Part of the Widdx agent handbook. The binding laws and the routing table live in
     passing `['pageScripts' => [...]]`, or just put the script tag in the page view.
 20. **`public/` is the docroot.** `/assets/js/x.js` is the file `public/assets/js/x.js` — the dev server
     serves real files and hands everything else to the framework. Never reference a path from `views/`.
+21. **A relation to a missing class names the file to create** — from v0.3.8. Before, `belongsTo(Role::class)`
+    with no `app/Models/Role.php` surfaced as a bare `ReflectionException`, and as a blank 500 whenever
+    `APP_DEBUG=false`. If the message names a file, create that model or fix the class name — do not rewrite
+    the relation.

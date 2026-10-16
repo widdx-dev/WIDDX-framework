@@ -74,6 +74,31 @@ jobs:
       - name: Unit + integration suite
         run: php widdx-test
 
+  # E6: the suite must also run INSIDE a project built with the framework, not only
+  # here. A real project owns app/ and views/, and its models reference classes a fresh
+  # scaffold never receives — copying the host's demo files into the scaffold used to
+  # break seven scenarios that way. This leg fails if the suite ever reads app/ or
+  # views/ off its own root again.
+  inside-a-project:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo, pdo_sqlite, sqlite3
+          coverage: none
+          ini-values: session.save_path=/tmp
+
+      - name: Scaffold a project, then run the suite from inside it
+        run: |
+          php widdx new portable
+          cd portable
+          php widdx migrate
+          php widdx test
+
   phpstan:
     runs-on: ubuntu-latest
     steps:

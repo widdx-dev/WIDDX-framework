@@ -14,6 +14,6 @@ Part of the Widdx agent handbook. The binding laws and the routing table live in
 - One line `resource('posts')->public()` = a full working CRUD website for posts.
 - One line `authRoutes()` = register + login + logout + password reset + email verify.
 - One command `make:crud` = model + database table + routes, all at once.
-- Version: v0.3.7. All behavior below is tested (the unit suite + the integration suite; the runner prints its own totals).
+- Version: v0.3.8. All behavior below is tested (the unit suite + the integration suite; the runner prints its own totals).
 
 ---

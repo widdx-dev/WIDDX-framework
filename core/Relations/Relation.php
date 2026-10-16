@@ -43,6 +43,19 @@ abstract class Relation
     /** User → user, UserProfile → user_profile (short class name → snake_case). */
     public static function snake(string $class): string
     {
+        // A relation naming a class that was never created reached the user as a
+        // bare ReflectionException — and as a generic 500 whenever APP_DEBUG was
+        // off. Say which file the framework looked for instead.
+        if (!class_exists($class)) {
+            $short = substr(strrchr('\\' . $class, '\\'), 1);
+            $path = str_starts_with($class, 'App\\Models\\')
+                ? 'app/Models/' . $short . '.php'
+                : '(an autoloaded file for ' . $class . ')';
+            throw new \Widdx\Exceptions\WiddxException(
+                "A relation points at [{$class}], which does not exist. "
+                . "Expected {$path} — create it (php widdx make:model {$short}) or fix the class name."
+            );
+        }
         $short = (new \ReflectionClass($class))->getShortName();
         return strtolower((string) preg_replace('/(?<!^)[A-Z]/', '_$0', $short));
     }

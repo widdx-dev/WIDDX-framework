@@ -19,7 +19,10 @@ Every rule, one line each:
 - `nullable` — may be absent; other rules skipped when empty.
 - `string` `int` `float` `bool` `numeric` `array` — type checks.
 - `email` `url` — format checks.
-- `min:5` `max:255` — length for text, value for numbers, KILOBYTES for files.
+- `min:5` `max:255` `size:3` `between:1,5` — length for text, value for numbers, KILOBYTES for files.
+  A field typed `string` counts CHARACTERS even when its value is all digits: `'100'` passes
+  `string|max:50` and `string|size:3` (3 characters). Compare by value only with
+  `int`/`integer`/`numeric`/`float` in the same rule list. From v0.3.8.
 - `in:a,b,c` — must be one of the listed.
 - `confirmed` — needs a matching `field_confirmation` input (passwords).
 - `same:other` / `different:other` — compare two fields.
