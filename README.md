@@ -17,6 +17,17 @@
 A very simple PHP framework, inspired by Laravel but much simpler.
 Philosophy: **Write minimal code — the framework infers the rest.**
 
+## Learning resources / المصادر التعليمية
+
+For programmers learning Widdx; basic programming knowledge is assumed.
+للمبرمجين الذين يريدون تعلّم Widdx؛ تفترض هذه المواد معرفة أساسيات البرمجة.
+
+| Resource / المصدر | العربية | English |
+|---|---|---|
+| Introduction / التعريف بالإطار | [INTRO](docs/learning/ar/INTRO.md) | [INTRO](docs/learning/en/INTRO.md) |
+| Curriculum / المنهج التعليمي | [CURRICULUM](docs/learning/ar/CURRICULUM.md) | [CURRICULUM](docs/learning/en/CURRICULUM.md) |
+| AI tools guide / دليل أدوات الذكاء الاصطناعي | [AI_GUIDE](docs/learning/ar/AI_GUIDE.md) | [AI_GUIDE](docs/learning/en/AI_GUIDE.md) |
+
 ## Requirements
 
 - PHP 8.1+
