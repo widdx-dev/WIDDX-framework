@@ -19,6 +19,11 @@ php widdx make:auth
 
 (it adds the migrations + route line + User model for you).
 
+`make:auth` also drops `->public()` from `resource('users')` in `routes/web.php`: once `users` is the
+authentication table, anonymous CRUD on it is an account-takeover door, so the group goes fail-closed.
+The scaffolded `UserSeeder` no longer seeds a password at all — register the first real user through
+`/register`.
+
 In PHP code:
 
 - `Auth::attempt(['email' => …, 'password' => …])` — logs in, true/false.
