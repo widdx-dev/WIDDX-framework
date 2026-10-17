@@ -418,6 +418,18 @@ get('/it-id', function () {
 });
 // 1.4 guard: the framework middleware itself, available in every project.
 get('/it-guarded', fn() => Response::json(['ok' => true]))->middleware(\Widdx\AuthMiddleware::class);
+// The scaffolded seeder ships no usable password any more (a hash of a string
+// printed in the generator is a public credential), so the auth assertions
+// below set a test-only one through this probe.
+post('/it-setpass', function () {
+    $u = \App\Models\User::where('email', (string) request()->input('email'))->first();
+    if ($u === null) {
+        return Response::json(['ok' => false], 404);
+    }
+    $u->password = password_hash((string) request()->input('password'), PASSWORD_DEFAULT);
+    $u->save();
+    return Response::json(['ok' => true]);
+});
 // Ops probe: trusted proxies + the real peer IP. Registered here, before the
 // server starts — a live append to routes/web.php is not reliably picked up by
 // php -S, which made these assertions flake.
@@ -545,11 +557,15 @@ $r = http($port, 'GET', '/it-event-check');
 $data = json_decode($r['body'], true);
 ok('Event::flush fired after response', ($data['hit'] ?? false) === true, $r['body']);
 
+$r = http($port, 'POST', '/it-setpass', ['csrf_token' => $tokU, 'email' => 'admin@example.com', 'password' => 'it-local-secret'], $jar);
+$data = json_decode($r['body'], true);
+ok('a test-only password can be set on the seeded user', ($data['ok'] ?? false) === true, $r['body']);
+
 $r = http($port, 'POST', '/it-login', ['csrf_token' => $tokU, 'email' => 'admin@example.com', 'password' => 'wrong'], $jar);
 $data = json_decode($r['body'], true);
 ok('bad credentials rejected', ($data['ok'] ?? true) === false, $r['body']);
 
-$r = http($port, 'POST', '/it-login', ['csrf_token' => $tokU, 'email' => 'admin@example.com', 'password' => 'password'], $jar);
+$r = http($port, 'POST', '/it-login', ['csrf_token' => $tokU, 'email' => 'admin@example.com', 'password' => 'it-local-secret'], $jar);
 $data = json_decode($r['body'], true);
 ok('attempt() logs in', ($data['ok'] ?? false) === true && (int) ($data['id'] ?? 0) > 0, $r['body']);
 
@@ -574,7 +590,7 @@ ok('logout clears session', ($data['check'] ?? true) === false, $r['body']);
 $r = http($port, 'GET', '/it-guarded', null, $jar);
 ok('1.4 guest through AuthMiddleware = 302 /login', $r['status'] === 302 && str_contains((string) ($r['headers']['location'] ?? ''), '/login'), 'status=' . $r['status']);
 $tokU = grab_csrf($port, '/users/create', $jar); // logout rotated the token (1.9)
-$r = http($port, 'POST', '/it-login', ['csrf_token' => $tokU, 'email' => 'admin@example.com', 'password' => 'password'], $jar);
+$r = http($port, 'POST', '/it-login', ['csrf_token' => $tokU, 'email' => 'admin@example.com', 'password' => 'it-local-secret'], $jar);
 $r = http($port, 'GET', '/it-guarded', null, $jar);
 ok('1.4 member passes the guard', $r['status'] === 200 && str_contains($r['body'], 'ok'), 'status=' . $r['status']);
 $jarG = [];
@@ -1607,7 +1623,10 @@ $r = http($port2, 'GET', '/vaults', null, $jar2, null, null, ['Accept: applicati
 ok('1.3b guest + Accept json at auth gate = 401 JSON (not 302)', $r['status'] === 401 && str_contains($r['body'], 'error'), 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
 $r = http($port2, 'GET', '/api/does-not-exist', null, $jar2);
 ok('1.3b /api 404 renders as JSON', $r['status'] === 404 && str_contains($r['body'], 'error'), 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
-$tokV = grab_csrf($port, '/users/create', $jar);
+// After 'make:auth' ran in this project (line 874) the users resource is no longer
+// ->public() — that is the DEPLOY-01 C contract — so /users/create now 302s for this
+// logged-out jar. /login is the form that is public by construction in this app.
+$tokV = grab_csrf($port, '/login', $jar);
 $r = http($port, 'POST', '/it-validate', null, $jar, json_encode(['name' => 'a']), 'application/json', ['X-CSRF-TOKEN: ' . $tokV]);
 $d13b = json_decode($r['body'], true);
 ok('1.3b validation over JSON = 422 {message, errors}', $r['status'] === 422 && isset($d13b['errors']['name']), 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));

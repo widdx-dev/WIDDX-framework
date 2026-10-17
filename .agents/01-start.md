@@ -15,6 +15,9 @@ Have PHP on your machine? Type:
 php widdx new myapp
 ```
 
+Starting a REAL app rather than trying the demo? `php widdx new myapp --no-demo` scaffolds the same
+project with `resource('users')` NOT public, so guests are redirected to `/login` instead of seeing CRUD.
+
 No PHP on your machine? Download/zip this folder and unzip it. Same result.
 
 Then inside the new folder:

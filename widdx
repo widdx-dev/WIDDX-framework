@@ -38,7 +38,8 @@ Usage:
 
 Project:
   new <name>                Create a new project (one command, full app)
-  new:api <name>            Create a new API project
+  new <name> --no-demo      Same, but production start: no public demo CRUD
+  new:api <name>            Create a new API project  (also accepts --no-demo)
 
 Code Generation:
   make:controller <Name>    Create a controller in app/Controllers
@@ -125,7 +126,25 @@ function write_file(string $path, string $content): void
 
 // ---------- Project Scaffolding ----------
 
-function create_project(string $name, bool $isApi = false): void
+/**
+ * Read `php widdx new [--no-demo] <name>`: the project name is the first
+ * argument that is not a flag, so the flag may come before it.
+ *
+ * @return array{0: string|null, 1: bool}  [name, withDemo]
+ */
+function project_request(array $argv): array
+{
+    $name = null;
+    foreach (array_slice($argv, 1) as $arg) {
+        if (!str_starts_with((string) $arg, '--')) {
+            $name = (string) $arg;
+            break;
+        }
+    }
+    return [$name, !in_array('--no-demo', $argv, true)];
+}
+
+function create_project(string $name, bool $isApi = false, bool $withDemo = true): void
 {
     // Accept both relative ("myapp") and absolute ("/tmp/myapp") names.
     $absolute = preg_match('#^(/|[a-zA-Z]:[\\\\/])#', $name) === 1;
@@ -377,7 +396,8 @@ ENV);
 
     // routes/web.php
     if ($isApi) {
-        write_file("{$base}/routes/web.php", <<<'PHP'
+        if ($withDemo) {
+            write_file("{$base}/routes/web.php", <<<'PHP'
 <?php
 
 // API routes — arrays are returned as JSON automatically.
@@ -389,8 +409,24 @@ get('/', fn() => ['app' => config('app.name'), 'status' => 'ok']);
 // remove it and every JSON call needs auth or an App\Policies\UserPolicy.
 apiResource('users')->public();
 PHP);
+        } else {
+            write_file("{$base}/routes/web.php", <<<'PHP'
+<?php
+
+// API routes — production start (--no-demo): nothing is public.
+
+get('/', fn() => ['app' => config('app.name'), 'status' => 'ok']);
+
+// The same zero-code JSON CRUD, but the fail-closed gate stays ON: every call
+// needs a logged-in caller (401 for guests) or an App\Policies\UserPolicy.
+// 'php widdx make:auth' installs the login; 'php widdx new <name>' without the
+// flag is the demo start, where /users is open to guests.
+apiResource('users');
+PHP);
+        }
     } else {
-        write_file("{$base}/routes/web.php", <<<'PHP'
+        if ($withDemo) {
+            write_file("{$base}/routes/web.php", <<<'PHP'
 <?php
 
 // Routes file — write minimal code, the framework handles the rest.
@@ -409,6 +445,26 @@ resource('users')->public();
 // Customize later by adding views/users/*.php or a controller class —
 // the framework prefers your files automatically.
 PHP);
+        } else {
+            write_file("{$base}/routes/web.php", <<<'PHP'
+<?php
+
+// Routes file — production start (--no-demo): nothing is public.
+
+// Home page
+get('/', fn() => view('welcome'));
+
+// The same zero-code CRUD on App\Models\User, but WITHOUT ->public(), so the
+// fail-closed gate holds: a guest on /users is redirected to /login and a
+// logged-in user still needs an App\Policies\UserPolicy that allows the action.
+// Run 'php widdx make:auth' to get that /login (plus register/reset/verify).
+// 'php widdx new <name>' without the flag is the demo start: /users open to guests.
+resource('users');
+
+// Customize later by adding views/users/*.php or a controller class —
+// the framework prefers your files automatically.
+PHP);
+        }
     }
 
     // routes/console.php — cron schedule declarations (php widdx schedule:run)
@@ -557,8 +613,10 @@ return new class {
     public function run(\PDO $pdo): void
     {
         // Idempotent: re-running db:seed never clashes on the unique email.
+        // Deliberately NO password: a hash of a string printed in this file is a
+        // usable credential the moment 'make:auth' adds the login screen.
         $check = $pdo->prepare("SELECT COUNT(*) FROM users WHERE email = ?");
-        $ins = $pdo->prepare("INSERT INTO users (name, email, password) VALUES (?, ?, ?)");
+        $ins = $pdo->prepare("INSERT INTO users (name, email) VALUES (?, ?)");
         foreach ([
             ['Admin User', 'admin@example.com'],
             ['John Doe', 'john@example.com'],
@@ -566,7 +624,7 @@ return new class {
         ] as [$name, $email]) {
             $check->execute([$email]);
             if ((int) $check->fetchColumn() === 0) {
-                $ins->execute([$name, $email, password_hash('password', PASSWORD_DEFAULT)]);
+                $ins->execute([$name, $email]);
             }
         }
     }
@@ -726,22 +784,22 @@ if ($command !== 'new') {
 
 switch ($command) {
     case 'new': {
-        $name = $argv[1] ?? null;
+        [$name, $withDemo] = project_request($argv);
         if (!$name) {
             fwrite(STDERR, "Specify project name. Example: php widdx new my-app\n");
             exit(1);
         }
-        create_project($name, false);
+        create_project($name, false, $withDemo);
         break;
     }
 
     case 'new:api': {
-        $name = $argv[1] ?? null;
+        [$name, $withDemo] = project_request($argv);
         if (!$name) {
             fwrite(STDERR, "Specify project name. Example: php widdx new:api my-api\n");
             exit(1);
         }
-        create_project($name, true);
+        create_project($name, true, $withDemo);
         break;
     }
 
@@ -1300,13 +1358,33 @@ PHP);
 
         $routesFile = WIDDX_BASE_PATH . '/routes/web.php';
         $routes = is_file($routesFile) ? (string) file_get_contents($routesFile) : '';
-        if (!str_contains($routes, 'authRoutes(')) {
-            file_put_contents($routesFile, "\nauthRoutes();\n", FILE_APPEND);
+        $next = $routes;
+        if (!str_contains($next, 'authRoutes(')) {
+            $next .= "\nauthRoutes();\n";
+        }
+
+        // The scaffold's demo line is `resource('users')->public();`. This command
+        // makes that same table the authentication table, so an anonymous writer
+        // would be creating and deleting real accounts: the demo opt-out is
+        // withdrawn for the users resource, and the fail-closed gate applies.
+        $closed = (string) preg_replace(
+            '/((?:api)?resource\(\s*([\'"])users\2[^;\n]*?\))->public\(\)/i',
+            '$1',
+            $next
+        );
+        $usersClosed = $closed !== $next;
+        $next = $closed;
+        if ($next !== $routes) {
+            file_put_contents($routesFile, $next);
         }
 
         echo "Auth installed (zero code written):\n";
         echo "  - migrations: auth_tokens + users.email_verified_at\n";
         echo "  - routes/web.php: authRoutes()  (login/register/logout/reset/verify)\n";
+        if ($usersClosed) {
+            echo "  - routes/web.php: resource('users') is no longer ->public() — guests are\n";
+            echo "    redirected to /login and a policy decides for logged-in users.\n";
+        }
         echo "Next: php widdx migrate — then open /register\n";
         echo "Built-in views live in the framework; override any with views/auth/<name>.php\n";
         break;

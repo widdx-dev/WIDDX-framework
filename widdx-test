@@ -2167,6 +2167,116 @@ test('2.24 Inflector: irregular plurals agree across the three call sites and ro
     }
 });
 
+test('2.25 DEPLOY-01 C: demo start stays public, --no-demo starts fail-closed, make:auth closes users, nothing seeds a password', function () {
+    $php = escapeshellarg(PHP_BINARY);
+    $fwCli = $php . ' ' . escapeshellarg(WIDDX_BASE_PATH . '/widdx');
+    $root = sys_get_temp_dir() . '/widdx-deploy01-' . getmypid();
+    @mkdir($root, 0775, true);
+
+    $rrm = function (string $dir) use (&$rrm): void {
+        foreach (scandir($dir) ?: [] as $f) {
+            if ($f === '.' || $f === '..') {
+                continue;
+            }
+            $p = $dir . '/' . $f;
+            if (is_dir($p)) {
+                $rrm($p);
+            } else {
+                @unlink($p);
+            }
+        }
+        @rmdir($dir);
+    };
+
+    // The CI matrix exports DB_CONNECTION=mysql/pgsql AND DB_DATABASE=widdx for the whole job;
+    // the scaffold's own promise is zero-config sqlite, and this gate is about what a freshly
+    // generated project does — so pin both keys, or the project would open a file named "widdx".
+    $run = static function (string $cwd, string $cmd) use ($php): array {
+        $out = [];
+        $code = 0;
+        exec('cd ' . escapeshellarg($cwd)
+            . ' && DB_CONNECTION=sqlite DB_DATABASE=' . escapeshellarg($cwd . '/database.sqlite')
+            . ' ' . $cmd . ' 2>&1', $out, $code);
+        return [$code, implode("\n", $out)];
+    };
+
+    // The decision a guest is actually given comes from Route::isPublic() (GatesCrudActions
+    // reads it, Router::currentRouteIsPublic() carries it), so read it off the routes the
+    // generated file registers rather than off the text of that file.
+    $usersPublicFlags = static function (string $file): array {
+        \Widdx\Router::reset();
+        require $file;
+        $flags = [];
+        foreach (\Widdx\Router::getInstance()->all() as $r) {
+            if ($r->uri === '/users' || str_starts_with($r->uri, '/users/')) {
+                $flags[] = $r->isPublic();
+            }
+        }
+        \Widdx\Router::reset();
+        return $flags;
+    };
+
+    try {
+        // 1. both scaffolds build, and PART 0's command order is the one that still works.
+        [$demoNew, $demoNewOut] = $run($root, $fwCli . ' new demo');
+        assert_equals(0, $demoNew, 'php widdx new demo exits 0: ' . $demoNewOut);
+        [$ndNew, $ndNewOut] = $run($root, $fwCli . ' new app --no-demo');
+        assert_equals(0, $ndNew, 'php widdx new app --no-demo exits 0: ' . $ndNewOut);
+        $demo = $root . '/demo';
+        $nodemo = $root . '/app';
+
+        // 2. the two routes files differ in exactly one thing: the users opt-out.
+        $demoRoutes = (string) file_get_contents($demo . '/routes/web.php');
+        $ndRoutes = (string) file_get_contents($nodemo . '/routes/web.php');
+        assert_true(str_contains($demoRoutes, "resource('users')->public();"), 'demo scaffold keeps the public users CRUD');
+        assert_true(str_contains($ndRoutes, "resource('users');"), '--no-demo scaffold emits the users resource');
+        // Comment lines explain ->public(); only a line that starts with code may call it.
+        assert_true(preg_match('/^[^\/\n]*->public\(\)/m', $ndRoutes) === 0, '--no-demo scaffold has no public() call');
+
+        // 3. generated projects still parse and migrate (and the table really is there).
+        foreach ([['demo', $demo], ['--no-demo', $nodemo]] as [$label, $proj]) {
+            [$lint, $lintOut] = $run($proj, $php . ' -l routes/web.php');
+            assert_equals(0, $lint, "{$label} routes/web.php parses: " . $lintOut);
+            [$mig, $migOut] = $run($proj, $php . ' widdx migrate');
+            assert_equals(0, $mig, "{$label} php widdx migrate exits 0: " . $migOut);
+            assert_true(is_file($proj . '/database.sqlite'), "{$label} migrate created database.sqlite");
+        }
+
+        // 4. guest access: demo is open, --no-demo is fail-closed on all seven routes.
+        $demoFlags = $usersPublicFlags($demo . '/routes/web.php');
+        assert_equals(7, count($demoFlags), 'demo users resource registers 7 routes');
+        assert_true(count($demoFlags) > 0 && !in_array(false, $demoFlags, true), 'every demo users route is public');
+        $ndFlags = $usersPublicFlags($nodemo . '/routes/web.php');
+        assert_equals(7, count($ndFlags), '--no-demo users resource registers 7 routes');
+        assert_true(count($ndFlags) > 0 && !in_array(true, $ndFlags, true), 'no --no-demo users route is public — guests go to /login');
+
+        // 5. no usable credential is seeded: the seeder never hashes one, and no row carries one.
+        [$seed, $seedOut] = $run($demo, $php . ' widdx db:seed');
+        assert_equals(0, $seed, 'demo php widdx db:seed exits 0: ' . $seedOut);
+        $seederSrc = (string) file_get_contents($demo . '/database/seeders/UserSeeder.php');
+        assert_true(!str_contains($seederSrc, 'password_hash'), 'the scaffolded seeder hashes no password');
+        assert_true(str_contains($seederSrc, 'INSERT INTO users (name, email)'), 'the scaffolded seeder inserts no password column');
+        $pdo = new \PDO('sqlite:' . $demo . '/database.sqlite');
+        $rows = $pdo->query('SELECT name, email, password FROM users')->fetchAll(\PDO::FETCH_ASSOC);
+        assert_true(count($rows) >= 3, 'the demo still has rows to list: ' . count($rows));
+        foreach ($rows as $row) {
+            assert_true($row['password'] === null, 'seeded user ' . $row['email'] . ' has no password to log in with');
+        }
+
+        // 6. make:auth withdraws the demo opt-out for the users resource only.
+        file_put_contents($demo . '/routes/web.php', "\nresource('posts')->public();\n", FILE_APPEND);
+        [$auth, $authOut] = $run($demo, $php . ' widdx make:auth');
+        assert_equals(0, $auth, 'demo php widdx make:auth exits 0: ' . $authOut);
+        $afterAuth = (string) file_get_contents($demo . '/routes/web.php');
+        assert_true(!str_contains($afterAuth, "resource('users')->public()"), 'make:auth removed ->public() from the users resource');
+        assert_true(str_contains($afterAuth, "resource('users');"), 'make:auth kept the users resource itself');
+        assert_true(str_contains($afterAuth, 'authRoutes();'), 'make:auth still adds authRoutes()');
+        assert_true(str_contains($afterAuth, "resource('posts')->public();"), 'make:auth left every other ->public() alone');
+    } finally {
+        $rrm($root);
+    }
+});
+
 widdx_reset_networked_db();
 
 echo "\n===== Running integration suite (this boots real servers) =====\n";
