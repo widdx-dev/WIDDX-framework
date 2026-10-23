@@ -231,6 +231,44 @@ test('Auth guest when no user', function () {
 });
 
 // QueryBuilder tests
+// QueryBuilder identifier validation tests
+test('QueryBuilder rejects unsafe table and column identifiers before SQL execution', function () {
+    $pdo = new \\PDO('sqlite::memory:');
+
+    $rejected = false;
+    try {
+        new \\Widdx\\QueryBuilder('users; DROP TABLE users', null, $pdo, 'sqlite');
+    } catch (\\Widdx\\Exceptions\\DatabaseException) {
+        $rejected = true;
+    }
+    assert_true($rejected, 'unsafe table identifier is rejected');
+
+    $qb = new \\Widdx\\QueryBuilder('users', null, $pdo, 'sqlite');
+    $rejected = false;
+    try {
+        $qb->select('name) FROM users; DROP TABLE users --');
+    } catch (\\Widdx\\Exceptions\\DatabaseException) {
+        $rejected = true;
+    }
+    assert_true($rejected, 'unsafe SELECT column is rejected');
+
+    $rejected = false;
+    try {
+        $qb->insert(['name) VALUES (1); DROP TABLE users --' => 'x']);
+    } catch (\\Widdx\\Exceptions\\DatabaseException) {
+        $rejected = true;
+    }
+    assert_true($rejected, 'unsafe INSERT column is rejected');
+
+    $rejected = false;
+    try {
+        $qb->where('id', 1)->update(['name; DROP TABLE users --' => 'x']);
+    } catch (\\Widdx\\Exceptions\\DatabaseException) {
+        $rejected = true;
+    }
+    assert_true($rejected, 'unsafe UPDATE column is rejected');
+});
+
 test('QueryBuilder generates correct SQL', function () {
     $qb = new \Widdx\QueryBuilder('users', null, null, 'sqlite');
     $qb->where('age', '>', 18)->orderBy('name')->limit(10);
