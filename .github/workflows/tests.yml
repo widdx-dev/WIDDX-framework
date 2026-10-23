@@ -22,7 +22,7 @@ jobs:
         image: mysql:8.0
         env:
           MYSQL_ROOT_PASSWORD: widdxpass
-          MYSQL_DATABASE: widdx
+          MYSQL_DATABASE: widdx_test
         ports:
           - 3306:3306
         options: >-
@@ -32,7 +32,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
-          POSTGRES_DB: widdx
+          POSTGRES_DB: widdx_test
         ports:
           - 5432:5432
         options: >-
@@ -58,11 +58,12 @@ jobs:
           WIDDX_DB: ${{ matrix.db }}
         run: |
           {
+            echo "WIDDX_ALLOW_DESTRUCTIVE_TEST_DB=1"
             echo "DB_CONNECTION=$WIDDX_DB"
             echo "DB_HOST=127.0.0.1"
             case "$WIDDX_DB" in
-              mysql) echo "DB_PORT=3306"; echo "DB_DATABASE=widdx"; echo "DB_USERNAME=root"; echo "DB_PASSWORD=widdxpass";;
-              pgsql) echo "DB_PORT=5432"; echo "DB_DATABASE=widdx"; echo "DB_USERNAME=postgres"; echo "DB_PASSWORD=";;
+              mysql) echo "DB_PORT=3306"; echo "DB_DATABASE=widdx_test"; echo "DB_USERNAME=root"; echo "DB_PASSWORD=widdxpass";;
+              pgsql) echo "DB_PORT=5432"; echo "DB_DATABASE=widdx_test"; echo "DB_USERNAME=postgres"; echo "DB_PASSWORD=";;
             esac
           } >> "$GITHUB_ENV"
 
@@ -70,6 +71,16 @@ jobs:
         run: |
           find . \( -name '*.php' -o -name 'widdx' -o -name 'widdx-test' \) -not -path './vendor/*' -print0 \
             | xargs -0 -n1 php -l > /dev/null
+
+      - name: Verify destructive database reset fails closed without opt-in
+        run: |
+          set +e
+          output="$(env -u WIDDX_ALLOW_DESTRUCTIVE_TEST_DB DB_CONNECTION=mysql DB_DATABASE=widdx_test php widdx-test 2>&1)"
+          status=$?
+          set -e
+          echo "$output"
+          test "$status" -eq 2
+          echo "$output" | grep -q "Refusing destructive database reset"
 
       - name: Unit + integration suite
         run: php widdx-test
