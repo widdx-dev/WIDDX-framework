@@ -36,6 +36,9 @@ class QueryBuilder
 
     public function __construct(string $table, ?string $modelClass = null, ?\PDO $pdo = null, string $driver = '')
     {
+        if (preg_match('/\\A[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\z/', $table) !== 1) {
+            throw new Exceptions\\DatabaseException("Invalid table name [{$table}]. Use simple identifiers, optionally schema-qualified.");
+        }
         $this->table = $table;
         $this->modelClass = $modelClass;
         // 2.7: when no pdo/driver is passed, both come from the real default
@@ -57,6 +60,11 @@ class QueryBuilder
     public function select(string ...$columns): self
     {
         if (!empty($columns)) {
+            foreach ($columns as $column) {
+                if ($column !== '*') {
+                    $this->validateColumn($column);
+                }
+            }
             $this->selects = $columns;
         }
         return $this;
@@ -174,6 +182,9 @@ class QueryBuilder
             throw new Exceptions\DatabaseException('Cannot insert empty row: pass a non-empty array to insert().');
         }
         $cols = array_keys($data);
+        foreach ($cols as $col) {
+            $this->validateColumn((string) $col);
+        }
         $placeholders = array_map(fn($c) => ':' . $c, $cols);
         $sql = sprintf(
             'INSERT INTO %s (%s) VALUES (%s)',
@@ -199,7 +210,8 @@ class QueryBuilder
         $sets = [];
         $bindings = [];
         foreach ($data as $col => $val) {
-            $sets[] = $this->wrap($col) . ' = :set_' . $col;
+            $this->validateColumn((string) $col);
+            $sets[] = $this->wrap((string) $col) . ' = :set_' . $col;
             $bindings['set_' . $col] = $val;
         }
         [$whereSql, $whereBindings] = $this->buildWhere($bindings === [] ? 0 : count($bindings));
