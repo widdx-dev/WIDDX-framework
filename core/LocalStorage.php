@@ -151,18 +151,28 @@ class LocalStorage implements StorageInterface
             }
             $segments[] = $seg;
         }
-        $full = $this->root . '/' . implode('/', $segments);
-        // Belt & braces: verify the deepest existing directory resolves inside root.
         $realRoot = realpath($this->root);
-        $probe = $segments === [] ? $this->root : dirname($full);
-        while ($probe !== $this->root && !is_dir($probe)) {
-            $probe = dirname($probe);
+        if ($realRoot === false) {
+            throw new WiddxException('Storage root cannot be resolved.');
         }
-        $realProbe = realpath($probe);
-        if ($realRoot !== false && $realProbe !== false
-            && $realProbe !== $realRoot
-            && !str_starts_with($realProbe, $realRoot . '/')) {
-            throw new WiddxException('Path escapes the storage root: ' . $path);
+
+        // Check EVERY existing path component, not only its parent directory.
+        // A symlink inside storage can otherwise point get()/put()/delete() at
+        // a file outside the disk while the parent directory still looks safe.
+        $full = $realRoot;
+        foreach ($segments as $segment) {
+            $full .= '/' . $segment;
+            if (is_link($full)) {
+                throw new WiddxException('Symbolic links are not allowed on a storage disk: ' . $path);
+            }
+            if (file_exists($full)) {
+                $resolved = realpath($full);
+                if ($resolved === false
+                    || ($resolved !== $realRoot && !str_starts_with($resolved, $realRoot . '/'))) {
+                    throw new WiddxException('Path escapes the storage root: ' . $path);
+                }
+                $full = $resolved;
+            }
         }
         return $full;
     }
