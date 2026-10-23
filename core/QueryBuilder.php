@@ -183,7 +183,7 @@ class QueryBuilder
         }
         $cols = array_keys($data);
         foreach ($cols as $col) {
-            $this->validateColumn((string) $col);
+            $this->validateWriteColumn((string) $col);
         }
         $placeholders = array_map(fn($c) => ':' . $c, $cols);
         $sql = sprintf(
@@ -437,6 +437,15 @@ class QueryBuilder
                 "Invalid SQL operator [{$operator}]. Allowed: " . implode(', ', $this->allowedOperators)
             );
         }
+    }
+
+    /** Validate columns used in INSERT/UPDATE placeholders (no qualification). */
+    protected function validateWriteColumn(string $column): void
+    {
+        if (preg_match('/\\A[A-Za-z_][A-Za-z0-9_]*\\z/', $column) !== 1) {
+            throw new Exceptions\\DatabaseException("Invalid write column name [{$column}].");
+        }
+        $this->validateColumn($column);
     }
 
     /** Validate column name against whitelist (if set) */
