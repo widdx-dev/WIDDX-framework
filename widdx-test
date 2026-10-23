@@ -928,6 +928,45 @@ test('1.7 LocalStorage rejects traversal, absolute paths and NUL bytes', functio
     @$s->deleteDirectory('inner');
 });
 
+test('1.7a LocalStorage rejects symlinks that point outside the storage root', function () {
+    $storageRoot = WIDDX_BASE_PATH . '/storage/app';
+    if (!is_dir($storageRoot)) {
+        mkdir($storageRoot, 0775, true);
+    }
+
+    $suffix = bin2hex(random_bytes(5));
+    $outside = sys_get_temp_dir() . '/widdx_symlink_target_' . $suffix . '.txt';
+    $linkName = 'outside-link-' . $suffix . '.txt';
+    $link = $storageRoot . '/' . $linkName;
+    file_put_contents($outside, 'OUTSIDE-SECRET');
+
+    if (!function_exists('symlink') || !@symlink($outside, $link)) {
+        @unlink($outside);
+        assert_true(true, 'symlink creation is unavailable on this platform; skipped');
+        return;
+    }
+
+    $s = new \\Widdx\\LocalStorage();
+    foreach ([
+        fn() => $s->get($linkName),
+        fn() => $s->put($linkName, 'OVERWRITE'),
+        fn() => $s->delete($linkName),
+        fn() => $s->size($linkName),
+    ] as $operation) {
+        $threw = false;
+        try {
+            $operation();
+        } catch (\\Widdx\\Exceptions\\WiddxException) {
+            $threw = true;
+        }
+        assert_true($threw, 'storage operation must reject symlink paths');
+    }
+
+    assert_equals('OUTSIDE-SECRET', file_get_contents($outside), 'outside target must remain unchanged');
+    @unlink($link);
+    @unlink($outside);
+});
+
 test('1.8 store() derives extension from content; mimes uses detected; dangerous names neutered', function () {
     $gif = base64_decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
     $tmp1 = sys_get_temp_dir() . '/widdx18_' . bin2hex(random_bytes(4)) . '.bin';
