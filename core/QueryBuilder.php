@@ -37,7 +37,7 @@ class QueryBuilder
     public function __construct(string $table, ?string $modelClass = null, ?\PDO $pdo = null, string $driver = '')
     {
         if (preg_match('/\\A[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\z/', $table) !== 1) {
-            throw new Exceptions\\DatabaseException("Invalid table name [{$table}]. Use simple identifiers, optionally schema-qualified.");
+            throw new Exceptions\DatabaseException("Invalid table name [{$table}]. Use simple identifiers, optionally schema-qualified.");
         }
         $this->table = $table;
         $this->modelClass = $modelClass;
@@ -443,7 +443,7 @@ class QueryBuilder
     protected function validateWriteColumn(string $column): void
     {
         if (preg_match('/\\A[A-Za-z_][A-Za-z0-9_]*\\z/', $column) !== 1) {
-            throw new Exceptions\\DatabaseException("Invalid write column name [{$column}].");
+            throw new Exceptions\DatabaseException("Invalid write column name [{$column}].");
         }
         $this->validateColumn($column);
     }
