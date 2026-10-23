@@ -66,6 +66,19 @@ function widdx_reset_networked_db(): void
     $user = (string) (getenv('DB_USERNAME') ?: ($drv === 'mysql' ? 'root' : 'postgres'));
     $pass = (string) (getenv('DB_PASSWORD') ?: ($drv === 'mysql' ? 'widdxpass' : ''));
     $name = (string) (getenv('DB_DATABASE') ?: 'widdx');
+
+    // This runner destroys and recreates the selected database/schema. Never
+    // permit that against a normal or unknown database, even on localhost.
+    // CI must opt in explicitly and use a clearly named *_test database.
+    $allowDestructiveReset = getenv('WIDDX_ALLOW_DESTRUCTIVE_TEST_DB') === '1';
+    if (!$allowDestructiveReset || preg_match('/\\A[A-Za-z0-9_]+_test\\z/i', $name) !== 1) {
+        fwrite(STDERR, "Refusing destructive database reset. Set WIDDX_ALLOW_DESTRUCTIVE_TEST_DB=1 and use a database name ending in _test (for example widdx_test).\\n");
+        exit(2);
+    }
+    if (preg_match('/\\A[A-Za-z0-9_]+\\z/', $name) !== 1 || preg_match('/\\A[A-Za-z0-9_]+\\z/', $user) !== 1) {
+        fwrite(STDERR, "Refusing destructive database reset: unsafe database or username identifier.\\n");
+        exit(2);
+    }
     if ($drv === 'mysql') {
         $pdo = new PDO("mysql:host={$host};port={$port}", $user, $pass, [PDO::ATTR_TIMEOUT => 5]);
         $pdo->exec("DROP DATABASE IF EXISTS {$name}");
