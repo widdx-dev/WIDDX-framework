@@ -1399,7 +1399,10 @@ file_put_contents(
     $proj2 . '/routes/web.php',
     "\nget('/api/it-csrf-token', fn() => \\Widdx\\Response::json(['token' => request()->csrfToken()]));\n"
     . "\nget('/api/it-session-login', function () { \\Widdx\\Auth::login(\\App\\Models\\Credential::findOrFail(1)); return \\Widdx\\Response::json(['ok' => true]); });\n"
-    . "\npost('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n",
+    . "\npost('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n"
+    . "\nput('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n"
+    . "\npatch('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n"
+    . "\ndelete('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n",
     FILE_APPEND
 );
 
@@ -1786,6 +1789,24 @@ $r = http($port2, 'POST', '/api/it-csrf', null, $jar2, '{"value":"valid"}', 'app
 ok('H-01 API session write with valid CSRF header succeeds',
     $r['status'] === 200 && str_contains($r['body'], '"mutated":true'),
     'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 160));
+foreach (['PUT', 'PATCH', 'DELETE'] as $methodH01) {
+    $r = http($port2, $methodH01, '/api/it-csrf', ['value' => 'no-token'], $jar2);
+    ok('H-01 ' . $methodH01 . ' API session write without CSRF returns 419', $r['status'] === 419,
+        'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
+}
+$r = http($port2, 'POST', '/api/it-csrf', ['_token' => $csrfH01], $jar2);
+ok('H-01 _token form field is accepted', $r['status'] === 200 && str_contains($r['body'], '"mutated":true'),
+    'status=' . $r['status']);
+$r = http($port2, 'POST', '/api/it-csrf', null, $jar2, '{"value":"invalid"}', 'application/json',
+    ['X-CSRF-TOKEN: invalid-token', 'Accept: application/json']);
+ok('H-01 invalid CSRF token is rejected', $r['status'] === 419, 'status=' . $r['status']);
+$jarOtherH01 = [];
+$r = http($port2, 'GET', '/api/it-session-login', null, $jarOtherH01);
+$r = http($port2, 'GET', '/api/it-csrf-token', null, $jarOtherH01);
+$otherTokenH01 = (string) (json_decode($r['body'], true)['token'] ?? '');
+$r = http($port2, 'POST', '/api/it-csrf', null, $jar2, '{"value":"wrong-session"}', 'application/json',
+    ['X-CSRF-TOKEN: ' . $otherTokenH01, 'Accept: application/json']);
+ok('H-01 token from another authenticated session is rejected', $r['status'] === 419, 'status=' . $r['status');
 $r = http($port2, 'POST', '/api/it-json', null, $jar2, '{not valid json', 'application/json',
     ['X-CSRF-TOKEN: ' . $csrfApi23]);
 ok('2.3 malformed JSON body is a clean 400 (not 500, not silent empty)', $r['status'] === 400, 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
