@@ -151,8 +151,8 @@ class MakeCrud
         file_put_contents("{$migDir}/" . date('Y_m_d_His') . "_create_{$table}_table.php", $migStub);
 
         // ---- Route (append once) ----
-        // ->public() keeps the zero-code promise: without it the fail-closed
-        // gate (1.2) would 302/403 every visitor until a policy exists.
+        // Security by default: generated CRUD routes must remain fail-closed.
+        // Applications can explicitly append ->public() when guest access is intended.
         $routesFile = $base . '/routes/web.php';
         $routes = is_file($routesFile) ? (string) file_get_contents($routesFile) : '';
         if (!str_contains($routes, "resource('{$table}')")) {
@@ -161,10 +161,10 @@ class MakeCrud
             if ($routes !== '' && !str_ends_with($routes, "\n")) {
                 $routes .= "\n";
             }
-            file_put_contents($routesFile, $routes . "\nresource('{$table}')->public();\n");
+            file_put_contents($routesFile, $routes . "\nresource('{$table}');\n");
         }
 
-        echo "Created: App\\Models\\{$model} + create_{$table}_table migration + resource('{$table}')->public()\n";
+        echo "Created: App\\Models\\{$model} + create_{$table}_table migration + protected resource('{$table}')\n";
         echo "Next:    php widdx migrate — then restart php widdx serve and open /{$table}.\n";
         echo "         (restart is required: the running dev server does not reliably reload routes/web.php)\n";
     }

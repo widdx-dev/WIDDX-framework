@@ -368,7 +368,15 @@ What `make:crud` produced for you: a model (with `$fillable` + `$rules` derived
 from the column types), a migration, and one appended route line:
 
 ```php
-resource('posts')->public();   // no controller needed!
+resource('posts');   // no controller needed; protected by default
+```
+
+Generated CRUD routes are protected by default: guests are redirected to `/login`,
+and authenticated users without a matching policy receive 403. Only opt into public
+access when every CRUD action is intentionally available to everyone:
+
+```php
+resource('posts')->public();   // explicit opt-in: open to everyone
 ```
 
 `resource()` resolves in this order — the framework writes the rest:
@@ -394,7 +402,7 @@ resource('posts')->public();                  // 1. open to everyone
 class PostController extends CrudController { protected bool $public = true; }  // 3. per controller
 ```
 
-`make:crud` writes option 1 for you; delete `->public()` the moment you add a policy.
+`make:crud` generates the protected route without `->public()`. Add `->public()` yourself only when public access is an intentional requirement; otherwise define a policy.
 
 For JSON APIs the same trick:
 
