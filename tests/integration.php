@@ -1374,7 +1374,7 @@ ok('make:crud in hostapp exits 0', $code === 0, $out);
 // explicit test-fixture choice, not the generator's default.
 integration_public_resource($proj2, 'notes');
 
-[$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Credential name:string password:string is_admin:boolean role:string email_verified_at:string remember_token:string api_token:string permissions:string');
+[$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Credential name:string password:string is_admin:boolean role:string? email_verified_at:string? remember_token:string? api_token:string? permissions:string?');
 ok('make:crud Credential password fixture exits 0', $code === 0, $out);
 integration_public_resource($proj2, 'credentials');
 file_put_contents($proj2 . '/routes/web.php', "\napiResource('credentials')->public();\n", FILE_APPEND);
