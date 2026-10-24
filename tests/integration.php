@@ -1399,6 +1399,7 @@ file_put_contents(
     $proj2 . '/routes/web.php',
     "\nget('/api/it-csrf-token', fn() => \\Widdx\\Response::json(['token' => request()->csrfToken()]));\n"
     . "\nget('/api/it-session-login', function () { \\Widdx\\Auth::login(\\App\\Models\\Credential::findOrFail(1)); return \\Widdx\\Response::json(['ok' => true]); });\n"
+    . "\nget('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => false]));\n"
     . "\npost('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n"
     . "\nput('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n"
     . "\npatch('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n"
@@ -1775,6 +1776,10 @@ ok('2.3 JSON body parses into input()/json() over HTTP', $r['status'] === 200 &&
 ok('2.3 bearerToken() reads Authorization header', ($d23['bearer'] ?? null) === 'tok-2-3', substr($r['body'], 0, 150));
 
 // H-01: CSRF is required for an authenticated session-cookie API client.
+$r = http($port2, 'GET', '/api/it-csrf', null, $jar2);
+$readCsrf = json_decode($r['body'], true);
+ok('H-01 GET API request needs no CSRF and does not mutate', $r['status'] === 200 && ($readCsrf['mutated'] ?? true) === false,
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
 $r = http($port2, 'GET', '/api/it-session-login', null, $jar2);
 ok('H-01 session login fixture establishes an authenticated browser session', $r['status'] === 200, 'status=' . $r['status']);
 $r = http($port2, 'POST', '/api/it-csrf', ['value' => 'no-token'], $jar2);
