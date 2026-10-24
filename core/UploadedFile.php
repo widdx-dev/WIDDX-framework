@@ -259,16 +259,30 @@ class UploadedFile
             $segments[] = $seg;
         }
         $relative = implode('/', $segments);
-        // Last line of defence: if root() already exists, prove the target dir
-        // resolves inside it (realpath also defeats a symlinked 'uploads').
+        // Resolve every existing component, not only the final directory.
+        // realpath(root/a/b) returns false when b is missing, even if a is a
+        // symlink outside the disk; checking each component prevents that bypass.
         $absRoot = realpath($root);
-        if ($absRoot !== false && $relative !== '') {
-            $probe = $absRoot . '/' . $relative;
-            $resolved = realpath($probe);
-            if ($resolved !== false && !str_starts_with($resolved, $absRoot . DIRECTORY_SEPARATOR)) {
+        if ($absRoot === false) {
+            throw new Exceptions\HttpException('Upload storage root cannot be resolved.', 500);
+        }
+        $probe = $absRoot;
+        foreach ($segments as $segment) {
+            $probe .= DIRECTORY_SEPARATOR . $segment;
+            if (is_link($probe)) {
                 throw new Exceptions\HttpException(
-                    'Upload directory escapes the storage disk: ' . $directory, 400
+                    'Symbolic links are not allowed in upload directories: ' . $directory, 400
                 );
+            }
+            if (file_exists($probe)) {
+                $resolved = realpath($probe);
+                if ($resolved === false
+                    || ($resolved !== $absRoot && !str_starts_with($resolved, $absRoot . DIRECTORY_SEPARATOR))) {
+                    throw new Exceptions\HttpException(
+                        'Upload directory escapes the storage disk: ' . $directory, 400
+                    );
+                }
+                $probe = $resolved;
             }
         }
         return $relative;
