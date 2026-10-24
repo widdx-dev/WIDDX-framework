@@ -1374,7 +1374,7 @@ ok('make:crud in hostapp exits 0', $code === 0, $out);
 // explicit test-fixture choice, not the generator's default.
 integration_public_resource($proj2, 'notes');
 
-[$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Credential name:string password:string is_admin:boolean role:string? email_verified_at:string? remember_token:string? api_token:string? permissions:string?');
+[$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Credential name:string password:string is_admin:boolean? role:string? email_verified_at:string? remember_token:string? api_token:string? permissions:string?');
 ok('make:crud Credential password fixture exits 0', $code === 0, $out);
 $credentialModelSource = (string) file_get_contents($proj2 . '/app/Models/Credential.php');
 preg_match('/protected array \$fillable = \[([^\]]*)\];/', $credentialModelSource, $credentialFillableMatch);
@@ -1571,7 +1571,8 @@ file_put_contents(
 file_put_contents($proj2 . '/routes/web.php', "\nresource('probenos')->public();\n", FILE_APPEND);
 // Allow opcache.revalidate_freq to notice the appended route without
 // replacing the running server process (its PID owns the session test fixture).
-usleep(2_100_000);
+stop_server($pid2);
+$pid2 = start_server($proj2, $port2);
 // web group is on by default since 1.3 — reuse a session-valid token.
 $tokP2 = grab_csrf($port2, '/notes/create', $jar2);
 $r = http($port2, 'POST', '/probenos', ['csrf_token' => $tokP2, 'name' => 'sneak', 'is_admin' => '1'], $jar2);
@@ -1649,6 +1650,10 @@ resource('vaults');
 apiResource('secrets');
 resource('publicopens', \App\Controllers\PublicOpenController::class);
 PHP, FILE_APPEND);
+// Route registration is cached by the long-running PHP server's OPcache.
+// Restart instead of sleeping: validate_timestamps may be disabled in CI.
+stop_server($pid2);
+$pid2 = start_server($proj2, $port2);
 $r = http($port2, 'GET', '/mkvault', null, $jar2);
 ok('1.2 probes registered', $r['status'] === 200, 'status=' . $r['status']);
 
@@ -1709,6 +1714,8 @@ $r = http($port2, 'GET', '/publicopens', null, $jar2);
 ok('1.2 controller \$public = true opens guest access', $r['status'] === 200, 'status=' . $r['status']);
 
 file_put_contents($proj2 . '/routes/web.php', "\nresource('secrets')->public();\n", FILE_APPEND);
+stop_server($pid2);
+$pid2 = start_server($proj2, $port2);
 $r = http($port2, 'GET', '/secrets', null, $jar2);
 ok('1.2 resource()->public() opens the whole group', $r['status'] === 200, 'status=' . $r['status']);
 
@@ -1737,6 +1744,8 @@ $r = http($port2, 'POST', '/api/secrets', ['secret' => 's'], $jarApiGuest);
 ok('1.3 stateless API guest reaches the 401 auth gate (not 419)', $r['status'] === 401, 'status=' . $r['status']);
 
 file_put_contents($proj2 . '/routes/web.php', "\nauthRoutes();\n", FILE_APPEND);
+stop_server($pid2);
+$pid2 = start_server($proj2, $port2);
 $r = http($port2, 'GET', '/login', null, $jar2);
 $tokL = preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $mL) === 1 ? $mL[1] : '';
 ok('1.3 login page renders with token', $r['status'] === 200 && strlen($tokL) >= 32, 'status=' . $r['status']);
