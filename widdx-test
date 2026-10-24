@@ -829,7 +829,7 @@ test('resource() without any class fails with a helpful message', function () {
 });
 
 test('Mass assignment blocks privilege and token fields by default', function () {
-    $model = new class extends \\Widdx\\Model {
+    $model = new class extends \Widdx\Model {
         protected array $fillable = ['name', 'is_admin', 'role', 'email_verified_at', 'remember_token', 'api_token', 'permissions'];
     };
     $model->fill([
