@@ -1392,8 +1392,8 @@ file_put_contents(
 // H-01 regression probe: session-authenticated API writes must require CSRF.
 file_put_contents(
     $proj2 . '/routes/web.php',
-    "\\nget('/api/it-csrf-token', fn() => \\Widdx\\Response::json(['token' => request()->csrfToken()]));\\n"
-    . "\\npost('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\\n",
+    "\nget('/api/it-csrf-token', fn() => \\Widdx\\Response::json(['token' => request()->csrfToken()]));\n"
+    . "\npost('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n",
     FILE_APPEND
 );
 
