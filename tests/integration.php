@@ -1567,9 +1567,9 @@ file_put_contents(
     "<?php\n\nnamespace App\\Models;\n\nuse Widdx\\Model;\n\nclass Probeno extends Model\n{\n    protected ?string \$table = 'probenos';\n}\n"
 );
 file_put_contents($proj2 . '/routes/web.php', "\nresource('probenos')->public();\n", FILE_APPEND);
-// Reload the PHP server so opcache compiles the newly appended route fixture.
-stop_server($pid2);
-$pid2 = start_server($proj2, $port2);
+// Allow opcache.revalidate_freq to notice the appended route without
+// replacing the running server process (its PID owns the session test fixture).
+usleep(2_100_000);
 // web group is on by default since 1.3 — reuse a session-valid token.
 $tokP2 = grab_csrf($port2, '/notes/create', $jar2);
 $r = http($port2, 'POST', '/probenos', ['csrf_token' => $tokP2, 'name' => 'sneak', 'is_admin' => '1'], $jar2);
@@ -1581,8 +1581,7 @@ file_put_contents(
     "\nstorageRoutes();\npost('/it-upload', function () {\n    \$p = request()->file('doc')->store('public/it18');\n    return \\Widdx\\Response::json(['p' => \$p]);\n});\n",
     FILE_APPEND
 );
-stop_server($pid2);
-$pid2 = start_server($proj2, $port2);
+usleep(2_100_000);
 $b18 = 'widdx18-boundary';
 $gif18 = base64_decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
 $mp18 = "--{$b18}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{$tokP2}\r\n"
