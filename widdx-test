@@ -828,6 +828,31 @@ test('resource() without any class fails with a helpful message', function () {
     }
 });
 
+test('Mass assignment blocks privilege and token fields by default', function () {
+    $model = new class extends \\Widdx\\Model {
+        protected array $fillable = ['name', 'is_admin', 'role', 'email_verified_at', 'remember_token', 'api_token', 'permissions'];
+    };
+    $model->fill([
+        'name' => 'probe',
+        'is_admin' => true,
+        'role' => 'admin',
+        'email_verified_at' => '2026-01-01 00:00:00',
+        'remember_token' => 'remember-secret',
+        'api_token' => 'api-secret',
+        'permissions' => '*',
+    ]);
+    $data = $model->toArray();
+    assert_true(
+        !array_key_exists('is_admin', $data)
+            && !array_key_exists('role', $data)
+            && !array_key_exists('email_verified_at', $data)
+            && !array_key_exists('remember_token', $data)
+            && !array_key_exists('api_token', $data)
+            && !array_key_exists('permissions', $data),
+        'sensitive fields should be denied unless the model opts in explicitly'
+    );
+});
+
 test('Model::columns() reads real table columns', function () {
     $file = sys_get_temp_dir() . '/widdx-cols-' . getmypid() . '.sqlite';
     @unlink($file);
