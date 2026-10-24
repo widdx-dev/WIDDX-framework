@@ -864,7 +864,7 @@ test('Model::columns() reads real table columns', function () {
 });
 
 // ------------------------------------------------------------------ 1.1 mass assignment
-test('1.1 mass assignment denies by default; "*" opts in; PK never', function () {
+test('1.1 mass assignment denies by default; wildcard never bypasses sensitive-field guard; PK never', function () {
     \Widdx\App::basePath(WIDDX_BASE_PATH);
     \Widdx\Schema::create('leaks', function (\Widdx\Blueprint $t) {
         $t->id();
@@ -884,10 +884,10 @@ test('1.1 mass assignment denies by default; "*" opts in; PK never', function ()
     }
     assert_true($threw, 'empty $fillable must block create entirely');
 
-    // explicit '*' opt-in works — but the primary key stays never-assignable
+    // '*' opts into ordinary fields only. Sensitive fields still need explicit opt-in.
     $m = \Widdx\Tests\Open::create(['name' => 'ok', 'is_admin' => 1, 'id' => 77]);
     assert_equals('ok', $m->name);
-    assert_equals(1, (int) $m->is_admin, '* allows listed-by-anything columns');
+    assert_equals(0, (int) $m->is_admin, '* must not bypass the sensitive-field guard');
     assert_true((int) $m->id !== 77, 'primary key must never be mass-assignable');
 
     // allowlist model: unknown keys filtered, id ignored by fill()
