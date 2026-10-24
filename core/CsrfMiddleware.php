@@ -32,7 +32,12 @@ class CsrfMiddleware
         // When a session cookie is present, require a session-bound CSRF token.
         $path = parse_url((string) ($request->server['REQUEST_URI'] ?? ''), PHP_URL_PATH);
         $isApi = is_string($path) && ($path === '/api' || str_starts_with($path, '/api/'));
-        if ($isApi && !array_key_exists(session_name(), $request->cookies)) {
+        if ($isApi && (
+            !array_key_exists(session_name(), $request->cookies)
+            || Auth::guest()
+        )) {
+            // Preserve the existing auth gate for guests (401/302); CSRF is
+            // required when the browser is relying on an authenticated session.
             return $next($request);
         }
 
