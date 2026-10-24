@@ -1374,6 +1374,11 @@ ok('make:crud in hostapp exits 0', $code === 0, $out);
 // explicit test-fixture choice, not the generator's default.
 integration_public_resource($proj2, 'notes');
 
+[$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Credential name:string password:string');
+ok('make:crud Credential password fixture exits 0', $code === 0, $out);
+integration_public_resource($proj2, 'credentials');
+file_put_contents($proj2 . '/routes/web.php', "\\napiResource('credentials')->public();\\n", FILE_APPEND);
+
 // 1.5 needs a route that THROWS. Register it BEFORE the server starts: a live
 // `file_put_contents(..., FILE_APPEND)` on routes/web.php right before the very
 // next request can be served from opcache's previously-compiled copy (it only
@@ -1472,6 +1477,39 @@ if (preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $m)) {
 $r = http($port2, 'POST', '/notes', ['csrf_token' => (string) $tok2, 'title' => 'FTP-only note'], $jar2);
 $r = http($port2, 'GET', '/notes', null, $jar2);
 ok('record inserted through the web-installed app', $r['status'] === 200 && str_contains($r['body'], 'FTP-only note'), substr($r['body'], 0, 300));
+
+// H-02 regression: generated CRUD must hash passwords and never render them.
+$r = http($port2, 'GET', '/credentials/create', null, $jar2);
+$credentialToken = preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $cm) ? $cm[1] : '';
+ok('H-02 password form uses type=password with no value',
+    str_contains($r['body'], 'type="password"') && !preg_match('#type="password"[^>]*value="[^"]+#', $r['body']),
+    substr($r['body'], 0, 220));
+$r = http($port2, 'POST', '/credentials', [
+    'csrf_token' => $credentialToken, 'name' => 'Password probe', 'password' => 'secret-pass-123',
+], $jar2);
+ok('H-02 generated CRUD create accepted', $r['status'] === 302, 'status=' . $r['status']);
+$credentialDb = new PDO('sqlite:' . $proj2 . '/host.sqlite');
+$credentialRow = $credentialDb->query("SELECT id, password FROM credentials ORDER BY id DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC) ?: [];
+$credentialId = (int) ($credentialRow['id'] ?? 0);
+$credentialPassword = (string) ($credentialRow['password'] ?? '');
+ok('H-02 stored password is a password_hash result',
+    $credentialPassword !== 'secret-pass-123' && password_verify('secret-pass-123', $credentialPassword),
+    'stored=' . substr($credentialPassword, 0, 30));
+foreach ([
+    '/credentials' => 'index',
+    '/credentials/' . $credentialId => 'show',
+    '/credentials/' . $credentialId . '/edit' => 'edit',
+] as $credentialPath => $credentialPage) {
+    $r = http($port2, 'GET', $credentialPath, null, $jar2);
+    ok('H-02 password hidden from CRUD ' . $credentialPage,
+        $r['status'] === 200 && !str_contains($r['body'], $credentialPassword) && !str_contains($r['body'], 'secret-pass-123'),
+        'status=' . $r['status']);
+}
+$r = http($port2, 'GET', '/api/credentials', null, $jar2, null, null, ['Accept: application/json']);
+$credentialJson = json_decode($r['body'], true);
+ok('H-02 API JSON omits password fields',
+    $r['status'] === 200 && is_array($credentialJson) && !array_key_exists('password', $credentialJson[0] ?? []),
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 180));
 
 // 1.1 negative: a resource model with NO $fillable/$rules must fail loudly, never write.
 file_put_contents(
