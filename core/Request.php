@@ -78,17 +78,30 @@ class Request
         if (!$isJson && !$isFormBody) {
             return;
         }
-        // Guard against a huge body: refuse > 2 MiB before reading it all.
+        // Enforce the limit using both the advertised length and the bytes
+        // actually read. CONTENT_LENGTH may be absent or inaccurate (e.g. a
+        // chunked request), so it must never be the only guard.
+        $maxBytes = 2 * 1024 * 1024;
         $len = (int) ($this->server['CONTENT_LENGTH'] ?? 0);
-        if ($len > 2 * 1024 * 1024) {
+        if ($len > $maxBytes) {
             if ($isJson) {
                 $this->malformedJson = true;
             }
             return;
         }
-        // capture() leaves $raw empty and reads the stream; tests may preset it.
+        // Read at most maxBytes + 1 so an absent/false length cannot make this
+        // method buffer an unbounded request body in memory.
         if ($this->raw === '') {
-            $this->raw = (string) file_get_contents('php://input');
+            $this->raw = (string) file_get_contents('php://input', false, null, 0, $maxBytes + 1);
+        }
+        // Also cover test/integration callers that provide $raw directly and
+        // bodies whose advertised length was smaller than the actual payload.
+        if (strlen($this->raw) > $maxBytes) {
+            if ($isJson) {
+                $this->malformedJson = true;
+            }
+            $this->raw = '';
+            return;
         }
         if ($this->raw === '') {
             return;

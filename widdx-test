@@ -611,6 +611,12 @@ test('2.3 Request parses JSON/urlencoded bodies; json()/header()/bearerToken()',
     $b->raw = '{not valid json';
     $b->parseRawBody();
     assert_true($b->malformedJson, 'bad json must set malformedJson');
+    // A body larger than 2 MiB is rejected even when CONTENT_LENGTH is absent.
+    $oversized = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'POST', 'CONTENT_TYPE' => 'application/json']);
+    $oversized->raw = str_repeat(' ', 2 * 1024 * 1024 + 1);
+    $oversized->parseRawBody();
+    assert_true($oversized->malformedJson, 'oversized JSON must be rejected without a content length');
+    assert_equals([], $oversized->post, 'oversized JSON must not be decoded');
     // bearer + header accessors.
     $h = new \Widdx\Request([], [], ['HTTP_AUTHORIZATION' => 'Bearer tok-123', 'HTTP_X_CUSTOM' => 'cv']);
     assert_equals('tok-123', $h->bearerToken());
