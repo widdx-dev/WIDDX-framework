@@ -1376,6 +1376,12 @@ integration_public_resource($proj2, 'notes');
 
 [$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Credential name:string password:string is_admin:boolean role:string? email_verified_at:string? remember_token:string? api_token:string? permissions:string?');
 ok('make:crud Credential password fixture exits 0', $code === 0, $out);
+$credentialModelSource = (string) file_get_contents($proj2 . '/app/Models/Credential.php');
+ok('H-02 generated fillable excludes privilege and token fields',
+    !str_contains($credentialModelSource, "'is_admin'") && !str_contains($credentialModelSource, "'role'")
+        && !str_contains($credentialModelSource, "'email_verified_at'") && !str_contains($credentialModelSource, "'remember_token'")
+        && !str_contains($credentialModelSource, "'api_token'") && !str_contains($credentialModelSource, "'permissions'"),
+    $credentialModelSource);
 integration_public_resource($proj2, 'credentials');
 file_put_contents($proj2 . '/routes/web.php', "\napiResource('credentials')->public();\n", FILE_APPEND);
 
