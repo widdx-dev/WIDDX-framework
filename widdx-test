@@ -984,13 +984,13 @@ test('1.7b UploadedFile::store rejects symlink ancestors even when target direct
     }
 
     try {
-        $file = new \Widdx\\UploadedFile($tmp, 'sample.txt', 'text/plain', 0, (int) filesize($tmp));
+        $file = new \Widdx\UploadedFile($tmp, 'sample.txt', 'text/plain', 0, (int) filesize($tmp));
         $threw = false;
         try {
             // The final directory does not exist, so checking only realpath(final)
             // would miss the symlinked ancestor and allow mkdir/move outside storage.
             $file->store($linkName . '/missing-child');
-        } catch (\Widdx\\Exceptions\\HttpException) {
+        } catch (\Widdx\Exceptions\HttpException) {
             $threw = true;
         }
         assert_true($threw, 'upload must reject a symlink ancestor before creating directories');
