@@ -1389,6 +1389,14 @@ file_put_contents(
     FILE_APPEND
 );
 
+// H-01 regression probe: session-authenticated API writes must require CSRF.
+file_put_contents(
+    $proj2 . '/routes/web.php',
+    "\\nget('/api/it-csrf-token', fn() => \\Widdx\\Response::json(['token' => request()->csrfToken()]));\\n"
+    . "\\npost('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\\n",
+    FILE_APPEND
+);
+
 $port2 = pick_port();
 $pid2 = start_server($proj2, $port2);
 $jar2 = [];
@@ -1674,6 +1682,20 @@ $r = http($port2, 'POST', '/api/it-json', null, $jar2, '{"name":"Ada","age":30}'
 $d23 = json_decode($r['body'], true);
 ok('2.3 JSON body parses into input()/json() over HTTP', $r['status'] === 200 && ($d23['name'] ?? null) === 'Ada' && ($d23['age'] ?? null) === 30, 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
 ok('2.3 bearerToken() reads Authorization header', ($d23['bearer'] ?? null) === 'tok-2-3', substr($r['body'], 0, 150));
+
+// H-01: API requests using the session cookie must be protected like web writes.
+$r = http($port2, 'POST', '/api/it-csrf', ['value' => 'no-token'], $jar2);
+$jH01 = json_decode($r['body'], true);
+ok('H-01 API session write without CSRF token returns JSON 419',
+    $r['status'] === 419 && ($jH01['error'] ?? '') === 'CSRF token mismatch.',
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 160));
+$r = http($port2, 'GET', '/api/it-csrf-token', null, $jar2);
+$csrfH01 = (string) (json_decode($r['body'], true)['token'] ?? '');
+$r = http($port2, 'POST', '/api/it-csrf', null, $jar2, '{"value":"valid"}', 'application/json',
+    ['X-CSRF-TOKEN: ' . $csrfH01, 'Accept: application/json']);
+ok('H-01 API session write with valid CSRF header succeeds',
+    $r['status'] === 200 && str_contains($r['body'], '"mutated":true'),
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 160));
 $r = http($port2, 'POST', '/api/it-json', null, $jar2, '{not valid json', 'application/json');
 ok('2.3 malformed JSON body is a clean 400 (not 500, not silent empty)', $r['status'] === 400, 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
 
