@@ -1374,7 +1374,7 @@ ok('make:crud in hostapp exits 0', $code === 0, $out);
 // explicit test-fixture choice, not the generator's default.
 integration_public_resource($proj2, 'notes');
 
-[$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Credential name:string password:string');
+[$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Credential name:string password:string is_admin:boolean role:string email_verified_at:string remember_token:string api_token:string permissions:string');
 ok('make:crud Credential password fixture exits 0', $code === 0, $out);
 integration_public_resource($proj2, 'credentials');
 file_put_contents($proj2 . '/routes/web.php', "\napiResource('credentials')->public();\n", FILE_APPEND);
@@ -1487,6 +1487,8 @@ ok('H-02 password form uses type=password with no value',
     substr($r['body'], 0, 220));
 $r = http($port2, 'POST', '/credentials', [
     'csrf_token' => $credentialToken, 'name' => 'Password probe', 'password' => 'secret-pass-123',
+    'is_admin' => '1', 'role' => 'admin', 'email_verified_at' => '2026-01-01',
+    'remember_token' => 'remember-secret', 'api_token' => 'api-secret', 'permissions' => '*',
 ], $jar2);
 ok('H-02 generated CRUD create accepted', $r['status'] === 302, 'status=' . $r['status']);
 $credentialDb = new PDO('sqlite:' . $proj2 . '/host.sqlite');
@@ -1496,6 +1498,16 @@ $credentialPassword = (string) ($credentialRow['password'] ?? '');
 ok('H-02 stored password is a password_hash result',
     $credentialPassword !== 'secret-pass-123' && password_verify('secret-pass-123', $credentialPassword),
     'stored=' . substr($credentialPassword, 0, 30));
+$credentialDb->exec('SELECT 1');
+$credentialSensitive = $credentialDb->query('SELECT is_admin, role, email_verified_at, remember_token, api_token, permissions FROM credentials WHERE id = ' . $credentialId)->fetch(PDO::FETCH_ASSOC) ?: [];
+ok('H-02 CRUD rejects submitted privilege, verification, and token fields',
+    (int) ($credentialSensitive['is_admin'] ?? 0) === 0
+        && ($credentialSensitive['role'] ?? null) === null
+        && ($credentialSensitive['email_verified_at'] ?? null) === null
+        && ($credentialSensitive['remember_token'] ?? null) === null
+        && ($credentialSensitive['api_token'] ?? null) === null
+        && ($credentialSensitive['permissions'] ?? null) === null,
+    json_encode($credentialSensitive));
 $editCredential = http($port2, 'GET', '/credentials/' . $credentialId . '/edit', null, $jar2);
 $editCredentialToken = preg_match('#name="csrf_token" value="([^"]+)"#', $editCredential['body'], $em) ? $em[1] : '';
 $r = http($port2, 'POST', '/credentials/' . $credentialId, [
