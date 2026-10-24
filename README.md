@@ -262,7 +262,7 @@ CSRF + security headers are **already on** for every route in `routes/web.php` (
 ambient `web` group in `core/App.php`). Routes under `/api/...` also receive these
 middlewares by default. API writes require a CSRF token when the request carries the
 PHP session cookie; stateless API clients without that cookie remain CSRF-exempt.
-Do not register the default middleware again — that runs it twice.
+Do not register the default middleware again — that runs the middleware twice.
 
 ```php
 // Only needed to change what a group contains (this replaces it — CSRF stays,
