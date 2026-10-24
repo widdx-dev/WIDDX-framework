@@ -1806,6 +1806,8 @@ foreach (['PUT', 'PATCH', 'DELETE'] as $methodH01) {
     ok('H-01 ' . $methodH01 . ' API session write without CSRF returns 419', $r['status'] === 419,
         'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
 }
+$r = http($port2, 'POST', '/api/it-csrf', ['_method' => 'DELETE', 'value' => 'no-token'], $jar2);
+ok('H-01 POST method-spoofed DELETE requires CSRF', $r['status'] === 419, 'status=' . $r['status']);
 $r = http($port2, 'POST', '/api/it-csrf', ['_token' => $csrfH01], $jar2);
 ok('H-01 _token form field is accepted', $r['status'] === 200 && str_contains($r['body'], '"mutated":true'),
     'status=' . $r['status']);
