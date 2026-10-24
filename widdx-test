@@ -853,6 +853,15 @@ test('Mass assignment blocks privilege and token fields by default', function ()
     );
 });
 
+test('Sensitive mass assignment requires and honors explicit model opt-in', function () {
+    $model = new class extends \Widdx\Model {
+        protected array $fillable = ['is_admin'];
+        protected array $sensitiveFillable = ['is_admin'];
+    };
+    $model->fill(['is_admin' => 1]);
+    assert_equals(1, (int) $model->is_admin, 'explicit sensitiveFillable should permit the field');
+});
+
 test('Model::columns() reads real table columns', function () {
     $file = sys_get_temp_dir() . '/widdx-cols-' . getmypid() . '.sqlite';
     @unlink($file);
