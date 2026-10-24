@@ -2336,17 +2336,40 @@ test('2.25 DEPLOY-01 C: demo start stays public, --no-demo starts fail-closed, m
     // reads it, Router::currentRouteIsPublic() carries it), so read it off the routes the
     // generated file registers rather than off the text of that file.
     $usersPublicFlags = static function (string $file, string $resourceName = 'users'): array {
-        \Widdx\Router::reset();
-        require $file;
-        $flags = [];
-        $prefix = '/' . $resourceName;
-        foreach (\Widdx\Router::getInstance()->all() as $r) {
-            if ($r->uri === $prefix || str_starts_with($r->uri, $prefix . '/')) {
-                $flags[] = $r->isPublic();
-            }
+        $projectBase = dirname(dirname($file));
+        $previousBase = \Widdx\App::basePath();
+        \Widdx\App::basePath($projectBase);
+
+        // Route registration resolves model-driven resources immediately. The
+        // test runner's autoloader points at the framework checkout, not the
+        // temporary scaffold, so load that scaffold's model before requiring
+        // its routes (especially the freshly generated Post model).
+        $modelName = match ($resourceName) {
+            'users' => 'User',
+            'posts' => 'Post',
+            default => ucfirst(rtrim($resourceName, 's')),
+        };
+        $modelFile = $projectBase . '/app/Models/' . $modelName . '.php';
+        $modelClass = 'App\\Models\\' . $modelName;
+        if (!class_exists($modelClass, false) && is_file($modelFile)) {
+            require_once $modelFile;
         }
+
         \Widdx\Router::reset();
-        return $flags;
+        try {
+            require $file;
+            $flags = [];
+            $prefix = '/' . $resourceName;
+            foreach (\Widdx\Router::getInstance()->all() as $r) {
+                if ($r->uri === $prefix || str_starts_with($r->uri, $prefix . '/')) {
+                    $flags[] = $r->isPublic();
+                }
+            }
+            return $flags;
+        } finally {
+            \Widdx\Router::reset();
+            \Widdx\App::basePath($previousBase);
+        }
     };
 
     try {
