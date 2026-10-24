@@ -967,6 +967,42 @@ test('1.7a LocalStorage rejects symlinks that point outside the storage root', f
     @unlink($outside);
 });
 
+test('1.7b UploadedFile::store rejects symlink ancestors even when target directory is missing', function () {
+    $root = WIDDX_BASE_PATH . '/storage/app';
+    $outside = sys_get_temp_dir() . '/widdx_upload_outside_' . bin2hex(random_bytes(4));
+    $linkName = 'it17b_link_' . bin2hex(random_bytes(3));
+    $link = $root . '/' . $linkName;
+    $tmp = sys_get_temp_dir() . '/widdx_upload_tmp_' . bin2hex(random_bytes(4)) . '.txt';
+    mkdir($outside);
+    file_put_contents($tmp, 'upload-secret');
+
+    if (!function_exists('symlink') || !@symlink($outside, $link)) {
+        @unlink($tmp);
+        @rmdir($outside);
+        echo "  ↷ SKIP symlink upload test (symlink creation unavailable)\\n";
+        return;
+    }
+
+    try {
+        $file = new \\Widdx\\UploadedFile($tmp, 'sample.txt', 'text/plain', 0, (int) filesize($tmp));
+        $threw = false;
+        try {
+            // The final directory does not exist, so checking only realpath(final)
+            // would miss the symlinked ancestor and allow mkdir/move outside storage.
+            $file->store($linkName . '/missing-child');
+        } catch (\\Widdx\\Exceptions\\HttpException) {
+            $threw = true;
+        }
+        assert_true($threw, 'upload must reject a symlink ancestor before creating directories');
+        assert_true(!is_dir($outside . '/missing-child'), 'no directory may be created outside storage');
+        assert_true(is_file($tmp), 'rejected upload must remain at its temporary path');
+    } finally {
+        @unlink($link);
+        @unlink($tmp);
+        @rmdir($outside);
+    }
+});
+
 test('1.8 store() derives extension from content; mimes uses detected; dangerous names neutered', function () {
     $gif = base64_decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
     $tmp1 = sys_get_temp_dir() . '/widdx18_' . bin2hex(random_bytes(4)) . '.bin';
