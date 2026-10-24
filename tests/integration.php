@@ -78,6 +78,19 @@ function skip(string $name, string $why): void
     echo "  SKIP  {$name}  [{$why}]\n";
 }
 
+/** Tests that exercise CRUD behavior explicitly opt in after verifying the generator's secure default. */
+function integration_public_resource(string $project, string $table): void
+{
+    $path = $project . '/routes/web.php';
+    $routes = (string) file_get_contents($path);
+    $protected = "resource('{$table}');";
+    $public = "resource('{$table}')->public();";
+    if (!str_contains($routes, $protected)) {
+        throw new RuntimeException("Expected generated protected resource route for [{$table}].");
+    }
+    file_put_contents($path, str_replace($protected, $public, $routes));
+}
+
 function shell(string $cmd): array
 {
     $out = [];
@@ -710,7 +723,10 @@ sec('Zero-Code CRUD: make:crud + built-in views');
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Post title:string body:text? views:integer? price:float? published:bool?');
 ok('make:crud exits 0', $code === 0, $out);
 ok('Post model generated with NO controller', is_file($proj . '/app/Models/Post.php') && !is_file($proj . '/app/Controllers/PostController.php'));
-ok('route appended automatically', str_contains((string) file_get_contents($proj . '/routes/web.php'), "resource('posts')->public();"));
+ok('route appended automatically as protected by default', str_contains((string) file_get_contents($proj . '/routes/web.php'), "resource('posts');"));
+// This section tests the generated CRUD UI and mutations, not access control.
+// Opt in explicitly after asserting the generator itself is protected by default.
+integration_public_resource($proj, 'posts');
 
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx migrate');
 ok('make:crud migration applies', $code === 0, $out);
@@ -785,6 +801,8 @@ sec('Relations: make:crud with author_id renders a live select');
 ok('make:crud Author exits 0', $code === 0, $out);
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Book title:string author_id:integer');
 ok('make:crud Book (author_id) exits 0', $code === 0, $out);
+integration_public_resource($proj, 'authors');
+integration_public_resource($proj, 'books');
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx migrate');
 ok('relation migrations apply', $code === 0, $out);
 
@@ -833,6 +851,7 @@ sec('File uploads through zero-code CRUD (multipart)');
 
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Photo caption:string cover:image');
 ok('make:crud Photo (image column) exits 0', $code === 0, $out);
+integration_public_resource($proj, 'photos');
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx migrate');
 ok('photo migration applies', $code === 0, $out);
 
@@ -1347,6 +1366,9 @@ ok('fresh project has NO .env (installer stays available)', !is_file($proj2 . '/
 
 [$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Note title:string');
 ok('make:crud in hostapp exits 0', $code === 0, $out);
+// Installer scenarios exercise the CRUD workflow itself; public access is an
+// explicit test-fixture choice, not the generator's default.
+integration_public_resource($proj2, 'notes');
 
 // 1.5 needs a route that THROWS. Register it BEFORE the server starts: a live
 // `file_put_contents(..., FILE_APPEND)` on routes/web.php right before the very
