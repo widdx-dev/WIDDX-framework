@@ -1377,7 +1377,7 @@ integration_public_resource($proj2, 'notes');
 [$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Credential name:string password:string');
 ok('make:crud Credential password fixture exits 0', $code === 0, $out);
 integration_public_resource($proj2, 'credentials');
-file_put_contents($proj2 . '/routes/web.php', "\\napiResource('credentials')->public();\\n", FILE_APPEND);
+file_put_contents($proj2 . '/routes/web.php', "\napiResource('credentials')->public();\n", FILE_APPEND);
 
 // 1.5 needs a route that THROWS. Register it BEFORE the server starts: a live
 // `file_put_contents(..., FILE_APPEND)` on routes/web.php right before the very
