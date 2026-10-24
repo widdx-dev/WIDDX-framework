@@ -36,6 +36,9 @@ abstract class Model implements \JsonSerializable
     /** Fields hidden from toArray/toJson (e.g. passwords) */
     protected array $hidden = [];
 
+    /** Sensitive columns permitted for mass assignment; each must also be in $fillable. */
+    protected array $sensitiveFillable = [];
+
     /**
      * Validation rules auto-applied by create().
      * Example: protected array $rules = ['email' => 'required|email'];
@@ -140,6 +143,7 @@ abstract class Model implements \JsonSerializable
     {
         $skip = array_unique([$this->primaryKey, 'created_at', 'updated_at', 'id', ...$this->hidden]);
         $cols = array_values(array_diff($this->columns(), $skip));
+        $cols = array_values(array_filter($cols, fn(string $column): bool => $this->isSensitiveFieldAllowed($column)));
         if (!empty($this->fillable)) {
             $fillableOnly = array_values(array_intersect($cols, $this->fillable));
             $cols = $fillableOnly ?: $cols;
@@ -262,7 +266,10 @@ abstract class Model implements \JsonSerializable
     {
         $all = $this->fillable === ['*'];
         foreach ($data as $key => $value) {
-            if ($key === $this->primaryKey) {
+            if ($key === $this->primaryKey || !$this->isSensitiveFieldAllowed((string) $key)) {
+                continue;
+            }
+            if ($key === 'password' && $this->exists && ($value === '' || $value === null)) {
                 continue;
             }
             if (!$all && !in_array($key, $this->fillable, true)) {
@@ -277,6 +284,26 @@ abstract class Model implements \JsonSerializable
     public function getFillable(): array
     {
         return $this->fillable;
+    }
+
+    /** Explicitly allowed sensitive fields; each must also be in $fillable. */
+    public function getSensitiveFillable(): array
+    {
+        return $this->sensitiveFillable;
+    }
+
+    public function isSensitiveFieldAllowed(string $field): bool
+    {
+        return !self::isSensitiveField($field) || in_array($field, $this->sensitiveFillable, true);
+    }
+
+    protected static function isSensitiveField(string $field): bool
+    {
+        $field = strtolower($field);
+        return in_array($field, [
+            'password_confirmation', 'email_verified_at', 'remember_token',
+            'is_admin', 'role', 'is_staff', 'permissions',
+        ], true) || preg_match('/(?:^|_)token$/', $field) === 1;
     }
 
     // ---------- Validation ----------
@@ -396,6 +423,15 @@ abstract class Model implements \JsonSerializable
 
     public function save(): bool
     {
+        // Hash plaintext passwords on ordinary model/CRUD/API writes. Leave
+        // recognized hashes intact so existing Auth hashes are never re-hashed.
+        if (isset($this->attributes['password']) && is_string($this->attributes['password']) && $this->attributes['password'] !== '') {
+            $password = $this->attributes['password'];
+            if ((password_get_info($password)['algo'] ?? null) === null) {
+                $this->attributes['password'] = password_hash($password, PASSWORD_DEFAULT);
+            }
+        }
+
         // Auto-manage timestamps when enabled
         if ($this->managesTimestamps()) {
             $now = date('Y-m-d H:i:s');
@@ -591,7 +627,15 @@ abstract class Model implements \JsonSerializable
     public function toArray(): array
     {
         $data = $this->attributes;
-        foreach ($this->hidden as $h) {
+        $hidden = array_unique(array_merge(
+            ['password', 'password_confirmation'],
+            $this->hidden,
+            array_values(array_filter(
+                array_keys($data),
+                static fn($key): bool => preg_match('/(?:^|_)token$/i', (string) $key) === 1
+            ))
+        ));
+        foreach ($hidden as $h) {
             unset($data[$h]);
         }
         return $data;

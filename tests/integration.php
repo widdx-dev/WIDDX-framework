@@ -1496,6 +1496,22 @@ $credentialPassword = (string) ($credentialRow['password'] ?? '');
 ok('H-02 stored password is a password_hash result',
     $credentialPassword !== 'secret-pass-123' && password_verify('secret-pass-123', $credentialPassword),
     'stored=' . substr($credentialPassword, 0, 30));
+$editCredential = http($port2, 'GET', '/credentials/' . $credentialId . '/edit', null, $jar2);
+$editCredentialToken = preg_match('#name="csrf_token" value="([^"]+)"#', $editCredential['body'], $em) ? $em[1] : '';
+$r = http($port2, 'POST', '/credentials/' . $credentialId, [
+    'csrf_token' => $editCredentialToken, '_method' => 'PUT', 'name' => 'Password probe', 'password' => '',
+], $jar2);
+$preservedPassword = (string) $credentialDb->query('SELECT password FROM credentials WHERE id = ' . $credentialId)->fetchColumn();
+ok('H-02 empty password update preserves the existing hash',
+    $r['status'] === 302 && $preservedPassword === $credentialPassword && password_verify('secret-pass-123', $preservedPassword),
+    'status=' . $r['status']);
+$r = http($port2, 'POST', '/credentials/' . $credentialId, [
+    'csrf_token' => $editCredentialToken, '_method' => 'PUT', 'name' => 'Password probe', 'password' => 'new-secret-456',
+], $jar2);
+$changedPassword = (string) $credentialDb->query('SELECT password FROM credentials WHERE id = ' . $credentialId)->fetchColumn();
+ok('H-02 new password update stores a new valid hash',
+    $r['status'] === 302 && password_verify('new-secret-456', $changedPassword) && !password_verify('secret-pass-123', $changedPassword),
+    'status=' . $r['status']);
 foreach ([
     '/credentials' => 'index',
     '/credentials/' . $credentialId => 'show',
@@ -1510,6 +1526,17 @@ $r = http($port2, 'GET', '/api/credentials', null, $jar2, null, null, ['Accept: 
 $credentialJson = json_decode($r['body'], true);
 ok('H-02 API JSON omits password fields',
     $r['status'] === 200 && is_array($credentialJson) && !array_key_exists('password', $credentialJson[0] ?? []),
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 180));
+$apiCredentialJar = [];
+$r = http($port2, 'POST', '/api/credentials', null, $apiCredentialJar,
+    '{"name":"API Password probe","password":"api-secret-pass"}', 'application/json', ['Accept: application/json']);
+$apiCredentialDb = $credentialDb->prepare('SELECT password FROM credentials WHERE name = ?');
+$apiCredentialDb->execute(['API Password probe']);
+$apiCredentialPassword = (string) $apiCredentialDb->fetchColumn();
+ok('H-02 API CRUD stores a hashed password and omits it from JSON',
+    $r['status'] === 201
+        && password_verify('api-secret-pass', $apiCredentialPassword)
+        && !array_key_exists('password', json_decode($r['body'], true) ?: []),
     'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 180));
 
 // 1.1 negative: a resource model with NO $fillable/$rules must fail loudly, never write.
