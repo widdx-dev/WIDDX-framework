@@ -1638,8 +1638,9 @@ $r = http($port2, 'POST', '/notes', null, $jar2, json_encode(['title' => 'x']), 
 ok('1.3 JSON client gets 419 as JSON not HTML', $r['status'] === 419 && str_contains($r['body'], 'CSRF token mismatch'), substr($r['body'], 0, 120));
 $r = http($port2, 'POST', '/notes', ['csrf_token[]' => 'x', 'title' => 'arr'], $jar2);
 ok('1.3 array csrf_token is 419, never a warning/500', $r['status'] === 419, 'status=' . $r['status']);
-$r = http($port2, 'POST', '/api/secrets', ['secret' => 's'], $jar2);
-ok('1.3 /api group has NO CSRF (401 auth gate, not 419)', $r['status'] === 401, 'status=' . $r['status']);
+$jarApiGuest = [];
+$r = http($port2, 'POST', '/api/secrets', ['secret' => 's'], $jarApiGuest);
+ok('1.3 stateless API guest reaches the 401 auth gate (not 419)', $r['status'] === 401, 'status=' . $r['status']);
 
 file_put_contents($proj2 . '/routes/web.php', "\nauthRoutes();\n", FILE_APPEND);
 $r = http($port2, 'GET', '/login', null, $jar2);
@@ -1677,8 +1678,12 @@ ok('1.5 APP_DEBUG unset → friendly 500, no trace leak', $r['status'] === 500 &
 $r = http($port2, 'GET', '/it-boom', null, $jar2, null, null, ['Accept: application/json']);
 ok('1.5 JSON 500 hides the message when debug off', $r['status'] === 500 && str_contains($r['body'], 'Internal Server Error') && !str_contains($r['body'], 'SECRET-TRACE-15'), substr($r['body'], 0, 150));
 
-// 2.3: JSON body parse + bearer token over real HTTP (api group => no CSRF).
-$r = http($port2, 'POST', '/api/it-json', null, $jar2, '{"name":"Ada","age":30}', 'application/json', ['Authorization: Bearer tok-2-3']);
+// 2.3: JSON body parse + bearer token over real HTTP. This browser-like
+// client has a session cookie, so it also sends the CSRF token.
+$r = http($port2, 'GET', '/api/it-csrf-token', null, $jar2);
+$csrfApi23 = (string) (json_decode($r['body'], true)['token'] ?? '');
+$r = http($port2, 'POST', '/api/it-json', null, $jar2, '{"name":"Ada","age":30}', 'application/json',
+    ['Authorization: Bearer tok-2-3', 'X-CSRF-TOKEN: ' . $csrfApi23]);
 $d23 = json_decode($r['body'], true);
 ok('2.3 JSON body parses into input()/json() over HTTP', $r['status'] === 200 && ($d23['name'] ?? null) === 'Ada' && ($d23['age'] ?? null) === 30, 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
 ok('2.3 bearerToken() reads Authorization header', ($d23['bearer'] ?? null) === 'tok-2-3', substr($r['body'], 0, 150));
@@ -1696,7 +1701,8 @@ $r = http($port2, 'POST', '/api/it-csrf', null, $jar2, '{"value":"valid"}', 'app
 ok('H-01 API session write with valid CSRF header succeeds',
     $r['status'] === 200 && str_contains($r['body'], '"mutated":true'),
     'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 160));
-$r = http($port2, 'POST', '/api/it-json', null, $jar2, '{not valid json', 'application/json');
+$r = http($port2, 'POST', '/api/it-json', null, $jar2, '{not valid json', 'application/json',
+    ['X-CSRF-TOKEN: ' . $csrfApi23]);
 ok('2.3 malformed JSON body is a clean 400 (not 500, not silent empty)', $r['status'] === 400, 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
 
 // 2.4 HEAD / OPTIONS over real HTTP against the /notes resource.
