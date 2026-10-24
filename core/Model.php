@@ -266,7 +266,11 @@ abstract class Model implements \JsonSerializable
     {
         $all = $this->fillable === ['*'];
         foreach ($data as $key => $value) {
-            if ($key === $this->primaryKey || !$this->isSensitiveFieldAllowed((string) $key)) {
+            // A literal ['*'] is the framework's documented explicit
+            // allow-all opt-in. Narrow fillable lists still need each sensitive
+            // field named in $sensitiveFillable.
+            if ($key === $this->primaryKey
+                || (!$this->isSensitiveFieldAllowed((string) $key) && !$all)) {
                 continue;
             }
             if ($key === 'password' && $this->exists && ($value === '' || $value === null)) {
