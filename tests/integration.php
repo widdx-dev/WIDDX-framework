@@ -1161,6 +1161,10 @@ ok('failed_jobs lists the dead job', $code === 0 && str_contains($out, 'ItFailin
 ok('queue:retry re-queues', $code === 0 && str_contains($out, 'Re-queued 1'), $out);
 
 // 4) scheduler: one entry, bucket state prevents double-run
+// Minimal project scaffolds may not have created this runtime directory yet.
+if (!is_dir($proj . '/storage/app')) {
+    mkdir($proj . '/storage/app', 0775, true);
+}
 file_put_contents($proj . '/routes/console.php', <<<'PHP'
 <?php
 \Widdx\Schedule::call(function () {
