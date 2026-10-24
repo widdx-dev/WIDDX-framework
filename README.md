@@ -259,8 +259,10 @@ need to.
 ### 8. CSRF Protection
 
 CSRF + security headers are **already on** for every route in `routes/web.php` (the
-ambient `web` group in `core/App.php`). Routes under `/api/...` are the `api` group,
-empty by default. Do not register them again — that runs the middleware twice.
+ambient `web` group in `core/App.php`). Routes under `/api/...` also receive these
+middlewares by default. API writes require a CSRF token when the request carries the
+PHP session cookie; stateless API clients without that cookie remain CSRF-exempt.
+Do not register the default middleware again — that runs it twice.
 
 ```php
 // Only needed to change what a group contains (this replaces it — CSRF stays,
@@ -275,6 +277,18 @@ post('/users', [UserController::class, 'store'])->middleware(\Widdx\CsrfMiddlewa
     <?= csrf_field() ?>
     ...
 </form>
+
+// For a browser SPA, expose a token using your own GET route:
+get('/api/csrf-token', fn() => Response::json(['token' => csrf_token()]));
+// Then send it on writes that include the session cookie:
+fetch('/api/posts', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': token },
+    body: JSON.stringify({ title: 'Hello' })
+});
+// The framework accepts X-CSRF-TOKEN, csrf_token, or _token. Compare is
+// constant-time. If you override the api group, that override replaces defaults.
 ```
 
 ### 9. Events
