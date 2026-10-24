@@ -1806,7 +1806,7 @@ $r = http($port2, 'GET', '/api/it-csrf-token', null, $jarOtherH01);
 $otherTokenH01 = (string) (json_decode($r['body'], true)['token'] ?? '');
 $r = http($port2, 'POST', '/api/it-csrf', null, $jar2, '{"value":"wrong-session"}', 'application/json',
     ['X-CSRF-TOKEN: ' . $otherTokenH01, 'Accept: application/json']);
-ok('H-01 token from another authenticated session is rejected', $r['status'] === 419, 'status=' . $r['status');
+ok('H-01 token from another authenticated session is rejected', $r['status'] === 419, 'status=' . $r['status']);
 $r = http($port2, 'POST', '/api/it-json', null, $jar2, '{not valid json', 'application/json',
     ['X-CSRF-TOKEN: ' . $csrfApi23]);
 ok('2.3 malformed JSON body is a clean 400 (not 500, not silent empty)', $r['status'] === 400, 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
