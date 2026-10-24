@@ -2335,12 +2335,13 @@ test('2.25 DEPLOY-01 C: demo start stays public, --no-demo starts fail-closed, m
     // The decision a guest is actually given comes from Route::isPublic() (GatesCrudActions
     // reads it, Router::currentRouteIsPublic() carries it), so read it off the routes the
     // generated file registers rather than off the text of that file.
-    $usersPublicFlags = static function (string $file): array {
+    $usersPublicFlags = static function (string $file, string $resourceName = 'users'): array {
         \Widdx\Router::reset();
         require $file;
         $flags = [];
+        $prefix = '/' . $resourceName;
         foreach (\Widdx\Router::getInstance()->all() as $r) {
-            if ($r->uri === '/users' || str_starts_with($r->uri, '/users/')) {
+            if ($r->uri === $prefix || str_starts_with($r->uri, $prefix . '/')) {
                 $flags[] = $r->isPublic();
             }
         }
@@ -2373,6 +2374,16 @@ test('2.25 DEPLOY-01 C: demo start stays public, --no-demo starts fail-closed, m
             assert_equals(0, $mig, "{$label} php widdx migrate exits 0: " . $migOut);
             assert_true(is_file($proj . '/database.sqlite'), "{$label} migrate created database.sqlite");
         }
+
+        // 3b. make:crud must generate protected routes unless the developer opts in.
+        [$crudExit, $crudOut] = $run($demo, $php . ' widdx make:crud Post title:string');
+        assert_equals(0, $crudExit, 'php widdx make:crud exits 0: ' . $crudOut);
+        $generatedRoutes = (string) file_get_contents($demo . '/routes/web.php');
+        assert_true(str_contains($generatedRoutes, "resource('posts');"), 'make:crud emits a protected posts resource');
+        assert_true(!str_contains($generatedRoutes, "resource('posts')->public()"), 'make:crud does not opt generated CRUD into public access');
+        $postFlags = $usersPublicFlags($demo . '/routes/web.php', 'posts');
+        assert_equals(7, count($postFlags), 'generated posts resource registers 7 routes');
+        assert_true(count($postFlags) > 0 && !in_array(true, $postFlags, true), 'all generated posts routes are protected by default');
 
         // 4. guest access: demo is open, --no-demo is fail-closed on all seven routes.
         $demoFlags = $usersPublicFlags($demo . '/routes/web.php');
