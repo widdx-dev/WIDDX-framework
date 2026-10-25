@@ -453,8 +453,8 @@ get('/', fn() => ['app' => config('app.name'), 'status' => 'ok']);
 
 // The same zero-code JSON CRUD, but the fail-closed gate stays ON: every call
 // needs a logged-in caller (401 for guests) or an App\Policies\UserPolicy.
-// 'php widdx make:auth' installs the login; 'php widdx new <name>' without the
-// flag is the demo start, where /users is open to guests.
+// 'php widdx make:auth' installs the login. Public demo access is explicit:
+// use 'php widdx new <name> --demo' only for a throwaway local demo.
 apiResource('users');
 PHP);
         }
