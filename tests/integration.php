@@ -358,6 +358,9 @@ ok('generated shared-hosting rewrite stops before prefixing public twice',
     $publicPass !== false && $publicFallback !== false && $publicPass < $publicFallback);
 ok('generated shared-hosting config denies private source directories',
     str_contains($generatedHtaccess, 'RewriteRule ^(?:app|core|config|database|vendor|polyfill|tests|routes'));
+ok('source and generated rewrite guards block hidden paths without breaking ACME',
+    str_contains($generatedHtaccess, 'RewriteRule (^|/)\\.(?!well-known(?:/|$)) - [F,L,NC]')
+        && str_contains($sourceHtaccess, 'RewriteRule (^|/)\\.(?!well-known(?:/|$)) - [F,L,NC]'));
 
 $sourceHtaccess = (string) @file_get_contents($ROOT . '/.htaccess');
 $sourcePublicPass = strpos($sourceHtaccess, 'RewriteRule ^public/ - [L]');
