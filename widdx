@@ -1297,7 +1297,8 @@ PHP);
         echo "  - Migration: database/migrations/{$filename}\n";
         echo "  - Views: views/{$table}/{index,create,show,edit}.php\n";
         echo "\nAdd to routes/web.php:\n";
-        echo "  resource('{$table}', {$name}Controller::class)->public();\n";
+        echo "  resource('{$table}', {$name}Controller::class);\n";
+        echo "  Add ->public() only if this resource is intentionally public to guests.\n";
         break;
     }
 
