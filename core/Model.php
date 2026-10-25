@@ -222,7 +222,7 @@ abstract class Model implements \JsonSerializable
     {
         // An empty password means "keep the current credential" on existing
         // models, including direct property assignment (not only fill()).
-        if ($name === 'password' && $this->exists && ($value === '' || $value === null)) {
+        if (strtolower($name) === 'password' && $this->exists && ($value === '' || $value === null)) {
             return;
         }
         $this->attributes[$name] = $value;
@@ -276,7 +276,7 @@ abstract class Model implements \JsonSerializable
             if ($key === $this->primaryKey || !$this->isSensitiveFieldAllowed((string) $key)) {
                 continue;
             }
-            if ($key === 'password' && $this->exists && ($value === '' || $value === null)) {
+            if (strtolower((string) $key) === 'password' && $this->exists && ($value === '' || $value === null)) {
                 continue;
             }
             if (!$all && !in_array($key, $this->fillable, true)) {
@@ -430,12 +430,15 @@ abstract class Model implements \JsonSerializable
 
     public function save(): bool
     {
-        // Hash plaintext passwords on ordinary model/CRUD/API writes. Leave
-        // recognized hashes intact so existing Auth hashes are never re-hashed.
-        if (isset($this->attributes['password']) && is_string($this->attributes['password']) && $this->attributes['password'] !== '') {
-            $password = $this->attributes['password'];
-            if ((password_get_info($password)['algo'] ?? null) === null) {
-                $this->attributes['password'] = password_hash($password, PASSWORD_DEFAULT);
+        // Hash plaintext password attributes case-insensitively. This also
+        // prevents a case-variant key from bypassing hashing on drivers whose
+        // column identifiers are case-insensitive. Preserve recognized hashes.
+        foreach ($this->attributes as $key => $value) {
+            if (strtolower((string) $key) !== 'password' || !is_string($value) || $value === '') {
+                continue;
+            }
+            if ((password_get_info($value)['algo'] ?? null) === null) {
+                $this->attributes[$key] = password_hash($value, PASSWORD_DEFAULT);
             }
         }
 
@@ -635,11 +638,14 @@ abstract class Model implements \JsonSerializable
     {
         $data = $this->attributes;
         $hidden = array_unique(array_merge(
-            ['password', 'password_confirmation'],
             $this->hidden,
             array_values(array_filter(
                 array_keys($data),
-                static fn($key): bool => preg_match('/(?:^|_)token$/i', (string) $key) === 1
+                static function ($key): bool {
+                    $key = (string) $key;
+                    return in_array(strtolower($key), ['password', 'password_confirmation'], true)
+                        || preg_match('/(?:^|_)token$/i', $key) === 1;
+                }
             ))
         ));
         foreach ($hidden as $h) {
