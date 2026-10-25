@@ -225,14 +225,14 @@ function create_project(string $name, bool $isApi = false, bool $withDemo = true
     write_file("{$base}/.htaccess", <<<'HTACCESS'
 Options -Indexes
 
-<FilesMatch "^(?i:\\.env(?:\\..*)?|composer\\.(?:json|lock)|database\\.sqlite|widdx(?:-test)?|phpstan(?:\\.dist)?\\.neon)$">
+<FilesMatch "^(?i:\.env(?:\..*)?|composer\.(?:json|lock)|database\.sqlite|widdx(?:-test)?|phpstan(?:\.dist)?\.neon)$">
     Require all denied
 </FilesMatch>
 
 <IfModule mod_rewrite.c>
     RewriteEngine On
-    RewriteRule ^(?:app|core|config|database|vendor|polyfill|tests|routes|\\.agents|\\.git)(?:/|$) - [F,L,NC]
-    RewriteRule ^(?:\\.env(?:\\..*)?|composer\\.(?:json|lock)|database\\.sqlite|widdx(?:-test)?|phpstan(?:\\.dist)?\\.neon|README(?:\\.md)?|AGENTS\\.md|CHANGELOG\\.md|LICENSE|\\.gitignore)$ - [F,L,NC]
+    RewriteRule ^(?:app|core|config|database|vendor|polyfill|tests|routes|\.agents|\.git)(?:/|$) - [F,L,NC]
+    RewriteRule ^(?:\.env(?:\..*)?|composer\.(?:json|lock)|database\.sqlite|widdx(?:-test)?|phpstan(?:\.dist)?\.neon|README(?:\.md)?|AGENTS\.md|CHANGELOG\.md|LICENSE|\.gitignore)$ - [F,L,NC]
     RewriteRule ^public/ - [L]
     RewriteRule ^(.*)$ public/$1 [L]
 </IfModule>
