@@ -12,11 +12,12 @@ The framework folder is the tool. All `php widdx …` commands need you to be IN
 Have PHP on your machine? Type:
 
 ```
-php widdx new myapp
+php widdx new myapp --demo
 ```
 
-Starting a REAL app rather than trying the demo? `php widdx new myapp --no-demo` scaffolds the same
-project with `resource('users')` NOT public, so guests are redirected to `/login` instead of seeing CRUD.
+This is a local demo only: `--demo` intentionally opens the sample `users` CRUD to guests. For a REAL app,
+use `php widdx new myapp` without flags; the secure default keeps `resource('users')` protected until you
+configure authentication and policies.
 
 No PHP on your machine? Download/zip this folder and unzip it. Same result.
 
@@ -34,7 +35,7 @@ To run the app:
 php widdx serve
 ```
 
-Open http://localhost:8000 — it already works (demo user CRUD exists).
+Open http://localhost:8000. In the demo created with `--demo`, `/users` is public; a normal project keeps CRUD protected by default.
 
 To put data in the database for the first time:
 
