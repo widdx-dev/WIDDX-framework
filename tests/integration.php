@@ -351,6 +351,7 @@ ok('scaffold generates a useful .gitignore', is_file($proj . '/.gitignore')
     && str_contains($generatedIgnore, '!/.env.example')
     && !str_contains($generatedIgnore, 'composer.lock'));
 
+$sourceHtaccess = (string) @file_get_contents($ROOT . '/.htaccess');
 $generatedHtaccess = (string) @file_get_contents($proj . '/.htaccess');
 $publicPass = strpos($generatedHtaccess, 'RewriteRule ^public/ - [L]');
 $publicFallback = strpos($generatedHtaccess, 'RewriteRule ^(.*)$ public/$1 [L]');
@@ -362,7 +363,6 @@ ok('source and generated rewrite guards block hidden paths without breaking ACME
     str_contains($generatedHtaccess, 'RewriteRule (^|/)\\.(?!well-known(?:/|$)) - [F,L,NC]')
         && str_contains($sourceHtaccess, 'RewriteRule (^|/)\\.(?!well-known(?:/|$)) - [F,L,NC]'));
 
-$sourceHtaccess = (string) @file_get_contents($ROOT . '/.htaccess');
 $sourcePublicPass = strpos($sourceHtaccess, 'RewriteRule ^public/ - [L]');
 $sourcePublicFallback = strpos($sourceHtaccess, 'RewriteRule ^(.*)$ public/$1 [L]');
 ok('framework root rewrite also prevents a public/public loop',
