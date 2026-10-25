@@ -97,6 +97,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $appUrl = (string) ($v['APP_URL'] ?? '');
             $urlParts = $appUrl !== '' ? parse_url($appUrl) : false;
             if (!is_array($urlParts)
+                || filter_var($appUrl, FILTER_VALIDATE_URL) === false
                 || !isset($urlParts['scheme'], $urlParts['host'])
                 || !in_array(strtolower((string) $urlParts['scheme']), ['http', 'https'], true)
                 || isset($urlParts['user']) || isset($urlParts['pass']) || isset($urlParts['query']) || isset($urlParts['fragment'])) {
