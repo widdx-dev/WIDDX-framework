@@ -99,7 +99,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             if (!is_array($urlParts)
                 || !isset($urlParts['scheme'], $urlParts['host'])
                 || !in_array(strtolower((string) $urlParts['scheme']), ['http', 'https'], true)
-                || isset($urlParts['user'], $urlParts['pass'], $urlParts['query'], $urlParts['fragment'])) {
+                || isset($urlParts['user']) || isset($urlParts['pass']) || isset($urlParts['query']) || isset($urlParts['fragment'])) {
                 throw new RuntimeException('رابط الموقع الأساسي مطلوب. أدخل رابطًا كاملًا يبدأ بـ https:// أو http://، دون بيانات دخول أو query أو fragment.');
             }
             if (($v['DB_CONNECTION'] ?? 'sqlite') === 'sqlite') {
