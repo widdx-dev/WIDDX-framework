@@ -1408,7 +1408,8 @@ file_put_contents($proj2 . '/routes/web.php', "\napiResource('credentials')->pub
 file_put_contents($proj2 . '/routes/web.php', "\nget('/it-boom', function () { throw new \\RuntimeException('SECRET-TRACE-15'); });\n", FILE_APPEND);
 
 // 2.3: JSON / bearer handling over real HTTP. Registered up front (same reason
-// as /it-boom) and it lives under /api, so it is in the csrf-free `api` group.
+// as /it-boom). Under /api, browser requests with a session cookie require CSRF;
+// stateless API clients without that cookie remain exempt.
 file_put_contents(
     $proj2 . '/routes/web.php',
     "\npost('/api/it-json', function () {\n    \$r = request();\n    return \\Widdx\\Response::json(['name' => \$r->input('name'), 'bearer' => \$r->bearerToken(), 'age' => \$r->json('age')]);\n});\n",
