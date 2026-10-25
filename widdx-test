@@ -2462,7 +2462,7 @@ test('2.25 DEPLOY-01 C: secure scaffold is default, --demo opts into public CRUD
         [$resourceExit, $resourceOut] = $run($secure, $php . ' widdx make:resource ReportCard');
         assert_equals(0, $resourceExit, 'php widdx make:resource exits 0: ' . $resourceOut);
         assert_true(
-            str_contains($resourceOut, "resource('reportcards', ReportCardController::class);"),
+            str_contains($resourceOut, "resource('reportcards', \\App\\Controllers\\ReportCardController::class);"),
             'make:resource prints a protected resource route'
         );
         assert_true(
