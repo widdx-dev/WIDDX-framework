@@ -118,8 +118,8 @@ jobs:
           sudo a2enmod rewrite
           sudo mkdir -p /var/www/html/portable
           sudo cp -a "$GITHUB_WORKSPACE/portable/." /var/www/html/portable/
-          printf 'rewrite-ok\\n' | sudo tee /var/www/html/portable/public/__apache_rewrite_probe.txt >/dev/null
-          printf 'APP_SECRET=must-not-be-served\\n' | sudo tee /var/www/html/portable/.env >/dev/null
+          printf '%s\n' 'rewrite-ok' | sudo tee /var/www/html/portable/public/__apache_rewrite_probe.txt >/dev/null
+          printf '%s\n' 'APP_SECRET=must-not-be-served' | sudo tee /var/www/html/portable/.env >/dev/null
           sudo sed -i 's#DocumentRoot /var/www/html#DocumentRoot /var/www/html/portable#' /etc/apache2/sites-available/000-default.conf
           sudo tee -a /etc/apache2/apache2.conf >/dev/null <<'APACHE'
           <Directory /var/www/html/portable>
