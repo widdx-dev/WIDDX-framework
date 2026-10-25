@@ -1506,6 +1506,14 @@ $r = http($port2, 'POST', '/install.php', [
     'DB_CONNECTION' => 'sqlite', 'DB_SQLITE_PATH' => $proj2 . '/host.sqlite',
 ], $jar2);
 ok('1.10 wrong install key is refused', $r['status'] === 200 && !is_file($proj2 . '/.env') && str_contains($r['body'], 'مفتاح التنصيب'), substr($r['body'], 0, 150));
+$r = http($port2, 'POST', '/install.php', [
+    'action' => 'install', 'installer_token' => (string) $tok10, 'install_key' => $key10,
+    'DB_CONNECTION' => 'sqlite', 'DB_SQLITE_PATH' => $proj2 . '/host.sqlite',
+], $jar2);
+ok('installer refuses to write .env when canonical APP_URL is missing',
+    $r['status'] === 200 && !is_file($proj2 . '/.env')
+        && str_contains($r['body'], 'رابط الموقع الأساسي مطلوب'),
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 160));
 
 $r = http($port2, 'GET', '/', null, $jar2);
 ok('welcome page reachable pre-install', $r['status'] === 200);
