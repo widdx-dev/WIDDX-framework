@@ -2457,6 +2457,19 @@ test('2.25 DEPLOY-01 C: secure scaffold is default, --demo opts into public CRUD
         assert_equals(7, count($postFlags), 'generated posts resource registers 7 routes');
         assert_true(count($postFlags) > 0 && !in_array(true, $postFlags, true), 'all generated posts routes are protected by default');
 
+        // The controller/view generator must not print a public route as its default,
+        // otherwise a copied snippet would bypass the secure scaffold defaults.
+        [$resourceExit, $resourceOut] = $run($secure, $php . ' widdx make:resource ReportCard');
+        assert_equals(0, $resourceExit, 'php widdx make:resource exits 0: ' . $resourceOut);
+        assert_true(
+            str_contains($resourceOut, "resource('reportcards', ReportCardController::class);"),
+            'make:resource prints a protected resource route'
+        );
+        assert_true(
+            !str_contains($resourceOut, "ReportCardController::class)->public()"),
+            'make:resource does not opt into public access by default'
+        );
+
         // 4. guest access: --demo is open; the secure default is fail-closed on all seven routes.
         $demoFlags = $usersPublicFlags($demo . '/routes/web.php');
         assert_equals(7, count($demoFlags), 'demo users resource registers 7 routes');
