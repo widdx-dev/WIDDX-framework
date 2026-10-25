@@ -1843,6 +1843,19 @@ $otherTokenH01 = (string) (json_decode($r['body'], true)['token'] ?? '');
 $r = http($port2, 'POST', '/api/it-csrf', null, $jar2, '{"value":"wrong-session"}', 'application/json',
     ['X-CSRF-TOKEN: ' . $otherTokenH01, 'Accept: application/json']);
 ok('H-01 token from another authenticated session is rejected', $r['status'] === 419, 'status=' . $r['status']);
+
+// A guest can still have a PHP session cookie after requesting a CSRF token.
+// Cookie-bearing API writes must require CSRF even before login; Auth::guest()
+// must not create a bypass for public API endpoints.
+$jarGuestSessionH01 = [];
+$r = http($port2, 'GET', '/api/it-csrf-token', null, $jarGuestSessionH01);
+$guestSessionTokenH01 = (string) (json_decode($r['body'], true)['token'] ?? '');
+ok('H-01 guest can obtain a session-bound CSRF token', $r['status'] === 200 && strlen($guestSessionTokenH01) >= 32,
+    'status=' . $r['status'] . ' tokenLength=' . strlen($guestSessionTokenH01));
+$r = http($port2, 'POST', '/api/it-csrf', ['value' => 'guest-no-token'], $jarGuestSessionH01);
+ok('H-01 guest session-cookie API write without CSRF is rejected', $r['status'] === 419,
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
+
 $r = http($port2, 'POST', '/api/it-json', null, $jar2, '{not valid json', 'application/json',
     ['X-CSRF-TOKEN: ' . $csrfApi23]);
 ok('2.3 malformed JSON body is a clean 400 (not 500, not silent empty)', $r['status'] === 400, 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
