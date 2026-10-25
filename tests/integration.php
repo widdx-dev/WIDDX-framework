@@ -348,6 +348,7 @@ ok('scaffold generates a useful .gitignore', is_file($proj . '/.gitignore')
     && str_contains($generatedIgnore, '/vendor/')
     && str_contains($generatedIgnore, '/storage/app/*')
     && str_contains($generatedIgnore, '!/storage/app/.gitkeep')
+    && str_contains($generatedIgnore, '!/.env.example')
     && !str_contains($generatedIgnore, 'composer.lock'));
 
 $generatedHtaccess = (string) @file_get_contents($proj . '/.htaccess');
@@ -1411,6 +1412,7 @@ ok('secure scaffold ignores secrets/runtime files but keeps composer.lock tracka
         && str_contains($hostIgnore, '/.env')
         && str_contains($hostIgnore, '/database.sqlite')
         && str_contains($hostIgnore, '/storage/sessions/*')
+        && str_contains($hostIgnore, '!/.env.example')
         && !str_contains($hostIgnore, 'composer.lock'));
 $hostAppConfig = (string) @file_get_contents($proj2 . '/config/app.php');
 ok('generated config reads APP_URL from environment',
