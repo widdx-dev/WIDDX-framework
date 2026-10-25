@@ -1665,7 +1665,7 @@ test('Auth: register + email verification + password reset lifecycle', function 
     assert_true(password_verify('supersecret1', (string) $user->password), 'password is stored as a verifiable hash');
     assert_true(!array_key_exists('password', $user->toArray()), 'password is omitted from model serialization');
 
-    $passwordCaseProbe = new class extends \\Widdx\\Model {};
+    $passwordCaseProbe = new class extends \Widdx\Model {};
     $passwordCaseProbe->Password = 'case-variant-secret';
     assert_true(!array_key_exists('Password', $passwordCaseProbe->toArray()), 'case-variant password attributes are omitted from serialization');
 
