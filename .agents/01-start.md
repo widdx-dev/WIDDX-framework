@@ -29,19 +29,14 @@ cd myapp
 
 SQLite is the default database. It needs zero setup. The file appears by itself.
 
-To run the app:
+Create the tables before serving the app:
 
 ```
+php widdx migrate
 php widdx serve
 ```
 
 Open http://localhost:8000. In the demo created with `--demo`, `/users` is public; a normal project keeps CRUD protected by default.
-
-To put data in the database for the first time:
-
-```
-php widdx migrate
-```
 
 No terminal at all (shared hosting)? Upload the folder, open `https://yoursite/install.php` in the browser, fill the form. Done.
 
