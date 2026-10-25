@@ -220,6 +220,11 @@ abstract class Model implements \JsonSerializable
 
     public function __set(string $name, mixed $value): void
     {
+        // An empty password means "keep the current credential" on existing
+        // models, including direct property assignment (not only fill()).
+        if ($name === 'password' && $this->exists && ($value === '' || $value === null)) {
+            return;
+        }
         $this->attributes[$name] = $value;
     }
 
