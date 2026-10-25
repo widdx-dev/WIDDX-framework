@@ -1469,7 +1469,7 @@ file_put_contents(
 
 file_put_contents(
     $proj2 . '/routes/web.php',
-    "\\nget('/it-app-url', fn() => \\\\Widdx\\\\Response::json(['url' => config('app.url')]));\\n",
+    "\nget('/it-app-url', fn() => \\Widdx\\Response::json(['url' => config('app.url')]));\n",
     FILE_APPEND
 );
 
