@@ -313,10 +313,23 @@ function start_server(string $proj, int $port): int
     throw new RuntimeException("server on port {$port} did not start:\n" . @file_get_contents($proj . '/server.log'));
 }
 
-function stop_server(int $pid): void
+function stop_server(int $pid, int $port): void
 {
     @exec('kill ' . (int) $pid . ' 2>/dev/null');
-    usleep(200000);
+
+    // Do not start the replacement while the old worker still owns the port.
+    // Otherwise start_server() can mistake the old listener for the new one,
+    // then the old process exits and all following HTTP probes return status 0.
+    for ($i = 0; $i < 100; $i++) {
+        $s = @stream_socket_client("tcp://127.0.0.1:{$port}", $en, $em, 0.05);
+        if ($s === false) {
+            return;
+        }
+        fclose($s);
+        usleep(50000);
+    }
+
+    throw new RuntimeException("server on port {$port} did not stop after PID {$pid} was killed");
 }
 
 // ------------------------------------------------------- 1. scaffold project
@@ -664,7 +677,7 @@ ok('first two hits pass, third is 429', $codes === [200, 200, 429], json_encode(
 sec('Arabic locale (APP_LOCALE=ar)');
 
 file_put_contents($proj . '/.env', "APP_LOCALE=ar\n");
-stop_server($pid);
+stop_server($pid, $port);
 $port = pick_port();
 $pid = start_server($proj, $port);
 $jar = [];
@@ -1109,7 +1122,7 @@ ok('fk migrations apply', $code === 0, $out);
 // loaded stays loaded: the Book model rewritten by make:crud above would still
 // be the earlier version (no exists rule) and the fk probes below would test a
 // stale class — which is exactly how this section flaked between PHP versions.
-stop_server($pid);
+stop_server($pid, $port);
 // Same port: the $csrf helper captured $port by value, so a new port would make
 // every token it grabs come back empty (419 everywhere).
 $pid = start_server($proj, $port);
@@ -1571,7 +1584,7 @@ file_put_contents(
 file_put_contents($proj2 . '/routes/web.php', "\nresource('probenos')->public();\n", FILE_APPEND);
 // Allow opcache.revalidate_freq to notice the appended route without
 // replacing the running server process (its PID owns the session test fixture).
-stop_server($pid2);
+stop_server($pid2, $port2);
 $pid2 = start_server($proj2, $port2);
 // web group is on by default since 1.3 — reuse a session-valid token.
 $tokP2 = grab_csrf($port2, '/notes/create', $jar2);
@@ -1652,7 +1665,7 @@ resource('publicopens', \App\Controllers\PublicOpenController::class);
 PHP, FILE_APPEND);
 // Route registration is cached by the long-running PHP server's OPcache.
 // Restart instead of sleeping: validate_timestamps may be disabled in CI.
-stop_server($pid2);
+stop_server($pid2, $port2);
 $pid2 = start_server($proj2, $port2);
 $r = http($port2, 'GET', '/mkvault', null, $jar2);
 ok('1.2 probes registered', $r['status'] === 200, 'status=' . $r['status']);
@@ -1714,7 +1727,7 @@ $r = http($port2, 'GET', '/publicopens', null, $jar2);
 ok('1.2 controller \$public = true opens guest access', $r['status'] === 200, 'status=' . $r['status']);
 
 file_put_contents($proj2 . '/routes/web.php', "\nresource('secrets')->public();\n", FILE_APPEND);
-stop_server($pid2);
+stop_server($pid2, $port2);
 $pid2 = start_server($proj2, $port2);
 $r = http($port2, 'GET', '/secrets', null, $jar2);
 ok('1.2 resource()->public() opens the whole group', $r['status'] === 200, 'status=' . $r['status']);
@@ -1744,7 +1757,7 @@ $r = http($port2, 'POST', '/api/secrets', ['secret' => 's'], $jarApiGuest);
 ok('1.3 stateless API guest reaches the 401 auth gate (not 419)', $r['status'] === 401, 'status=' . $r['status']);
 
 file_put_contents($proj2 . '/routes/web.php', "\nauthRoutes();\n", FILE_APPEND);
-stop_server($pid2);
+stop_server($pid2, $port2);
 $pid2 = start_server($proj2, $port2);
 $r = http($port2, 'GET', '/login', null, $jar2);
 $tokL = preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $mL) === 1 ? $mL[1] : '';
@@ -1866,7 +1879,7 @@ if ($drv2 !== 'sqlite') {
     $probePdo->exec('DROP TABLE IF EXISTS it_rollback_probe');
 }
 
-stop_server($pid2);
+stop_server($pid2, $port2);
 
 // 1.10: a LOCKED project whose .env went missing must still refuse 404.
 [$code, $out] = shell('cd ' . escapeshellarg($TMP) . ' && ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($ROOT . '/widdx') . ' new lockonly');
