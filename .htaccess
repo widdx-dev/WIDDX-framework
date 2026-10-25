@@ -3,7 +3,7 @@
 Options -Indexes
 
 # Never serve environment files, dependency manifests, local databases, or CLI tools.
-<FilesMatch "^(?i:\\.env(?:\\..*)?|composer\\.(?:json|lock)|database\\.sqlite|widdx(?:-test)?|phpstan(?:\\.dist)?\\.neon)$">
+<FilesMatch "^(?i:\.env(?:\..*)?|composer\.(?:json|lock)|database\.sqlite|widdx(?:-test)?|phpstan(?:\.dist)?\.neon)$">
     Require all denied
 </FilesMatch>
 
@@ -11,10 +11,10 @@ Options -Indexes
     RewriteEngine On
 
     # Block direct URL access to private project source and metadata directories.
-    RewriteRule ^(?:app|core|config|database|vendor|polyfill|tests|routes|\\.agents|\\.git)(?:/|$) - [F,L,NC]
+    RewriteRule ^(?:app|core|config|database|vendor|polyfill|tests|routes|\.agents|\.git)(?:/|$) - [F,L,NC]
 
     # These root files are development/project internals, not public resources.
-    RewriteRule ^(?:\\.env(?:\\..*)?|composer\\.(?:json|lock)|database\\.sqlite|widdx(?:-test)?|phpstan(?:\\.dist)?\\.neon|README(?:\\.md)?|AGENTS\\.md|CHANGELOG\\.md|LICENSE|\\.gitignore)$ - [F,L,NC]
+    RewriteRule ^(?:\.env(?:\..*)?|composer\.(?:json|lock)|database\.sqlite|widdx(?:-test)?|phpstan(?:\.dist)?\.neon|README(?:\.md)?|AGENTS\.md|CHANGELOG\.md|LICENSE|\.gitignore)$ - [F,L,NC]
 
     # The root rewrite sends requests to public/... internally. Stop here on the
     # next pass, otherwise some Apache configurations rewrite to public/public/...
