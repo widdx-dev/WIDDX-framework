@@ -120,6 +120,9 @@ jobs:
           sudo cp -a "$GITHUB_WORKSPACE/portable/." /var/www/html/portable/
           printf '%s\n' 'rewrite-ok' | sudo tee /var/www/html/portable/public/__apache_rewrite_probe.txt >/dev/null
           printf '%s\n' 'APP_SECRET=must-not-be-served' | sudo tee /var/www/html/portable/.env >/dev/null
+          sudo mkdir -p /var/www/html/portable/public/.well-known/acme-challenge
+          printf '%s\n' 'acme-ok' | sudo tee /var/www/html/portable/public/.well-known/acme-challenge/probe.txt >/dev/null
+          printf '%s\n' 'PUBLIC_SECRET=must-not-be-served' | sudo tee /var/www/html/portable/public/.env >/dev/null
           sudo sed -i 's#DocumentRoot /var/www/html#DocumentRoot /var/www/html/portable#' /etc/apache2/sites-available/000-default.conf
           sudo tee -a /etc/apache2/apache2.conf >/dev/null <<'APACHE'
           <Directory /var/www/html/portable>
@@ -143,6 +146,12 @@ jobs:
 
           env_status="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1/.env)"
           test "$env_status" = "403"
+
+          public_env_status="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1/public/.env)"
+          test "$public_env_status" = "403"
+
+          acme_body="$(curl --fail --silent --show-error http://127.0.0.1/.well-known/acme-challenge/probe.txt)"
+          test "$acme_body" = "acme-ok"
 
           source_status="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1/core/App.php)"
           test "$source_status" = "403"
