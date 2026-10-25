@@ -673,8 +673,9 @@ class Request
     public function validateCsrf(): bool
     {
         Session::start();
-        $raw = $this->input('csrf_token')
-            ?? $this->server['HTTP_X_CSRF_TOKEN']
+        $raw = $this->server['HTTP_X_CSRF_TOKEN']
+            ?? $this->input('csrf_token')
+            ?? $this->input('_token')
             ?? '';
         // csrf_token[]=x arrives as an ARRAY: casting it to string would
         // emit a PHP notice — treat any non-string as simply invalid.

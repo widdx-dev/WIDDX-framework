@@ -20,7 +20,7 @@ include __DIR__ . '/layout-top.php';
 <?php if ($editing): ?><input type="hidden" name="_method" value="PUT"><?php endif; ?>
 <?php foreach ($fields as $f): ?>
     <label for="f_<?= e($f['name']) ?>"><?= e($f['label']) ?><?= $f['required'] ? ' *' : '' ?></label>
-    <?php $current = old($f['name'], $f['value'] ?? null); ?>
+    <?php $current = $f['type'] === 'password' ? '' : old($f['name'], $f['value'] ?? null); ?>
     <?php if ($f['type'] === 'textarea'): ?>
         <textarea id="f_<?= e($f['name']) ?>" name="<?= e($f['name']) ?>" rows="4"><?= e((string) ($current ?? '')) ?></textarea>
     <?php elseif ($f['type'] === 'select'): ?>

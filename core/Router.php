@@ -180,8 +180,9 @@ class Router
     {
         $full = ($this->pendingPrefix !== '' ? $this->pendingPrefix : '') . $uri;
         // Ambient group, with one automatic exception: while routes/web.php
-        // registers into 'web', anything under /api belongs to 'api' instead
-        // (no CSRF — there is no browser form to protect).
+        // registers into 'web', anything under /api belongs to 'api' instead.
+        // The API group protects session-cookie writes with CSRF; stateless
+        // clients without a session cookie remain exempt.
         $group = $this->ambientGroup;
         if ($group === 'web' && (str_starts_with($full, '/api/') || $full === '/api')) {
             $group = 'api';

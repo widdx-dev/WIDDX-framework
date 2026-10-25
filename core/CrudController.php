@@ -111,6 +111,7 @@ abstract class CrudController
         $instance = new $model();
         $rules = $this->rules();
         $names = array_keys($rules) ?: $instance->formColumns();
+        $names = array_values(array_filter($names, fn($name): bool => $instance->isSensitiveFieldAllowed((string) $name)));
         $fields = [];
         foreach ($names as $name) {
             $rule = (string) ($rules[$name] ?? 'string');
@@ -144,7 +145,13 @@ abstract class CrudController
                     $type = 'textarea';
                 }
             }
-            $value = $item?->{$name};
+            if (strtolower((string) $name) === 'password') {
+                $type = 'password';
+                if ($item !== null) {
+                    $required = false;
+                }
+            }
+            $value = strtolower((string) $name) === 'password' ? '' : $item?->{$name};
             if ($type === 'number' && $value !== null && !is_numeric($value)) {
                 $type = 'text'; // varchar column holding numbers-as-text
             }
@@ -239,7 +246,7 @@ abstract class CrudController
         $model = $this->model();
         $item = $model::findOrFail($id);
         $this->authorizeAction('update', $item);
-        $data = $this->inputData();
+        $data = $this->inputData(true);
         $data = $this->persistUploads($data);
         $item->fill($data);
         $item->save();
@@ -312,7 +319,7 @@ abstract class CrudController
         return [
             'routeBase' => $this->routeBase(),
             'title' => $title,
-            'columns' => $instance->formColumns(),
+            'columns' => array_values(array_filter($instance->formColumns(), fn(string $column): bool => strtolower($column) !== 'password' && $instance->isSensitiveFieldAllowed($column))),
             'fields' => $this->fields($item),
             'item' => $item,
         ];

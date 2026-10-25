@@ -113,6 +113,10 @@ class User extends Model
 }
 ```
 
+**Password and sensitive-field defaults:** Widdx hashes plaintext values assigned to a `password` column when the model is saved, including built-in CRUD and API writes. Password fields render as blank `type="password"` inputs and are never included in model JSON; empty password updates preserve the existing hash. The model's `$hidden` list is honored, and token columns ending in `_token` are omitted from serialization by default.
+
+Mass assignment and generated CRUD forms deny privilege fields such as `is_admin`, `role`, `is_staff`, `permissions`, `email_verified_at`, and token columns by default—even when `$fillable = ['*']`. Only opt in when required by listing the field in both `$fillable` and `$sensitiveFillable`, and keep the write behind authorization.
+
 Available methods: `all()`, `find($id)`, `findOrFail($id)`, `create([...])`, `where(...)->get()/first()`, `$m->save()`, `$m->delete()`.
 
 ### 4. Views (`views/`)
@@ -259,8 +263,10 @@ need to.
 ### 8. CSRF Protection
 
 CSRF + security headers are **already on** for every route in `routes/web.php` (the
-ambient `web` group in `core/App.php`). Routes under `/api/...` are the `api` group,
-empty by default. Do not register them again — that runs the middleware twice.
+ambient `web` group in `core/App.php`). Routes under `/api/...` also receive these
+middlewares by default. API writes require a CSRF token when the request carries the
+PHP session cookie; stateless API clients without that cookie remain CSRF-exempt.
+Do not register the default middleware again — that runs the middleware twice.
 
 ```php
 // Only needed to change what a group contains (this replaces it — CSRF stays,
@@ -275,6 +281,18 @@ post('/users', [UserController::class, 'store'])->middleware(\Widdx\CsrfMiddlewa
     <?= csrf_field() ?>
     ...
 </form>
+
+// For a browser SPA, expose a token using your own GET route:
+get('/api/csrf-token', fn() => Response::json(['token' => csrf_token()]));
+// Then send it on writes that include the session cookie:
+fetch('/api/posts', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': token },
+    body: JSON.stringify({ title: 'Hello' })
+});
+// The framework accepts X-CSRF-TOKEN, csrf_token, or _token. Compare is
+// constant-time. If you override the api group, that override replaces defaults.
 ```
 
 ### 9. Events

@@ -20,9 +20,9 @@ static is a fatal error on the first request that touches it.
   Delete many = `Model::where(...)->delete()`.
   The QueryBuilder forms skip `$rules`, `$fillable` AND `updated_at` — they are raw SQL with bindings, and
   they refuse to run without a `where()` first. Prefer `save()` unless you mean to bypass the model.
-- **Model instance methods**: `save delete fill forceFill getFillable validate columns formColumns
+- **Model instance methods**: `save delete fill forceFill getFillable getSensitiveFillable isSensitiveFieldAllowed validate columns formColumns
   getTable getPrimaryKey relationLoaded setRelation getRelation toArray toJson
-  hasMany hasOne belongsTo belongsToMany`. `columns()` is an INSTANCE method — `Post::columns()` is fatal.
+  hasMany hasOne belongsTo belongsToMany`. `columns()` is an INSTANCE method — `Post::columns()` is fatal. Sensitive fields are blocked by default; explicit opt-in requires both `$fillable` and `$sensitiveFillable`.
 - **QueryBuilder** (what `Model::query()` / `Model::where()` / `db('users')` gives you):
   `select allowColumns where orWhere orderBy limit offset with get first find insert update delete
   count exists toSelectSql`. There is NO `pluck chunk sum avg min max in whereRaw groupBy having join`.

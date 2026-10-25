@@ -19,11 +19,19 @@ trait HandlesCrudInput
     /**
      * @return array<string,mixed> safe mass-assignment payload
      */
-    protected function inputData(): array
+    protected function inputData(bool $updating = false): array
     {
         $rules = $this->rules();
         if ($rules !== []) {
-            return request()->validate($rules);
+            $skipPassword = $updating && (request()->input('password') === null || request()->input('password') === '');
+            if ($skipPassword) {
+                unset($rules['password']);
+            }
+            $data = $rules !== [] ? request()->validate($rules) : [];
+            if ($skipPassword) {
+                unset($data['password']);
+            }
+            return $data;
         }
 
         /** @var \Widdx\Model $model */
@@ -40,6 +48,7 @@ trait HandlesCrudInput
 
         $columns = $instance->columns();
         $keys = $fillable === ['*'] ? $columns : array_values(array_intersect($fillable, $columns));
+        $keys = array_values(array_filter($keys, fn(string $key): bool => $instance->isSensitiveFieldAllowed($key)));
 
         $all = request()->all();
         $data = [];

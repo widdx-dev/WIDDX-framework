@@ -104,12 +104,12 @@ class App
 
         // Load routes (registered via global get/post/... functions).
         // Default middleware groups — secure by construction:
-        //   web = CSRF + security headers (routes/web.php lives in it)
-        //   api = nothing extra (token-based clients have no form to protect)
-        // A project can redefine either with Router::middlewareGroup('web', [...])
-        // inside routes/web.php — registration happens per route, at require time.
+        //   web = CSRF + security headers
+        //   api = CSRF for requests carrying the session cookie + security headers
+        // Stateless API clients without a session cookie remain CSRF-exempt.
+        // A project can replace either default with Router::middlewareGroup(...).
         Router::middlewareGroup('web', [CsrfMiddleware::class, SecurityHeaders::class]);
-        Router::middlewareGroup('api', []);
+        Router::middlewareGroup('api', [CsrfMiddleware::class, SecurityHeaders::class]);
         $routesFile = $basePath . '/routes/web.php';
         if (is_file($routesFile)) {
             $router = Router::getInstance();

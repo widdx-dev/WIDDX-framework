@@ -98,7 +98,7 @@ abstract class ApiCrudController
         if ($deny = $this->deny('update', $item)) {
             return $deny;
         }
-        $item->fill($this->inputData());
+        $item->fill($this->inputData(true));
         $item->save();
         return Response::json($item->toArray());
     }

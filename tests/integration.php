@@ -313,10 +313,23 @@ function start_server(string $proj, int $port): int
     throw new RuntimeException("server on port {$port} did not start:\n" . @file_get_contents($proj . '/server.log'));
 }
 
-function stop_server(int $pid): void
+function stop_server(int $pid, int $port): void
 {
     @exec('kill ' . (int) $pid . ' 2>/dev/null');
-    usleep(200000);
+
+    // Do not start the replacement while the old worker still owns the port.
+    // Otherwise start_server() can mistake the old listener for the new one,
+    // then the old process exits and all following HTTP probes return status 0.
+    for ($i = 0; $i < 100; $i++) {
+        $s = @stream_socket_client("tcp://127.0.0.1:{$port}", $en, $em, 0.05);
+        if ($s === false) {
+            return;
+        }
+        fclose($s);
+        usleep(50000);
+    }
+
+    throw new RuntimeException("server on port {$port} did not stop after PID {$pid} was killed");
 }
 
 // ------------------------------------------------------- 1. scaffold project
@@ -664,7 +677,7 @@ ok('first two hits pass, third is 429', $codes === [200, 200, 429], json_encode(
 sec('Arabic locale (APP_LOCALE=ar)');
 
 file_put_contents($proj . '/.env', "APP_LOCALE=ar\n");
-stop_server($pid);
+stop_server($pid, $port);
 $port = pick_port();
 $pid = start_server($proj, $port);
 $jar = [];
@@ -1109,7 +1122,7 @@ ok('fk migrations apply', $code === 0, $out);
 // loaded stays loaded: the Book model rewritten by make:crud above would still
 // be the earlier version (no exists rule) and the fk probes below would test a
 // stale class — which is exactly how this section flaked between PHP versions.
-stop_server($pid);
+stop_server($pid, $port);
 // Same port: the $csrf helper captured $port by value, so a new port would make
 // every token it grabs come back empty (419 everywhere).
 $pid = start_server($proj, $port);
@@ -1374,6 +1387,19 @@ ok('make:crud in hostapp exits 0', $code === 0, $out);
 // explicit test-fixture choice, not the generator's default.
 integration_public_resource($proj2, 'notes');
 
+[$code, $out] = shell('cd ' . escapeshellarg($proj2) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Credential name:string password:string is_admin:boolean? role:string? email_verified_at:string? remember_token:string? api_token:string? permissions:string?');
+ok('make:crud Credential password fixture exits 0', $code === 0, $out);
+$credentialModelSource = (string) file_get_contents($proj2 . '/app/Models/Credential.php');
+preg_match('/protected array \$fillable = \[([^\]]*)\];/', $credentialModelSource, $credentialFillableMatch);
+$credentialFillable = $credentialFillableMatch[1] ?? '';
+ok('H-02 generated fillable excludes privilege and token fields',
+    !str_contains($credentialFillable, "'is_admin'") && !str_contains($credentialFillable, "'role'")
+        && !str_contains($credentialFillable, "'email_verified_at'") && !str_contains($credentialFillable, "'remember_token'")
+        && !str_contains($credentialFillable, "'api_token'") && !str_contains($credentialFillable, "'permissions'"),
+    $credentialFillable);
+integration_public_resource($proj2, 'credentials');
+file_put_contents($proj2 . '/routes/web.php', "\napiResource('credentials')->public();\n", FILE_APPEND);
+
 // 1.5 needs a route that THROWS. Register it BEFORE the server starts: a live
 // `file_put_contents(..., FILE_APPEND)` on routes/web.php right before the very
 // next request can be served from opcache's previously-compiled copy (it only
@@ -1382,10 +1408,24 @@ integration_public_resource($proj2, 'notes');
 file_put_contents($proj2 . '/routes/web.php', "\nget('/it-boom', function () { throw new \\RuntimeException('SECRET-TRACE-15'); });\n", FILE_APPEND);
 
 // 2.3: JSON / bearer handling over real HTTP. Registered up front (same reason
-// as /it-boom) and it lives under /api, so it is in the csrf-free `api` group.
+// as /it-boom). Under /api, browser requests with a session cookie require CSRF;
+// stateless API clients without that cookie remain exempt.
 file_put_contents(
     $proj2 . '/routes/web.php',
     "\npost('/api/it-json', function () {\n    \$r = request();\n    return \\Widdx\\Response::json(['name' => \$r->input('name'), 'bearer' => \$r->bearerToken(), 'age' => \$r->json('age')]);\n});\n",
+    FILE_APPEND
+);
+
+// H-01 regression probe: session-authenticated API writes must require CSRF.
+file_put_contents(
+    $proj2 . '/routes/web.php',
+    "\nget('/api/it-csrf-token', fn() => \\Widdx\\Response::json(['token' => request()->csrfToken()]));\n"
+    . "\nget('/api/it-session-login', function () { \\Widdx\\Auth::login(\\App\\Models\\Credential::findOrFail(1)); return \\Widdx\\Response::json(['ok' => true]); });\n"
+    . "\nget('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => false]));\n"
+    . "\npost('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n"
+    . "\nput('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n"
+    . "\npatch('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n"
+    . "\ndelete('/api/it-csrf', fn() => \\Widdx\\Response::json(['mutated' => true]));\n",
     FILE_APPEND
 );
 
@@ -1465,12 +1505,89 @@ $r = http($port2, 'POST', '/notes', ['csrf_token' => (string) $tok2, 'title' => 
 $r = http($port2, 'GET', '/notes', null, $jar2);
 ok('record inserted through the web-installed app', $r['status'] === 200 && str_contains($r['body'], 'FTP-only note'), substr($r['body'], 0, 300));
 
+// H-02 regression: generated CRUD must hash passwords and never render them.
+$r = http($port2, 'GET', '/credentials/create', null, $jar2);
+$credentialToken = preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $cm) ? $cm[1] : '';
+ok('H-02 password form uses type=password with no value',
+    str_contains($r['body'], 'type="password"') && !preg_match('#type="password"[^>]*value="[^"]+#', $r['body']),
+    substr($r['body'], 0, 220));
+$r = http($port2, 'POST', '/credentials', [
+    'csrf_token' => $credentialToken, 'name' => 'Password probe', 'password' => 'secret-pass-123',
+    'is_admin' => '1', 'role' => 'admin', 'email_verified_at' => '2026-01-01',
+    'remember_token' => 'remember-secret', 'api_token' => 'api-secret', 'permissions' => '*',
+], $jar2);
+ok('H-02 generated CRUD create accepted', $r['status'] === 302, 'status=' . $r['status']);
+$credentialDb = new PDO('sqlite:' . $proj2 . '/host.sqlite');
+$credentialRow = $credentialDb->query("SELECT id, password FROM credentials ORDER BY id DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC) ?: [];
+$credentialId = (int) ($credentialRow['id'] ?? 0);
+$credentialPassword = (string) ($credentialRow['password'] ?? '');
+ok('H-02 stored password is a password_hash result',
+    $credentialPassword !== 'secret-pass-123' && password_verify('secret-pass-123', $credentialPassword),
+    'stored=' . substr($credentialPassword, 0, 30));
+$credentialDb->exec('SELECT 1');
+$credentialSensitive = $credentialDb->query('SELECT is_admin, role, email_verified_at, remember_token, api_token, permissions FROM credentials WHERE id = ' . $credentialId)->fetch(PDO::FETCH_ASSOC) ?: [];
+ok('H-02 CRUD rejects submitted privilege, verification, and token fields',
+    (int) ($credentialSensitive['is_admin'] ?? 0) === 0
+        && ($credentialSensitive['role'] ?? null) === null
+        && ($credentialSensitive['email_verified_at'] ?? null) === null
+        && ($credentialSensitive['remember_token'] ?? null) === null
+        && ($credentialSensitive['api_token'] ?? null) === null
+        && ($credentialSensitive['permissions'] ?? null) === null,
+    json_encode($credentialSensitive));
+$editCredential = http($port2, 'GET', '/credentials/' . $credentialId . '/edit', null, $jar2);
+$editCredentialToken = preg_match('#name="csrf_token" value="([^"]+)"#', $editCredential['body'], $em) ? $em[1] : '';
+$r = http($port2, 'POST', '/credentials/' . $credentialId, [
+    'csrf_token' => $editCredentialToken, '_method' => 'PUT', 'name' => 'Password probe', 'password' => '',
+], $jar2);
+$preservedPassword = (string) $credentialDb->query('SELECT password FROM credentials WHERE id = ' . $credentialId)->fetchColumn();
+ok('H-02 empty password update preserves the existing hash',
+    $r['status'] === 302 && $preservedPassword === $credentialPassword && password_verify('secret-pass-123', $preservedPassword),
+    'status=' . $r['status']);
+$r = http($port2, 'POST', '/credentials/' . $credentialId, [
+    'csrf_token' => $editCredentialToken, '_method' => 'PUT', 'name' => 'Password probe', 'password' => 'new-secret-456',
+], $jar2);
+$changedPassword = (string) $credentialDb->query('SELECT password FROM credentials WHERE id = ' . $credentialId)->fetchColumn();
+ok('H-02 new password update stores a new valid hash',
+    $r['status'] === 302 && password_verify('new-secret-456', $changedPassword) && !password_verify('secret-pass-123', $changedPassword),
+    'status=' . $r['status']);
+foreach ([
+    '/credentials' => 'index',
+    '/credentials/' . $credentialId => 'show',
+    '/credentials/' . $credentialId . '/edit' => 'edit',
+] as $credentialPath => $credentialPage) {
+    $r = http($port2, 'GET', $credentialPath, null, $jar2);
+    ok('H-02 password hidden from CRUD ' . $credentialPage,
+        $r['status'] === 200 && !str_contains($r['body'], $credentialPassword) && !str_contains($r['body'], 'secret-pass-123'),
+        'status=' . $r['status']);
+}
+$r = http($port2, 'GET', '/api/credentials', null, $jar2, null, null, ['Accept: application/json']);
+$credentialJson = json_decode($r['body'], true);
+ok('H-02 API JSON omits password fields',
+    $r['status'] === 200 && is_array($credentialJson) && !array_key_exists('password', $credentialJson[0] ?? []),
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 180));
+$apiCredentialJar = [];
+$r = http($port2, 'POST', '/api/credentials', null, $apiCredentialJar,
+    '{"name":"API Password probe","password":"api-secret-pass"}', 'application/json', ['Accept: application/json']);
+$apiCredentialDb = $credentialDb->prepare('SELECT password FROM credentials WHERE name = ?');
+$apiCredentialDb->execute(['API Password probe']);
+$apiCredentialPassword = (string) $apiCredentialDb->fetchColumn();
+$apiCredentialDb->closeCursor(); // release the SELECT before later DDL and HTTP probes
+ok('H-02 API CRUD stores a hashed password and omits it from JSON',
+    $r['status'] === 201
+        && password_verify('api-secret-pass', $apiCredentialPassword)
+        && !array_key_exists('password', json_decode($r['body'], true) ?: []),
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 180));
+
 // 1.1 negative: a resource model with NO $fillable/$rules must fail loudly, never write.
 file_put_contents(
     $proj2 . '/app/Models/Probeno.php',
     "<?php\n\nnamespace App\\Models;\n\nuse Widdx\\Model;\n\nclass Probeno extends Model\n{\n    protected ?string \$table = 'probenos';\n}\n"
 );
 file_put_contents($proj2 . '/routes/web.php', "\nresource('probenos')->public();\n", FILE_APPEND);
+// Allow opcache.revalidate_freq to notice the appended route without
+// replacing the running server process (its PID owns the session test fixture).
+stop_server($pid2, $port2);
+$pid2 = start_server($proj2, $port2);
 // web group is on by default since 1.3 — reuse a session-valid token.
 $tokP2 = grab_csrf($port2, '/notes/create', $jar2);
 $r = http($port2, 'POST', '/probenos', ['csrf_token' => $tokP2, 'name' => 'sneak', 'is_admin' => '1'], $jar2);
@@ -1482,6 +1599,7 @@ file_put_contents(
     "\nstorageRoutes();\npost('/it-upload', function () {\n    \$p = request()->file('doc')->store('public/it18');\n    return \\Widdx\\Response::json(['p' => \$p]);\n});\n",
     FILE_APPEND
 );
+usleep(2_100_000);
 $b18 = 'widdx18-boundary';
 $gif18 = base64_decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
 $mp18 = "--{$b18}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{$tokP2}\r\n"
@@ -1547,8 +1665,16 @@ resource('vaults');
 apiResource('secrets');
 resource('publicopens', \App\Controllers\PublicOpenController::class);
 PHP, FILE_APPEND);
+// Route registration is cached by the long-running PHP server's OPcache.
+// Restart instead of sleeping: validate_timestamps may be disabled in CI.
+stop_server($pid2, $port2);
+$pid2 = start_server($proj2, $port2);
 $r = http($port2, 'GET', '/mkvault', null, $jar2);
-ok('1.2 probes registered', $r['status'] === 200, 'status=' . $r['status']);
+$probeDetail = 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 160);
+if ($r['status'] !== 200) {
+    $probeDetail .= ' serverLog=' . substr((string) @file_get_contents($proj2 . '/server.log'), -2500);
+}
+ok('1.2 probes registered', $r['status'] === 200, $probeDetail);
 
 $r = http($port2, 'GET', '/vaults', null, $jar2);
 ok(
@@ -1607,6 +1733,8 @@ $r = http($port2, 'GET', '/publicopens', null, $jar2);
 ok('1.2 controller \$public = true opens guest access', $r['status'] === 200, 'status=' . $r['status']);
 
 file_put_contents($proj2 . '/routes/web.php', "\nresource('secrets')->public();\n", FILE_APPEND);
+stop_server($pid2, $port2);
+$pid2 = start_server($proj2, $port2);
 $r = http($port2, 'GET', '/secrets', null, $jar2);
 ok('1.2 resource()->public() opens the whole group', $r['status'] === 200, 'status=' . $r['status']);
 
@@ -1630,10 +1758,13 @@ $r = http($port2, 'POST', '/notes', null, $jar2, json_encode(['title' => 'x']), 
 ok('1.3 JSON client gets 419 as JSON not HTML', $r['status'] === 419 && str_contains($r['body'], 'CSRF token mismatch'), substr($r['body'], 0, 120));
 $r = http($port2, 'POST', '/notes', ['csrf_token[]' => 'x', 'title' => 'arr'], $jar2);
 ok('1.3 array csrf_token is 419, never a warning/500', $r['status'] === 419, 'status=' . $r['status']);
-$r = http($port2, 'POST', '/api/secrets', ['secret' => 's'], $jar2);
-ok('1.3 /api group has NO CSRF (401 auth gate, not 419)', $r['status'] === 401, 'status=' . $r['status']);
+$jarApiGuest = [];
+$r = http($port2, 'POST', '/api/secrets', ['secret' => 's'], $jarApiGuest);
+ok('1.3 stateless API guest reaches the 401 auth gate (not 419)', $r['status'] === 401, 'status=' . $r['status']);
 
 file_put_contents($proj2 . '/routes/web.php', "\nauthRoutes();\n", FILE_APPEND);
+stop_server($pid2, $port2);
+$pid2 = start_server($proj2, $port2);
 $r = http($port2, 'GET', '/login', null, $jar2);
 $tokL = preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $mL) === 1 ? $mL[1] : '';
 ok('1.3 login page renders with token', $r['status'] === 200 && strlen($tokL) >= 32, 'status=' . $r['status']);
@@ -1669,12 +1800,70 @@ ok('1.5 APP_DEBUG unset → friendly 500, no trace leak', $r['status'] === 500 &
 $r = http($port2, 'GET', '/it-boom', null, $jar2, null, null, ['Accept: application/json']);
 ok('1.5 JSON 500 hides the message when debug off', $r['status'] === 500 && str_contains($r['body'], 'Internal Server Error') && !str_contains($r['body'], 'SECRET-TRACE-15'), substr($r['body'], 0, 150));
 
-// 2.3: JSON body parse + bearer token over real HTTP (api group => no CSRF).
-$r = http($port2, 'POST', '/api/it-json', null, $jar2, '{"name":"Ada","age":30}', 'application/json', ['Authorization: Bearer tok-2-3']);
+// 2.3: JSON body parse + bearer token over real HTTP. This browser-like
+// client has a session cookie, so it also sends the CSRF token.
+$r = http($port2, 'GET', '/api/it-csrf-token', null, $jar2);
+$csrfApi23 = (string) (json_decode($r['body'], true)['token'] ?? '');
+$r = http($port2, 'POST', '/api/it-json', null, $jar2, '{"name":"Ada","age":30}', 'application/json',
+    ['Authorization: Bearer tok-2-3', 'X-CSRF-TOKEN: ' . $csrfApi23]);
 $d23 = json_decode($r['body'], true);
 ok('2.3 JSON body parses into input()/json() over HTTP', $r['status'] === 200 && ($d23['name'] ?? null) === 'Ada' && ($d23['age'] ?? null) === 30, 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
 ok('2.3 bearerToken() reads Authorization header', ($d23['bearer'] ?? null) === 'tok-2-3', substr($r['body'], 0, 150));
-$r = http($port2, 'POST', '/api/it-json', null, $jar2, '{not valid json', 'application/json');
+
+// H-01: CSRF is required for an authenticated session-cookie API client.
+$r = http($port2, 'GET', '/api/it-csrf', null, $jar2);
+$readCsrf = json_decode($r['body'], true);
+ok('H-01 GET API request needs no CSRF and does not mutate', $r['status'] === 200 && ($readCsrf['mutated'] ?? true) === false,
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
+$r = http($port2, 'GET', '/api/it-session-login', null, $jar2);
+ok('H-01 session login fixture establishes an authenticated browser session', $r['status'] === 200, 'status=' . $r['status']);
+$r = http($port2, 'POST', '/api/it-csrf', ['value' => 'no-token'], $jar2);
+$jH01 = json_decode($r['body'], true);
+ok('H-01 API session write without CSRF token returns JSON 419',
+    $r['status'] === 419 && ($jH01['error'] ?? '') === 'CSRF token mismatch.',
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 160));
+$r = http($port2, 'GET', '/api/it-csrf-token', null, $jar2);
+$csrfH01 = (string) (json_decode($r['body'], true)['token'] ?? '');
+$r = http($port2, 'POST', '/api/it-csrf', null, $jar2, '{"value":"valid"}', 'application/json',
+    ['X-CSRF-TOKEN: ' . $csrfH01, 'Accept: application/json']);
+ok('H-01 API session write with valid CSRF header succeeds',
+    $r['status'] === 200 && str_contains($r['body'], '"mutated":true'),
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 160));
+foreach (['PUT', 'PATCH', 'DELETE'] as $methodH01) {
+    $r = http($port2, $methodH01, '/api/it-csrf', ['value' => 'no-token'], $jar2);
+    ok('H-01 ' . $methodH01 . ' API session write without CSRF returns 419', $r['status'] === 419,
+        'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
+}
+$r = http($port2, 'POST', '/api/it-csrf', ['_method' => 'DELETE', 'value' => 'no-token'], $jar2);
+ok('H-01 POST method-spoofed DELETE requires CSRF', $r['status'] === 419, 'status=' . $r['status']);
+$r = http($port2, 'POST', '/api/it-csrf', ['_token' => $csrfH01], $jar2);
+ok('H-01 _token form field is accepted', $r['status'] === 200 && str_contains($r['body'], '"mutated":true'),
+    'status=' . $r['status']);
+$r = http($port2, 'POST', '/api/it-csrf', null, $jar2, '{"value":"invalid"}', 'application/json',
+    ['X-CSRF-TOKEN: invalid-token', 'Accept: application/json']);
+ok('H-01 invalid CSRF token is rejected', $r['status'] === 419, 'status=' . $r['status']);
+$jarOtherH01 = [];
+$r = http($port2, 'GET', '/api/it-session-login', null, $jarOtherH01);
+$r = http($port2, 'GET', '/api/it-csrf-token', null, $jarOtherH01);
+$otherTokenH01 = (string) (json_decode($r['body'], true)['token'] ?? '');
+$r = http($port2, 'POST', '/api/it-csrf', null, $jar2, '{"value":"wrong-session"}', 'application/json',
+    ['X-CSRF-TOKEN: ' . $otherTokenH01, 'Accept: application/json']);
+ok('H-01 token from another authenticated session is rejected', $r['status'] === 419, 'status=' . $r['status']);
+
+// A guest can still have a PHP session cookie after requesting a CSRF token.
+// Cookie-bearing API writes must require CSRF even before login; Auth::guest()
+// must not create a bypass for public API endpoints.
+$jarGuestSessionH01 = [];
+$r = http($port2, 'GET', '/api/it-csrf-token', null, $jarGuestSessionH01);
+$guestSessionTokenH01 = (string) (json_decode($r['body'], true)['token'] ?? '');
+ok('H-01 guest can obtain a session-bound CSRF token', $r['status'] === 200 && strlen($guestSessionTokenH01) >= 32,
+    'status=' . $r['status'] . ' tokenLength=' . strlen($guestSessionTokenH01));
+$r = http($port2, 'POST', '/api/it-csrf', ['value' => 'guest-no-token'], $jarGuestSessionH01);
+ok('H-01 guest session-cookie API write without CSRF is rejected', $r['status'] === 419,
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
+
+$r = http($port2, 'POST', '/api/it-json', null, $jar2, '{not valid json', 'application/json',
+    ['X-CSRF-TOKEN: ' . $csrfApi23]);
 ok('2.3 malformed JSON body is a clean 400 (not 500, not silent empty)', $r['status'] === 400, 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 150));
 
 // 2.4 HEAD / OPTIONS over real HTTP against the /notes resource.
@@ -1709,7 +1898,7 @@ if ($drv2 !== 'sqlite') {
     $probePdo->exec('DROP TABLE IF EXISTS it_rollback_probe');
 }
 
-stop_server($pid2);
+stop_server($pid2, $port2);
 
 // 1.10: a LOCKED project whose .env went missing must still refuse 404.
 [$code, $out] = shell('cd ' . escapeshellarg($TMP) . ' && ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($ROOT . '/widdx') . ' new lockonly');
@@ -1724,7 +1913,7 @@ $port5 = pick_port();
 $pid5 = start_server($TMP . '/lockonly', $port5);
 $r = http($port5, 'GET', '/install.php');
 ok('1.10 lock without .env still refuses (404, not re-installable)', $r['status'] === 404, 'status=' . $r['status']);
-stop_server($pid5);
+stop_server($pid5, $port5);
 
 // ------------------------------------------------------------------ summary
 

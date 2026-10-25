@@ -112,7 +112,16 @@ class MakeCrud
                 }
             }
             $columns[] = "            {$col} {$sql}" . $suffix;
-            $fillable[] = $col;
+            // Keep privilege/verification/token columns out of generated
+            // mass-assignment allow-lists. Model::fill() enforces this guard
+            // even when applications declare sensitive fields manually.
+            $sensitive = in_array(strtolower($col), [
+                'email_verified_at', 'remember_token', 'is_admin', 'role',
+                'is_staff', 'permissions', 'password_confirmation',
+            ], true) || preg_match('/(?:^|_)token$/i', $col) === 1;
+            if (!$sensitive) {
+                $fillable[] = $col;
+            }
             $rulesLines[] = "        '{$col}' => '{$rule}',";
             $schemaLines[] = '            ' . self::schemaCall($type, $col, $refTable) . ($optional ? '->nullable()' : '') . ';';
         }
