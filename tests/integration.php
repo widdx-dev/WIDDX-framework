@@ -1894,7 +1894,7 @@ $port5 = pick_port();
 $pid5 = start_server($TMP . '/lockonly', $port5);
 $r = http($port5, 'GET', '/install.php');
 ok('1.10 lock without .env still refuses (404, not re-installable)', $r['status'] === 404, 'status=' . $r['status']);
-stop_server($pid5);
+stop_server($pid5, $port5);
 
 // ------------------------------------------------------------------ summary
 
