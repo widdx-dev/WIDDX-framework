@@ -1571,6 +1571,7 @@ $r = http($port2, 'POST', '/api/credentials', null, $apiCredentialJar,
 $apiCredentialDb = $credentialDb->prepare('SELECT password FROM credentials WHERE name = ?');
 $apiCredentialDb->execute(['API Password probe']);
 $apiCredentialPassword = (string) $apiCredentialDb->fetchColumn();
+$apiCredentialDb->closeCursor(); // release the SELECT before later DDL and HTTP probes
 ok('H-02 API CRUD stores a hashed password and omits it from JSON',
     $r['status'] === 201
         && password_verify('api-secret-pass', $apiCredentialPassword)
@@ -1669,7 +1670,11 @@ PHP, FILE_APPEND);
 stop_server($pid2, $port2);
 $pid2 = start_server($proj2, $port2);
 $r = http($port2, 'GET', '/mkvault', null, $jar2);
-ok('1.2 probes registered', $r['status'] === 200, 'status=' . $r['status']);
+$probeDetail = 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 160);
+if ($r['status'] !== 200) {
+    $probeDetail .= ' serverLog=' . substr((string) @file_get_contents($proj2 . '/server.log'), -2500);
+}
+ok('1.2 probes registered', $r['status'] === 200, $probeDetail);
 
 $r = http($port2, 'GET', '/vaults', null, $jar2);
 ok(
