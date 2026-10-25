@@ -406,6 +406,7 @@ ENV);
 # Environment secrets
 /.env
 /.env.*
+!/.env.example
 
 # Local databases
 /database.sqlite
@@ -492,7 +493,7 @@ get('/', fn() => view('welcome'));
 // fail-closed gate holds: a guest on /users is redirected to /login and a
 // logged-in user still needs an App\Policies\UserPolicy that allows the action.
 // Run 'php widdx make:auth' to get that /login (plus register/reset/verify).
-// 'php widdx new <name>' without the flag is the demo start: /users open to guests.
+// 'php widdx new <name> --demo' opts into public demo CRUD; secure is the default.
 resource('users');
 
 // Customize later by adding views/users/*.php or a controller class —
@@ -715,6 +716,7 @@ to guests. Do not deploy a `--demo` project without replacing its public routes.
 
 No terminal / shared hosting? Upload the folder and open `/install.php` in the
 browser. Set `APP_URL` to the canonical site URL in the installer so email links work.
+
 ## One-Line CRUD
 
 In `routes/web.php`:
