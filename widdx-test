@@ -1662,7 +1662,12 @@ test('Auth: register + email verification + password reset lifecycle', function 
         'password' => 'supersecret1', 'password_confirmation' => 'supersecret1',
     ], false);
     assert_true(!empty($user->id), 'registered');
-    assert_true(str_starts_with((string) $user->password, '$2y$'), 'password hashed');
+    assert_true(password_verify('supersecret1', (string) $user->password), 'password is stored as a verifiable hash');
+    assert_true(!array_key_exists('password', $user->toArray()), 'password is omitted from model serialization');
+
+    $passwordCaseProbe = new class extends \\Widdx\\Model {};
+    $passwordCaseProbe->Password = 'case-variant-secret';
+    assert_true(!array_key_exists('Password', $passwordCaseProbe->toArray()), 'case-variant password attributes are omitted from serialization');
 
     $storedHash = (string) $user->password;
     $loadedForBlank = \Widdx\Tests\AuthUser::find($user->id);
