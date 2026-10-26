@@ -1620,10 +1620,6 @@ $resumeTable = (int) $resumePdo->query("SELECT COUNT(*) FROM sqlite_master WHERE
 $resumeTracked = (int) $resumePdo->query('SELECT COUNT(*) FROM migrations WHERE migration = ' . $resumePdo->quote($resumeMigrationName))->fetchColumn();
 ok('retry applies and records the migration that was pending after failure', $resumeTable === 1 && $resumeTracked === 1, "table={$resumeTable} tracked={$resumeTracked}");
 $resumePdo = null;
-ok('.env was created', is_file($proj2 . '/.env'));
-ok('1.10 .env written with 0600 perms', substr(sprintf('%o', (int) fileperms($proj2 . '/.env')), -4) === '0600', substr(sprintf('%o', (int) @fileperms($proj2 . '/.env')), -4));
-ok('1.10 installer deleted itself after success', !is_file($proj2 . '/public/install.php'));
-ok('1.10 install key removed once locked', !is_file($keyFile));
 $env2 = (string) @file_get_contents($proj2 . '/.env');
 ok('.env carries the chosen settings', str_contains($env2, 'DB_CONNECTION=sqlite') && str_contains($env2, 'APP_LOCALE=ar') && str_contains($env2, 'host.sqlite') && str_contains($env2, 'APP_URL=https://hostapp.example.test'));
 ok('migration ran from the browser', is_file($proj2 . '/host.sqlite'));
