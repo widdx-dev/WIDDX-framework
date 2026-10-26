@@ -252,6 +252,52 @@ class Auth
         static::$resetRequestListenerRegistered = true;
     }
 
+    /**
+     * Queue an email-verification resend request without checking account state
+     * during the HTTP response. Always return accepted for anti-enumeration.
+     */
+    public static function requestVerificationResend(string $email): bool
+    {
+        static::ensureMailListener();
+        static::ensureVerificationResendListener();
+        Event::queue('auth.verification_resend_request', $email);
+        return true;
+    }
+
+    protected static bool $verificationResendListenerRegistered = false;
+
+    protected static function ensureVerificationResendListener(): void
+    {
+        if (static::$verificationResendListenerRegistered) {
+            return;
+        }
+        Event::listen('auth.verification_resend_request', function (string $email): void {
+            $class = Auth::userClass();
+            if (!class_exists($class)) {
+                return;
+            }
+            $user = $class::query()->where('email', $email)->first();
+            if (
+                $user === null
+                || !Auth::verificationAvailable($user)
+                || !empty($user->email_verified_at)
+            ) {
+                return;
+            }
+
+            $token = Auth::createToken($email, 'verify');
+            $link = rtrim((string) config('app.url', 'http://localhost'), '/')
+                . '/verify-email/' . $token . '?email=' . urlencode($email);
+            Event::fire(
+                'auth.mail',
+                $email,
+                'Verify your email address',
+                "Confirm your account with this link (valid 7 days):\n{$link}"
+            );
+        });
+        static::$verificationResendListenerRegistered = true;
+    }
+
     /** One shared listener that actually sends queued auth mails. */
     protected static function ensureMailListener(): void
     {
