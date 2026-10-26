@@ -415,6 +415,7 @@ if (!function_exists('storageRoutes')) {
                 'image/svg+xml',
                 'text/xml',
                 'application/xml',
+                'text/css',
                 'text/javascript',
                 'application/javascript',
                 'text/ecmascript',
@@ -426,15 +427,17 @@ if (!function_exists('storageRoutes')) {
                 'application/php',
             ];
             $activeExtensions = [
-                'html', 'htm', 'xhtml', 'xht', 'svg', 'xml', 'js', 'mjs', 'cjs',
-                'shtml', 'shtm', 'xsl', 'xslt', 'php', 'phtml', 'phar', 'pht',
+                'html', 'htm', 'xhtml', 'xht', 'svg', 'xml', 'css', 'js', 'mjs', 'cjs',
+                'shtml', 'shtm', 'mhtml', 'xsl', 'xslt', 'php', 'phtml', 'phar', 'pht',
             ];
             $activeContent = in_array($mime, $activeMimes, true)
                 || str_starts_with($mime, 'text/x-')
                 || (str_starts_with($mime, 'application/') && str_ends_with($mime, '+xml'))
                 || in_array($extension, $activeExtensions, true);
 
-            $disposition = 'inline';
+            // Unknown/binary content is a download by default; do not rely on
+            // browser sniffing when fileinfo is unavailable or cannot classify it.
+            $disposition = $mime === 'application/octet-stream' ? 'attachment' : 'inline';
             if ($activeContent) {
                 // Force a passive type and a download even if fileinfo is
                 // unavailable or the filename extension lies about its content.
