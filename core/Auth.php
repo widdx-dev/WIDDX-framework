@@ -69,15 +69,18 @@ class Auth
         }
 
         $hash = (string) ($user->password ?? '');
+        $hashInfo = $hash !== '' ? password_get_info($hash) : [];
+        $hasUsableHash = $hash !== '' && ($hashInfo['algoName'] ?? 'unknown') !== 'unknown';
 
         // Even an account with no usable stored password must consume one
         // password-verification cycle. A short-circuit here lets attackers
-        // distinguish seeded/disabled accounts from unknown emails by timing.
+        // distinguish seeded/disabled or corrupt-hash accounts from unknown
+        // emails by timing.
         $verified = password_verify(
             (string) $password,
-            $hash !== '' ? $hash : self::TIMING_HASH
+            $hasUsableHash ? $hash : self::TIMING_HASH
         );
-        if ($hash === '' || !$verified) {
+        if (!$hasUsableHash || !$verified) {
             return false;
         }
         // Transparent upgrade: old-cost hashes are rehashed with current defaults.
