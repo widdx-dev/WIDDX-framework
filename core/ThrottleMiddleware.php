@@ -57,7 +57,7 @@ class ThrottleMiddleware
 
         // A broken/unwritable counter must not silently disable a security
         // control on login/reset endpoints. Fail closed so the caller retries.
-        if ($hits === false || !$cache instanceof CacheInterface) {
+        if ($hits === false || !($cache instanceof CacheInterface)) {
             return Response::json(['error' => 'Rate limiter temporarily unavailable'], 503)
                 ->setHeader('Retry-After', (string) $this->decay);
         }
