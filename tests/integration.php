@@ -1946,6 +1946,25 @@ for ($i13 = 0; $i13 < 6; $i13++) {
 }
 ok('1.3 authRoutes throttles /login (5/min → 6th is 429)', $codes13 === [302, 302, 302, 302, 302, 429], json_encode($codes13));
 
+// Password-token verification is also credential-sensitive and must be throttled.
+$tokResetThrottle = grab_csrf($port2, '/forgot-password', $jar2);
+$resetCodes = [];
+for ($ir = 0; $ir < 6; $ir++) {
+    $rr = http($port2, 'POST', '/reset-password', [
+        'csrf_token' => $tokResetThrottle,
+        'email' => 'not-an-email',
+        'token' => 'invalid-token',
+        'password' => 'password-example',
+        'password_confirmation' => 'password-example',
+    ], $jar2);
+    $resetCodes[] = $rr['status'];
+}
+ok(
+    '1.3 reset-password POST is throttled (5/min → 6th is 429)',
+    $resetCodes === [302, 302, 302, 302, 302, 429],
+    json_encode($resetCodes)
+);
+
 // 1.3b: JSON callers always get machine-readable errors — no HTML, no redirect.
 $r = http($port2, 'GET', '/vaults', null, $jar2, null, null, ['Accept: application/json']);
 ok('1.3b guest + Accept json at auth gate = 401 JSON (not 302)', $r['status'] === 401 && str_contains($r['body'], 'error'), 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
