@@ -71,14 +71,36 @@ class Event
     }
 
     /**
-     * Dispatch all queued events.
+     * Dispatch queued events without allowing a failed post-response listener
+     * to corrupt the already-sent HTTP response or prevent later events.
+     *
+     * The current batch is removed before dispatch. Events queued by a listener
+     * are retained for the next flush instead of being accidentally discarded.
      */
     public static function flush(): void
     {
-        foreach (static::$queued as $q) {
-            static::fire($q['event'], ...$q['args']);
-        }
+        $batch = static::$queued;
         static::$queued = [];
+
+        foreach ($batch as $q) {
+            try {
+                static::fire($q['event'], ...$q['args']);
+            } catch (\Throwable $e) {
+                // Queued work runs after a response has been sent, so bubbling
+                // this exception can append an error page to a successful body.
+                // Log without event arguments; they may contain tokens or PII.
+                try {
+                    logger('error', 'Queued event listener failed.', [
+                        'event' => (string) ($q['event'] ?? 'unknown'),
+                        'exception' => get_class($e),
+                        'message' => $e->getMessage(),
+                    ]);
+                } catch (\Throwable) {
+                    error_log('Widdx queued event listener failed: event='
+                        . (string) ($q['event'] ?? 'unknown') . ' exception=' . get_class($e));
+                }
+            }
+        }
     }
 
     /**
