@@ -254,6 +254,10 @@ test('Auth guest when no user', function () {
     assert_true(\Widdx\Auth::guest());
 });
 
+test('Auth::verified returns false when there is no user', function () {
+    assert_equals(false, \Widdx\Auth::verified(null), 'a guest must never count as verified');
+});
+
 // QueryBuilder tests
 // QueryBuilder identifier validation tests
 test('QueryBuilder rejects unsafe table and column identifiers before SQL execution', function () {
@@ -1753,6 +1757,18 @@ test('Auth: register + email verification + password reset lifecycle', function 
     \Widdx\Mail::setConnection($mail);
     \Widdx\Auth::useModel(\Widdx\Tests\AuthUser::class);
 
+    // VerifiedMiddleware must fail closed for guests while preserving JSON semantics.
+    \Widdx\Session::flush();
+    $verifiedMw = new \Widdx\VerifiedMiddleware();
+    $guestReq = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/private']);
+    $guestResp = $verifiedMw->handle($guestReq, fn () => \Widdx\Response::make('private'));
+    assert_equals(302, $guestResp->getStatus());
+    assert_equals('/login', $guestResp->getHeaders()['Location'] ?? null);
+    $guestJsonReq = new \Widdx\Request([], [], [
+        'REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/api/private', 'HTTP_ACCEPT' => 'application/json',
+    ]);
+    assert_equals(401, $verifiedMw->handle($guestJsonReq, fn () => \Widdx\Response::make('private'))->getStatus());
+
     // Invalid/missing stored hashes must take the same expensive verify path
     // as unknown emails; otherwise login timing reveals these account records.
     $now = date('Y-m-d H:i:s');
@@ -1788,6 +1804,15 @@ test('Auth: register + email verification + password reset lifecycle', function 
         'password' => 'supersecret1', 'password_confirmation' => 'supersecret1',
     ], false);
     assert_true(!empty($user->id), 'registered');
+    \Widdx\Auth::login($user);
+    $unverifiedReq = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/private']);
+    $unverifiedResp = $verifiedMw->handle($unverifiedReq, fn () => \Widdx\Response::make('private'));
+    assert_equals(302, $unverifiedResp->getStatus());
+    assert_equals('/email-verification', $unverifiedResp->getHeaders()['Location'] ?? null);
+    $unverifiedJsonReq = new \Widdx\Request([], [], [
+        'REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/api/private', 'HTTP_ACCEPT' => 'application/json',
+    ]);
+    assert_equals(403, $verifiedMw->handle($unverifiedJsonReq, fn () => \Widdx\Response::make('private'))->getStatus());
     assert_true(password_verify('supersecret1', (string) $user->password), 'password is stored as a verifiable hash');
     assert_true(!array_key_exists('password', $user->toArray()), 'password is omitted from model serialization');
 
@@ -1820,6 +1845,12 @@ test('Auth: register + email verification + password reset lifecycle', function 
     assert_equals(false, \Widdx\Auth::verifyEmail('sara@widdx.test', 'deadbeef'), 'wrong token rejected');
     assert_true(\Widdx\Auth::verifyEmail('sara@widdx.test', $m[1]), 'valid token verifies');
     assert_true(!empty(\Widdx\Tests\AuthUser::find($user->id)->email_verified_at), 'flag stored');
+    $verifiedResp = $verifiedMw->handle(
+        new \Widdx\Request([], [], ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/private']),
+        fn () => \Widdx\Response::make('verified-ok')
+    );
+    assert_equals(200, $verifiedResp->getStatus());
+    assert_equals('verified-ok', $verifiedResp->getContent(), 'verified users reach the protected handler');
 
     // password reset: unknown email → false; known → mailed token link
     assert_equals(false, \Widdx\Auth::sendResetLink('ghost@nowhere.test'));
@@ -1834,6 +1865,9 @@ test('Auth: register + email verification + password reset lifecycle', function 
     assert_true(password_verify('brandnewpass9', (string) \Widdx\Tests\AuthUser::find($user->id)->password), 'new password active');
     assert_equals(false, \Widdx\Auth::resetPassword('sara@widdx.test', $m2[1], 'thirdpass123'), 'tokens are single-use');
 
+    // The middleware fixture logged this test user in; clear that identity before
+    // dropping its table so no later test can read a stale session user.
+    \Widdx\Session::flush();
     \Widdx\Schema::dropIfExists('auth_users');
     \Widdx\Schema::dropIfExists('auth_tokens');
     \Widdx\Auth::useModel(null);
