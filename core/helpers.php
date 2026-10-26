@@ -402,14 +402,58 @@ if (!function_exists('storageRoutes')) {
                     }
                 }
             }
-            // Never hand the browser a runnable/script file, whatever it contains.
-            if (preg_match('#^(text/x-|application/(x-sh|x-httpd-php|php))#', $mime) === 1) {
+            $mime = strtolower(trim($mime));
+            $filename = basename($real);
+            $extension = strtolower((string) pathinfo($filename, PATHINFO_EXTENSION));
+
+            // Never serve active user-controlled documents inline. HTML and SVG
+            // can execute script in the application's origin; JavaScript/XML
+            // types can also become active when embedded by another page.
+            $activeMimes = [
+                'text/html',
+                'application/xhtml+xml',
+                'image/svg+xml',
+                'text/xml',
+                'application/xml',
+                'text/javascript',
+                'application/javascript',
+                'text/ecmascript',
+                'application/ecmascript',
+                'application/x-javascript',
+                'application/x-sh',
+                'application/x-httpd-php',
+                'application/x-php',
+                'application/php',
+            ];
+            $activeExtensions = [
+                'html', 'htm', 'xhtml', 'xht', 'svg', 'xml', 'js', 'mjs', 'cjs',
+                'shtml', 'shtm', 'xsl', 'xslt', 'php', 'phtml', 'phar', 'pht',
+            ];
+            $activeContent = in_array($mime, $activeMimes, true)
+                || str_starts_with($mime, 'text/x-')
+                || (str_starts_with($mime, 'application/') && str_ends_with($mime, '+xml'))
+                || in_array($extension, $activeExtensions, true);
+
+            $disposition = 'inline';
+            if ($activeContent) {
+                // Force a passive type and a download even if fileinfo is
+                // unavailable or the filename extension lies about its content.
                 $mime = 'text/plain';
+                $disposition = 'attachment';
             }
+
+            // Keep the filename ASCII and free of quotes/control characters so
+            // a crafted storage name cannot inject response header parameters.
+            $safeFilename = preg_replace('/[^A-Za-z0-9._-]/', '_', $filename) ?: 'download';
+            $safeFilename = substr($safeFilename, 0, 150);
+            if ($safeFilename === '' || $safeFilename === '.' || $safeFilename === '..') {
+                $safeFilename = 'download';
+            }
+
             return Response::make((string) file_get_contents($real))
                 ->setHeader('Content-Type', $mime)
                 ->setHeader('X-Content-Type-Options', 'nosniff')
-                ->setHeader('Content-Disposition', 'inline; filename="' . basename($real) . '"');
+                ->setHeader('Content-Disposition', $disposition . '; filename="' . $safeFilename . '"');
         })->name('storage.serve');
     }
 }
