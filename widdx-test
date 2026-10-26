@@ -1781,10 +1781,15 @@ test('Auth: register + email verification + password reset lifecycle', function 
         'empty direct password assignment preserves the existing hash'
     );
 
-    // Verification mail is queued: registration must not block on SMTP.
-    assert_equals(0, count($mail->logged()), 'verification mail must not send synchronously during registration');
-    \Widdx\Event::flush();
-    assert_equals(1, count($mail->logged()), 'queued verification mail is delivered when events flush');
+    // CLI has no HTTP response boundary for Event::flush(), so it sends immediately;
+    // web requests defer mail via the auth.mail event until after the response.
+    if (PHP_SAPI === 'cli') {
+        assert_equals(1, count($mail->logged()), 'CLI registration sends verification mail without a response lifecycle');
+    } else {
+        assert_equals(0, count($mail->logged()), 'web-style registration must not send synchronously');
+        \Widdx\Event::flush();
+        assert_equals(1, count($mail->logged()), 'queued verification mail is delivered when events flush');
+    }
     $body = (string) ($mail->logged()[0]['body'] ?? '');
     preg_match('#/verify-email/([a-f0-9]{64})\?email=#', $body, $m);
     assert_true(!empty($m[1]), 'verify token present in mail body');
