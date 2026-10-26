@@ -110,6 +110,52 @@ jobs:
           php widdx migrate
           php widdx test
 
+      - name: Apache shared-hosting rewrite smoke test
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y apache2
+          sudo a2enmod rewrite
+          sudo mkdir -p /var/www/html/portable
+          sudo cp -a "$GITHUB_WORKSPACE/portable/." /var/www/html/portable/
+          printf '%s\n' 'rewrite-ok' | sudo tee /var/www/html/portable/public/__apache_rewrite_probe.txt >/dev/null
+          printf '%s\n' 'APP_SECRET=must-not-be-served' | sudo tee /var/www/html/portable/.env >/dev/null
+          sudo mkdir -p /var/www/html/portable/public/.well-known/acme-challenge
+          printf '%s\n' 'acme-ok' | sudo tee /var/www/html/portable/public/.well-known/acme-challenge/probe.txt >/dev/null
+          printf '%s\n' 'PUBLIC_SECRET=must-not-be-served' | sudo tee /var/www/html/portable/public/.env >/dev/null
+          sudo sed -i 's#DocumentRoot /var/www/html#DocumentRoot /var/www/html/portable#' /etc/apache2/sites-available/000-default.conf
+          sudo tee -a /etc/apache2/apache2.conf >/dev/null <<'APACHE'
+          <Directory /var/www/html/portable>
+              AllowOverride All
+              Require all granted
+          </Directory>
+          APACHE
+          sudo apachectl configtest
+          sudo systemctl restart apache2
+
+          for attempt in $(seq 1 20); do
+            status="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1/__apache_rewrite_probe.txt || true)"
+            if [ "$status" = "200" ]; then
+              break
+            fi
+            sleep 1
+          done
+
+          body="$(curl --fail --silent --show-error http://127.0.0.1/__apache_rewrite_probe.txt)"
+          test "$body" = "rewrite-ok"
+
+          env_status="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1/.env)"
+          test "$env_status" = "403"
+
+          public_env_status="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1/public/.env)"
+          test "$public_env_status" = "403"
+
+          acme_body="$(curl --fail --silent --show-error http://127.0.0.1/.well-known/acme-challenge/probe.txt)"
+          test "$acme_body" = "acme-ok"
+
+          source_status="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1/core/App.php)"
+          test "$source_status" = "403"
+
   phpstan:
     runs-on: ubuntu-latest
     steps:

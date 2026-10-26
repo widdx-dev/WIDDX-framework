@@ -72,8 +72,7 @@ Each feature below is paired with its entry point:
 - **Queues, mail, and scheduling:** `queue(Job::class, $data)`, `mail('to@x.com', 'S', 'template', $data)`,
   and `Schedule::command(...)->daily()` with one cron entry.
 - **Built-in security:** CSRF and security headers are enabled by default; use `ThrottleMiddleware(n, s)` for rate limiting.
-- **Deployment without a terminal:** Upload the project to `public_html/` and open `/install.php`. It checks the environment,
-  tests the database first, writes `.env`, runs migrations, and then **locks itself**.
+- **Deployment without a terminal:** Prefer a web root pointed at `public/`; on shared hosting, use the guarded root `.htaccess` fallback. `/install.php` validates the database and required canonical `APP_URL`, runs migrations, and locks itself.
 - **Built-in RTL:** `APP_LOCALE=ar` (also he/fa/ur/ps/sd/ug/yi/ku/dv).
 
 The “zero-code” approach comes from inferring repetitive details from names. That is what the curriculum teaches you to use.
@@ -85,13 +84,14 @@ The “zero-code” approach comes from inferring repetitive details from names.
 You need PHP 8.1+ with `pdo_sqlite`. From the framework folder, run:
 
 ```bash
-php widdx new myapp          # Create the project with the users CRUD demo
+php widdx new myapp --demo   # Local-only public users CRUD demo
 cd myapp
 php widdx migrate            # Create the tables
 php widdx serve              # Start the server
 ```
 
-Open http://localhost:8000 — the welcome page appears and `/users` works.
+Open http://localhost:8000 — the welcome page appears. `/users` is public only in this explicit demo scaffold.
+For a real project, run `php widdx new myapp` without `--demo`; CRUD is protected until you configure auth/policies.
 
 Then add an entity, such as products:
 

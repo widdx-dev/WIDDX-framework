@@ -2348,7 +2348,7 @@ test('2.24 Inflector: irregular plurals agree across the three call sites and ro
     }
 });
 
-test('2.25 DEPLOY-01 C: demo start stays public, --no-demo starts fail-closed, make:auth closes users, nothing seeds a password', function () {
+test('2.25 DEPLOY-01 C: secure scaffold is default, --demo opts into public CRUD, make:auth closes users, nothing seeds a password', function () {
     $php = escapeshellarg(PHP_BINARY);
     $fwCli = $php . ' ' . escapeshellarg(WIDDX_BASE_PATH . '/widdx');
     $root = sys_get_temp_dir() . '/widdx-deploy01-' . getmypid();
@@ -2423,23 +2423,23 @@ test('2.25 DEPLOY-01 C: demo start stays public, --no-demo starts fail-closed, m
 
     try {
         // 1. both scaffolds build, and PART 0's command order is the one that still works.
-        [$demoNew, $demoNewOut] = $run($root, $fwCli . ' new demo');
+        [$demoNew, $demoNewOut] = $run($root, $fwCli . ' new demo --demo');
         assert_equals(0, $demoNew, 'php widdx new demo exits 0: ' . $demoNewOut);
-        [$ndNew, $ndNewOut] = $run($root, $fwCli . ' new app --no-demo');
-        assert_equals(0, $ndNew, 'php widdx new app --no-demo exits 0: ' . $ndNewOut);
+        [$secureNew, $secureNewOut] = $run($root, $fwCli . ' new app');
+        assert_equals(0, $secureNew, 'php widdx new app exits 0 with secure defaults: ' . $secureNewOut);
         $demo = $root . '/demo';
-        $nodemo = $root . '/app';
+        $secure = $root . '/app';
 
-        // 2. the two routes files differ in exactly one thing: the users opt-out.
+        // 2. the demo explicitly opts into public users CRUD; the normal scaffold does not.
         $demoRoutes = (string) file_get_contents($demo . '/routes/web.php');
-        $ndRoutes = (string) file_get_contents($nodemo . '/routes/web.php');
+        $ndRoutes = (string) file_get_contents($secure . '/routes/web.php');
         assert_true(str_contains($demoRoutes, "resource('users')->public();"), 'demo scaffold keeps the public users CRUD');
-        assert_true(str_contains($ndRoutes, "resource('users');"), '--no-demo scaffold emits the users resource');
+        assert_true(str_contains($ndRoutes, "resource('users');"), 'default scaffold emits the users resource');
         // Comment lines explain ->public(); only a line that starts with code may call it.
-        assert_true(preg_match('/^[^\/\n]*->public\(\)/m', $ndRoutes) === 0, '--no-demo scaffold has no public() call');
+        assert_true(preg_match('/^[^\/\n]*->public\(\)/m', $ndRoutes) === 0, 'default scaffold has no public() call');
 
         // 3. generated projects still parse and migrate (and the table really is there).
-        foreach ([['demo', $demo], ['--no-demo', $nodemo]] as [$label, $proj]) {
+        foreach ([['--demo', $demo], ['default', $secure]] as [$label, $proj]) {
             [$lint, $lintOut] = $run($proj, $php . ' -l routes/web.php');
             assert_equals(0, $lint, "{$label} routes/web.php parses: " . $lintOut);
             [$mig, $migOut] = $run($proj, $php . ' widdx migrate');
@@ -2457,13 +2457,26 @@ test('2.25 DEPLOY-01 C: demo start stays public, --no-demo starts fail-closed, m
         assert_equals(7, count($postFlags), 'generated posts resource registers 7 routes');
         assert_true(count($postFlags) > 0 && !in_array(true, $postFlags, true), 'all generated posts routes are protected by default');
 
-        // 4. guest access: demo is open, --no-demo is fail-closed on all seven routes.
+        // The controller/view generator must not print a public route as its default,
+        // otherwise a copied snippet would bypass the secure scaffold defaults.
+        [$resourceExit, $resourceOut] = $run($secure, $php . ' widdx make:resource ReportCard');
+        assert_equals(0, $resourceExit, 'php widdx make:resource exits 0: ' . $resourceOut);
+        assert_true(
+            str_contains($resourceOut, "resource('reportcards', \\App\\Controllers\\ReportCardController::class);"),
+            'make:resource prints a protected resource route'
+        );
+        assert_true(
+            !str_contains($resourceOut, "ReportCardController::class)->public()"),
+            'make:resource does not opt into public access by default'
+        );
+
+        // 4. guest access: --demo is open; the secure default is fail-closed on all seven routes.
         $demoFlags = $usersPublicFlags($demo . '/routes/web.php');
         assert_equals(7, count($demoFlags), 'demo users resource registers 7 routes');
         assert_true(count($demoFlags) > 0 && !in_array(false, $demoFlags, true), 'every demo users route is public');
-        $ndFlags = $usersPublicFlags($nodemo . '/routes/web.php');
-        assert_equals(7, count($ndFlags), '--no-demo users resource registers 7 routes');
-        assert_true(count($ndFlags) > 0 && !in_array(true, $ndFlags, true), 'no --no-demo users route is public — guests go to /login');
+        $ndFlags = $usersPublicFlags($secure . '/routes/web.php');
+        assert_equals(7, count($ndFlags), 'default users resource registers 7 routes');
+        assert_true(count($ndFlags) > 0 && !in_array(true, $ndFlags, true), 'default scaffold users routes are protected — guests go to /login');
 
         // 5. no usable credential is seeded: the seeder never hashes one, and no row carries one.
         [$seed, $seedOut] = $run($demo, $php . ' widdx db:seed');

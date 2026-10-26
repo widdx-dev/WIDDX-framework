@@ -334,11 +334,39 @@ function stop_server(int $pid, int $port): void
 
 // ------------------------------------------------------- 1. scaffold project
 
-sec('Scaffold: php widdx new app');
+sec('Scaffold: php widdx new app --demo');
 
-[$code, $out] = shell('cd ' . escapeshellarg($TMP) . ' && ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($ROOT . '/widdx') . ' new app');
+[$code, $out] = shell('cd ' . escapeshellarg($TMP) . ' && ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($ROOT . '/widdx') . ' new app --demo');
 ok('widdx new exits 0', $code === 0, $out);
 $proj = $TMP . '/app';
+$demoRoutes = (string) @file_get_contents($proj . '/routes/web.php');
+ok('public demo CRUD requires explicit --demo opt-in', str_contains($demoRoutes, "resource('users')->public();"));
+
+$generatedIgnore = (string) @file_get_contents($proj . '/.gitignore');
+ok('scaffold generates a useful .gitignore', is_file($proj . '/.gitignore')
+    && str_contains($generatedIgnore, '/.env')
+    && str_contains($generatedIgnore, '/vendor/')
+    && str_contains($generatedIgnore, '/storage/app/*')
+    && str_contains($generatedIgnore, '!/storage/app/.gitkeep')
+    && str_contains($generatedIgnore, '!/.env.example')
+    && !str_contains($generatedIgnore, 'composer.lock'));
+
+$sourceHtaccess = (string) @file_get_contents($ROOT . '/.htaccess');
+$generatedHtaccess = (string) @file_get_contents($proj . '/.htaccess');
+$publicPass = strpos($generatedHtaccess, 'RewriteRule ^public/ - [L]');
+$publicFallback = strpos($generatedHtaccess, 'RewriteRule ^(.*)$ public/$1 [L]');
+ok('generated shared-hosting rewrite stops before prefixing public twice',
+    $publicPass !== false && $publicFallback !== false && $publicPass < $publicFallback);
+ok('generated shared-hosting config denies private source directories',
+    str_contains($generatedHtaccess, 'RewriteRule ^(?:app|core|config|database|vendor|polyfill|tests|routes'));
+ok('source and generated rewrite guards block hidden paths without breaking ACME',
+    str_contains($generatedHtaccess, 'RewriteRule (^|/)\\.(?!well-known(?:/|$)) - [F,L,NC]')
+        && str_contains($sourceHtaccess, 'RewriteRule (^|/)\\.(?!well-known(?:/|$)) - [F,L,NC]'));
+
+$sourcePublicPass = strpos($sourceHtaccess, 'RewriteRule ^public/ - [L]');
+$sourcePublicFallback = strpos($sourceHtaccess, 'RewriteRule ^(.*)$ public/$1 [L]');
+ok('framework root rewrite also prevents a public/public loop',
+    $sourcePublicPass !== false && $sourcePublicFallback !== false && $sourcePublicPass < $sourcePublicFallback);
 
 // A project made from an absolute path (`php widdx new /tmp/x/pkg-name`) must still
 // get a legal composer package name. The whole argument used to be pasted into it,
@@ -1377,6 +1405,21 @@ sec('Shared hosting style: fresh project + /install.php, no terminal, no .env');
 [$code, $out] = shell('cd ' . escapeshellarg($TMP) . ' && ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($ROOT . '/widdx') . ' new hostapp');
 ok('widdx new hostapp exits 0', $code === 0, $out);
 $proj2 = $TMP . '/hostapp';
+$hostRoutes = (string) @file_get_contents($proj2 . '/routes/web.php');
+ok('secure scaffold protects users CRUD by default',
+    str_contains($hostRoutes, "resource('users');")
+        && !str_contains($hostRoutes, "resource('users')->public();"));
+$hostIgnore = (string) @file_get_contents($proj2 . '/.gitignore');
+ok('secure scaffold ignores secrets/runtime files but keeps composer.lock trackable',
+    is_file($proj2 . '/.gitignore')
+        && str_contains($hostIgnore, '/.env')
+        && str_contains($hostIgnore, '/database.sqlite')
+        && str_contains($hostIgnore, '/storage/sessions/*')
+        && str_contains($hostIgnore, '!/.env.example')
+        && !str_contains($hostIgnore, 'composer.lock'));
+$hostAppConfig = (string) @file_get_contents($proj2 . '/config/app.php');
+ok('generated config reads APP_URL from environment',
+    str_contains($hostAppConfig, "'url' => env('APP_URL', 'http://localhost:8000'),"));
 ok('scaffold ships public/install.php', is_file($proj2 . '/public/install.php'));
 ok('scaffold ships core/Installer.php', is_file($proj2 . '/core/Installer.php'));
 ok('fresh project has NO .env (installer stays available)', !is_file($proj2 . '/.env'));
@@ -1429,6 +1472,12 @@ file_put_contents(
     FILE_APPEND
 );
 
+file_put_contents(
+    $proj2 . '/routes/web.php',
+    "\nget('/it-app-url', fn() => \\Widdx\\Response::json(['url' => config('app.url')]));\n",
+    FILE_APPEND
+);
+
 $port2 = pick_port();
 $pid2 = start_server($proj2, $port2);
 $jar2 = [];
@@ -1462,6 +1511,14 @@ $r = http($port2, 'POST', '/install.php', [
     'DB_CONNECTION' => 'sqlite', 'DB_SQLITE_PATH' => $proj2 . '/host.sqlite',
 ], $jar2);
 ok('1.10 wrong install key is refused', $r['status'] === 200 && !is_file($proj2 . '/.env') && str_contains($r['body'], 'مفتاح التنصيب'), substr($r['body'], 0, 150));
+$r = http($port2, 'POST', '/install.php', [
+    'action' => 'install', 'installer_token' => (string) $tok10, 'install_key' => $key10,
+    'DB_CONNECTION' => 'sqlite', 'DB_SQLITE_PATH' => $proj2 . '/host.sqlite',
+], $jar2);
+ok('installer refuses to write .env when canonical APP_URL is missing',
+    $r['status'] === 200 && !is_file($proj2 . '/.env')
+        && str_contains($r['body'], 'رابط الموقع الأساسي مطلوب'),
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 160));
 
 $r = http($port2, 'GET', '/', null, $jar2);
 ok('welcome page reachable pre-install', $r['status'] === 200);
@@ -1474,6 +1531,7 @@ $r = http($port2, 'POST', '/install.php', [
     'install_key' => $key10,
     'DB_CONNECTION' => 'sqlite',
     'DB_SQLITE_PATH' => $proj2 . '/host.sqlite',
+    'APP_URL' => 'https://hostapp.example.test',
     'APP_LOCALE' => 'ar',
     'APP_DEBUG' => '1',
 ], $jar2);
@@ -1483,8 +1541,13 @@ ok('1.10 .env written with 0600 perms', substr(sprintf('%o', (int) fileperms($pr
 ok('1.10 installer deleted itself after success', !is_file($proj2 . '/public/install.php'));
 ok('1.10 install key removed once locked', !is_file($keyFile));
 $env2 = (string) @file_get_contents($proj2 . '/.env');
-ok('.env carries the chosen settings', str_contains($env2, 'DB_CONNECTION=sqlite') && str_contains($env2, 'APP_LOCALE=ar') && str_contains($env2, 'host.sqlite'));
+ok('.env carries the chosen settings', str_contains($env2, 'DB_CONNECTION=sqlite') && str_contains($env2, 'APP_LOCALE=ar') && str_contains($env2, 'host.sqlite') && str_contains($env2, 'APP_URL=https://hostapp.example.test'));
 ok('migration ran from the browser', is_file($proj2 . '/host.sqlite'));
+$r = http($port2, 'GET', '/it-app-url', null, $jar2);
+$urlResult = json_decode($r['body'], true);
+ok('APP_URL from installer is used by the running app',
+    $r['status'] === 200 && ($urlResult['url'] ?? null) === 'https://hostapp.example.test',
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 180));
 ok('installer self-locked', is_file($proj2 . '/storage/app/installed.lock'));
 
 $r = http($port2, 'GET', '/install.php', null, $jar2);

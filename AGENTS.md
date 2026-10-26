@@ -15,13 +15,13 @@ prints its own totals), not assumed.
 
 ```
 cd <the-unzipped-widdx-folder>
-php widdx new myapp
+php widdx new myapp --demo
 cd myapp
 php widdx migrate
 php widdx serve
 ```
 
-Open http://localhost:8000 — it works (demo users CRUD is live).
+This is a LOCAL demo: `--demo` deliberately exposes the sample users CRUD to guests. For real applications, omit `--demo`; the default scaffold protects CRUD until authentication and policies are configured. Never deploy a `--demo` scaffold unchanged.
 
 To add any list of records (inside `myapp`) — ALWAYS two commands + a restart:
 

@@ -116,14 +116,13 @@ Before creating a project, make sure its directory name is unused. These command
 they are not commands to rerun on an existing application:
 
 ```bash
-php widdx new learning-app --no-demo
+php widdx new learning-app
 cd learning-app
 php widdx migrate
 php widdx serve
 ```
 
-`--no-demo` prevents public users demo CRUD at project creation. **It is not a comprehensive security mode**;
-it does not prevent later generators from producing public routes and does not replace authorization design.
+New projects are secure by default; adding `--demo` explicitly opts into public sample CRUD and should be local-only. **This is not a comprehensive security mode**; later generators and route edits still require deliberate authorization design.
 
 ### B. Check the Environment Before Fixing Code
 

@@ -1,15 +1,28 @@
-<IfModule mod_rewrite.c>
-    RewriteEngine On
-    # Forward all requests to public/index.php
-    RewriteRule ^(.*)$ public/$1 [L]
-</IfModule>
+# Shared-hosting fallback when the project root is the document root.
+# Prefer configuring the web server's document root to the public/ directory.
+Options -Indexes
 
-# Protect sensitive files
-<FilesMatch "^(composer\.json|\.env|database\.sqlite|widdx)$">
+# Never serve environment files, dependency manifests, local databases, or CLI tools.
+<FilesMatch "^(?i:\.env(?:\..*)?|composer\.(?:json|lock)|database\.sqlite|widdx(?:-test)?|phpstan(?:\.dist)?\.neon)$">
     Require all denied
 </FilesMatch>
 
-# Protect .env explicitly
-<Files .env>
-    Require all denied
-</Files>
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Deny hidden files/directories at every path, but preserve ACME HTTP-01 challenges.
+    RewriteRule (^|/)\.(?!well-known(?:/|$)) - [F,L,NC]
+
+    # Block direct URL access to private project source and metadata directories.
+    RewriteRule ^(?:app|core|config|database|vendor|polyfill|tests|routes|\.agents|\.git)(?:/|$) - [F,L,NC]
+
+    # These root files are development/project internals, not public resources.
+    RewriteRule ^(?:\.env(?:\..*)?|composer\.(?:json|lock)|database\.sqlite|widdx(?:-test)?|phpstan(?:\.dist)?\.neon|README(?:\.md)?|AGENTS\.md|CHANGELOG\.md|LICENSE|\.gitignore|CLAUDE\.md|GEMINI\.md|llms\.txt|\.cursorrules)$ - [F,L,NC]
+
+    # The root rewrite sends requests to public/... internally. Stop here on the
+    # next pass, otherwise some Apache configurations rewrite to public/public/...
+    RewriteRule ^public/ - [L]
+
+    # Shared-hosting fallback: dispatch public requests through public/.
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>

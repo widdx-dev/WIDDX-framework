@@ -94,6 +94,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             throw new RuntimeException('.env موجود مسبقًا؛ لن يتم overriding له. إن كان كل شيء جاهزًا اضغط "قفل فقط" بالأسفل، أو احذف .env لإعادة التنصيب.');
         } else {
             $v = array_map(static fn ($x) => is_string($x) ? trim($x) : '', $_POST);
+            $appUrl = (string) ($v['APP_URL'] ?? '');
+            $urlParts = $appUrl !== '' ? parse_url($appUrl) : false;
+            if (!is_array($urlParts)
+                || filter_var($appUrl, FILTER_VALIDATE_URL) === false
+                || !isset($urlParts['scheme'], $urlParts['host'])
+                || !in_array(strtolower((string) $urlParts['scheme']), ['http', 'https'], true)
+                || isset($urlParts['user']) || isset($urlParts['pass']) || isset($urlParts['query']) || isset($urlParts['fragment'])) {
+                throw new RuntimeException('رابط الموقع الأساسي مطلوب. أدخل رابطًا كاملًا يبدأ بـ https:// أو http://، دون بيانات دخول أو query أو fragment.');
+            }
             if (($v['DB_CONNECTION'] ?? 'sqlite') === 'sqlite') {
                 // The sqlite path lives in its own field so the (hidden)
                 // server fields cannot override it with an empty value.
@@ -214,8 +223,8 @@ li{margin:4px 0}
 <label>كلمة المرور <input type="password" name="DB_PASSWORD" value=""></label>
 </div>
 
-<label>رابط الموقع <span class="hint">اختياري، مثل https://example.com</span>
-<input name="APP_URL" value="<?= $val('APP_URL') ?>"></label>
+<label>الرابط الأساسي للموقع <span class="hint">مطلوب لروابط التحقق وإعادة تعيين كلمة المرور، مثل https://example.com</span>
+<input name="APP_URL" type="url" required placeholder="https://example.com" value="<?= $val('APP_URL') ?>"></label>
 <label>لغة الواجهة
 <select name="APP_LOCALE">
     <option value="ar" <?= ($val('APP_LOCALE', 'ar') === 'ar') ? 'selected' : '' ?>>العربية (RTL)</option>

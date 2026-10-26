@@ -61,8 +61,8 @@ Open `http://localhost:8000`
 ```php
 get('/', fn() => 'Welcome to Widdx!');
 
-// One line = full CRUD (->public() opens it; see "Zero-Code CRUD"):
-resource('users', UserController::class)->public();
+// One line = full CRUD. Access is protected by default; do not expose private data.
+resource('users', UserController::class);
 
 // Or explicit routes:
 get('/users', [UserController::class, 'index']);
@@ -882,8 +882,11 @@ Widdx is licensed under the **MIT license** (see `LICENSE`) and follows
 Two ways to start a project:
 
 ```bash
-# 1) Clone the framework and scaffold a project from it (zero config) — the supported path
+# 1) Clone and scaffold a secure project (no public demo CRUD by default)
 git clone <repo-url> widdx && php widdx new my-app
+
+# For a throwaway LOCAL demo only, explicitly opt into public CRUD:
+php widdx new demo-app --demo
 
 # 2) As a composer dependency — NOT installable yet: widdx/framework is still
 #    unpublished on Packagist (composer require returns 404 until it is released).
@@ -926,10 +929,10 @@ Widdx runs natively on Apache/LiteSpeed shared hosting (cPanel, Hostinger, Namec
 
 Typical no-terminal flow:
 
-1. `php widdx new my-app` + `make:crud ...` locally (or receive the folder from a teammate).
-2. Edit nothing — upload the whole folder to `public_html/` via FTP/File Manager.
+1. Create the project with `php widdx new my-app` (secure defaults; do NOT use `--demo` for production).
+2. Upload the project folder to `public_html/` via FTP/File Manager, or preferably point the document root at `public/` when the host permits it.
 3. Create the MySQL database + user in cPanel.
-4. Open `/install.php`, submit the form, done. Delete `install.php` if you like —
-   the lock already neutralizes it.
+4. Open `/install.php`, enter the database settings and the canonical `APP_URL` (HTTPS for a public site), then submit. The installer locks itself after success.
+5. Review `routes/web.php`, configure authentication/policies, and ensure `APP_DEBUG=false` before accepting real users.
 
 If you DO have SSH, everything also works through the usual `php widdx migrate` CLI.

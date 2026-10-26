@@ -37,9 +37,10 @@ Usage:
   php widdx <command> [options]
 
 Project:
-  new <name>                Create a new project (one command, full app)
-  new <name> --no-demo      Same, but production start: no public demo CRUD
-  new:api <name>            Create a new API project  (also accepts --no-demo)
+  new <name>                Create a secure project (no public demo CRUD)
+  new <name> --demo         Include public demo CRUD (local/testing only)
+  new <name> --no-demo      Alias for the secure default
+  new:api <name>            Create a secure API project (use --demo for demo CRUD)
 
 Code Generation:
   make:controller <Name>    Create a controller in app/Controllers
@@ -127,8 +128,9 @@ function write_file(string $path, string $content): void
 // ---------- Project Scaffolding ----------
 
 /**
- * Read `php widdx new [--no-demo] <name>`: the project name is the first
- * argument that is not a flag, so the flag may come before it.
+ * Read `php widdx new <name> [--demo|--no-demo]`: secure by default; public
+ * demo CRUD is opt-in. --no-demo remains a backwards-compatible explicit alias.
+ * The project name is the first argument that is not a flag.
  *
  * @return array{0: string|null, 1: bool}  [name, withDemo]
  */
@@ -141,7 +143,7 @@ function project_request(array $argv): array
             break;
         }
     }
-    return [$name, !in_array('--no-demo', $argv, true)];
+    return [$name, in_array('--demo', $argv, true) && !in_array('--no-demo', $argv, true)];
 }
 
 function create_project(string $name, bool $isApi = false, bool $withDemo = true): void
@@ -219,22 +221,23 @@ function create_project(string $name, bool $isApi = false, bool $withDemo = true
         'minimum-stability' => 'stable',
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
-    // .htaccess
+    // .htaccess — secure shared-hosting fallback when the project root is document root.
     write_file("{$base}/.htaccess", <<<'HTACCESS'
-<IfModule mod_rewrite.c>
-    RewriteEngine On
-    RewriteRule ^(.*)$ public/$1 [L]
-</IfModule>
+Options -Indexes
 
-<FilesMatch "^(composer\.json|\.env|database\.sqlite|widdx)$">
+<FilesMatch "^(?i:\.env(?:\..*)?|composer\.(?:json|lock)|database\.sqlite|widdx(?:-test)?|phpstan(?:\.dist)?\.neon)$">
     Require all denied
 </FilesMatch>
 
-<Files .env>
-    Require all denied
-</Files>
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule (^|/)\.(?!well-known(?:/|$)) - [F,L,NC]
+    RewriteRule ^(?:app|core|config|database|vendor|polyfill|tests|routes|\.agents|\.git|\.github)(?:/|$) - [F,L,NC]
+    RewriteRule ^(?:\.env(?:\..*)?|composer\.(?:json|lock)|database\.sqlite|widdx(?:-test)?|phpstan(?:\.dist)?\.neon|README(?:\.md)?|AGENTS\.md|CHANGELOG\.md|LICENSE|\.gitignore|CLAUDE\.md|GEMINI\.md|llms\.txt|\.cursorrules)$ - [F,L,NC]
+    RewriteRule ^public/ - [L]
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
 HTACCESS);
-
     // public/.htaccess
     write_file("{$base}/public/.htaccess", <<<'HTACCESS'
 <IfModule mod_rewrite.c>
@@ -331,7 +334,7 @@ return [
     // Debug OFF unless APP_DEBUG is explicitly set — never leak traces by default.
     'debug' => filter_var(env('APP_DEBUG', 'false'), FILTER_VALIDATE_BOOLEAN),
     'locale' => env('APP_LOCALE', 'en'),
-    'url' => 'http://localhost:8000',
+    'url' => env('APP_URL', 'http://localhost:8000'),
     'trusted_proxies' => array_values(array_filter(array_map('trim', explode(',', (string) env('TRUSTED_PROXIES', ''))))),
     'security' => [
         'frame_options' => env('SECURITY_FRAME_OPTIONS', 'SAMEORIGIN'),
@@ -389,11 +392,44 @@ DB_HOST=127.0.0.1
 #DB_PORT=3306
 #DB_USERNAME=root
 #DB_PASSWORD=
+# Set the canonical public URL so verification/reset links point to this site.
+#APP_URL=https://example.com
 # APP_DEBUG is OFF unless set here — uncomment ONLY on a local machine:
 # it exposes stack traces and technical error pages.
 #APP_DEBUG=true
 ENV);
 
+    // .gitignore — secrets and runtime data are local; composer.lock belongs to the app.
+    write_file("{$base}/.gitignore", <<<'GITIGNORE'
+# Dependencies
+/vendor/
+
+# Environment secrets
+/.env
+/.env.*
+!/.env.example
+
+# Local databases
+/database.sqlite
+/*.sqlite
+
+# Runtime data
+/storage/cache/*
+/storage/logs/*
+/storage/app/*
+/storage/sessions/*
+/storage/framework/*
+!/storage/cache/.gitkeep
+!/storage/logs/.gitkeep
+!/storage/app/.gitkeep
+!/storage/sessions/.gitkeep
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+.DS_Store
+GITIGNORE);
     // routes/web.php
     if ($isApi) {
         if ($withDemo) {
@@ -419,8 +455,8 @@ get('/', fn() => ['app' => config('app.name'), 'status' => 'ok']);
 
 // The same zero-code JSON CRUD, but the fail-closed gate stays ON: every call
 // needs a logged-in caller (401 for guests) or an App\Policies\UserPolicy.
-// 'php widdx make:auth' installs the login; 'php widdx new <name>' without the
-// flag is the demo start, where /users is open to guests.
+// 'php widdx make:auth' installs the login. Public demo access is explicit:
+// use 'php widdx new <name> --demo' only for a throwaway local demo.
 apiResource('users');
 PHP);
         }
@@ -458,7 +494,7 @@ get('/', fn() => view('welcome'));
 // fail-closed gate holds: a guest on /users is redirected to /login and a
 // logged-in user still needs an App\Policies\UserPolicy that allows the action.
 // Run 'php widdx make:auth' to get that /login (plus register/reset/verify).
-// 'php widdx new <name>' without the flag is the demo start: /users open to guests.
+// 'php widdx new <name> --demo' opts into public demo CRUD; secure is the default.
 resource('users');
 
 // Customize later by adding views/users/*.php or a controller class —
@@ -666,13 +702,21 @@ A Widdx project.
 cd {$name}
 composer install
 cp .env.example .env
+# Edit .env: set DB_* and APP_URL to this site's canonical URL.
 php widdx migrate
-php widdx db:seed
 php widdx serve
 ```
 
-No terminal / shared hosting? Upload the folder as-is and open `/install.php`
-in the browser — it writes .env, runs the migrations and locks itself.
+New projects are secure by default: the demo `users` CRUD is protected.
+Run `php widdx make:auth` to install login/register/reset routes, and define
+policies before granting access to application data.
+
+For a local throwaway demo only, create a separate project with
+`php widdx new demo-app --demo`; that option intentionally exposes demo CRUD
+to guests. Do not deploy a `--demo` project without replacing its public routes.
+
+No terminal / shared hosting? Upload the folder and open `/install.php` in the
+browser. Set `APP_URL` to the canonical site URL in the installer so email links work.
 
 ## One-Line CRUD
 
@@ -719,11 +763,12 @@ MD);
     echo "Next steps:\n";
     echo "  cd {$name}\n";
     echo "  php widdx migrate\n";
-    echo "  php widdx serve        # /users is already full CRUD — zero code written\n";
-    echo "  php widdx make:crud Post title:string body:text?  # add more, still zero code\n";
+    echo "  php widdx serve        # /users is protected until auth/policy is configured\n";
+    echo "  php widdx make:auth    # optional: add login/register/reset/verification routes\n";
+    echo "  php widdx make:crud Post title:string body:text?  # add a protected CRUD resource\n";
     echo "  (after make:crud: php widdx migrate, then RESTART php widdx serve)\n";
-    echo "Optional: composer install, cp .env.example .env, php widdx db:seed — the app runs\n";
-    echo "  on defaults without any of them (SQLite file appears by itself).\n";
+    echo "For a throwaway public demo only: php widdx new demo-app --demo\n";
+    echo "Set APP_URL + DB_* in .env before production and keep APP_DEBUG=false.\n";
     echo "  (shared hosting without terminal? upload the folder + open /install.php in the browser)\n";
 }
 
@@ -1252,7 +1297,8 @@ PHP);
         echo "  - Migration: database/migrations/{$filename}\n";
         echo "  - Views: views/{$table}/{index,create,show,edit}.php\n";
         echo "\nAdd to routes/web.php:\n";
-        echo "  resource('{$table}', {$name}Controller::class)->public();\n";
+        echo "  resource('{$table}', \\App\\Controllers\\{$name}Controller::class);\n";
+        echo "  Add ->public() only if this resource is intentionally public to guests.\n";
         break;
     }
 
