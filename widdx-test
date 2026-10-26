@@ -224,6 +224,30 @@ test('Event fires listeners', function () {
     assert_true($called);
 });
 
+test('Event::flush isolates queued listener failures and continues with later events', function () {
+    \Widdx\Event::forget('test.queued.failure');
+    \Widdx\Event::forget('test.queued.after');
+    $seen = [];
+    \Widdx\Event::listen('test.queued.failure', function (): void {
+        throw new \RuntimeException('queued-event-probe');
+    });
+    \Widdx\Event::listen('test.queued.after', function (string $value) use (&$seen): void {
+        $seen[] = $value;
+    });
+
+    \Widdx\Event::queue('test.queued.failure');
+    \Widdx\Event::queue('test.queued.after', 'after-failure');
+    try {
+        \Widdx\Event::flush();
+        assert_equals(['after-failure'], $seen, 'later queued events must run even when an earlier listener throws');
+        \Widdx\Event::flush();
+        assert_equals(['after-failure'], $seen, 'the completed batch must not run twice');
+    } finally {
+        \Widdx\Event::forget('test.queued.failure');
+        \Widdx\Event::forget('test.queued.after');
+    }
+});
+
 // Auth tests
 test('Auth guest when no user', function () {
     \Widdx\Session::flush();
