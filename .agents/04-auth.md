@@ -32,6 +32,16 @@ In PHP code:
 - `Auth::register(['name'…,'email'…,'password'…])` — hashes the password itself.
 - `Auth::logout()`.
 
+Email verification creates tokens when the user table has `email_verified_at`, but it does not automatically restrict every protected page. To require a verified email, add `VerifiedMiddleware` to only the routes that need it:
+
+```php
+get('/billing', [BillingController::class, 'index'])
+    ->middleware(\\Widdx\\AuthMiddleware::class)
+    ->middleware(\\Widdx\\VerifiedMiddleware::class);
+```
+
+Guests are sent to `/login`; signed-in users whose email is not verified are sent to `/email-verification`. JSON requests receive 401 for guests and 403 for unverified users. If the user model has no `email_verified_at` column, verification is disabled for that model. Leave `/email-verification` and `/verify-email/{token}` outside this middleware so people can complete verification.
+
 Permissions (Gate):
 
 - `Widdx\Gate::define('publish', fn($u) => $u->is_admin);`
