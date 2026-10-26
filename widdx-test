@@ -1709,7 +1709,10 @@ test('Auth: register + email verification + password reset lifecycle', function 
         'empty direct password assignment preserves the existing hash'
     );
 
-    // verification mail went out automatically (column exists)
+    // Verification mail is queued: registration must not block on SMTP.
+    assert_equals(0, count($mail->logged()), 'verification mail must not send synchronously during registration');
+    \Widdx\Event::flush();
+    assert_equals(1, count($mail->logged()), 'queued verification mail is delivered when events flush');
     $body = (string) ($mail->logged()[0]['body'] ?? '');
     preg_match('#/verify-email/([a-f0-9]{64})\?email=#', $body, $m);
     assert_true(!empty($m[1]), 'verify token present in mail body');
