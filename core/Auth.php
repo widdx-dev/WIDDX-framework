@@ -216,21 +216,40 @@ class Auth
 
     // ---------- Password reset ----------
 
-    /** Create + mail a signed reset link. Returns false when the email is unknown. */
+    /**
+     * Queue a password-reset request without looking up the email during the
+     * HTTP response path. Always returns true: existence checks and token
+     * creation happen after the response is sent, avoiding a timing oracle.
+     */
     public static function sendResetLink(string $email): bool
     {
         static::ensureMailListener();
-        $class = static::userClass();
-        if (!$class::query()->where('email', $email)->exists()) {
-            return false; // caller must still report success (anti-enumeration)
-        }
-        $token = static::createToken($email, 'reset');
-        $link = static::resetLink($email, $token);
-        // Deferred until AFTER the response reached the client: the request
-        // itself returns in the same time whether or not the mail goes out,
-        // so reset-link requests cannot be timed into an enumeration oracle.
-        Event::queue('auth.mail', $email, 'Reset your password', "Use this link to reset your password (valid 1 hour):\n{$link}");
+        static::ensureResetRequestListener();
+        Event::queue('auth.reset_request', $email);
         return true;
+    }
+
+    /** One shared listener performs the existence check after the response. */
+    protected static bool $resetRequestListenerRegistered = false;
+
+    protected static function ensureResetRequestListener(): void
+    {
+        if (static::$resetRequestListenerRegistered) {
+            return;
+        }
+        Event::listen('auth.reset_request', function (string $email): void {
+            $class = Auth::userClass();
+            if (!class_exists($class) || !$class::query()->where('email', $email)->exists()) {
+                return;
+            }
+            $token = Auth::createToken($email, 'reset');
+            $link = Auth::resetLink($email, $token);
+            // This listener itself runs during Event::flush(), after App::run()
+            // has sent the response. Fire the already-registered mail listener
+            // directly rather than queueing a nested event for a later request.
+            Event::fire('auth.mail', $email, 'Reset your password', "Use this link to reset your password (valid 1 hour):\n{$link}");
+        });
+        static::$resetRequestListenerRegistered = true;
     }
 
     /** One shared listener that actually sends queued auth mails. */
