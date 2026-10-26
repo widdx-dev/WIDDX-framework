@@ -23,7 +23,7 @@ return [
         explode(',', (string) env('TRUSTED_PROXIES', ''))
     ))),
 
-    // Headers applied by \Widdx\SecurityHeaders middleware (opt-in in routes)
+    // Baseline response headers applied automatically by the framework.
     'security' => [
         'frame_options' => env('SECURITY_FRAME_OPTIONS', 'SAMEORIGIN'),
         'referrer_policy' => env('SECURITY_REFERRER_POLICY', 'strict-origin-when-cross-origin'),
