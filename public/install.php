@@ -78,20 +78,24 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             throw new RuntimeException('مفتاح التنصيب غير صحيح. افتح ملف storage/app/install.key عبر FTP/SSH وانسخ محتواه هنا.');
         }
 
-        if ($action === 'lock_only') {
+        if (in_array($action, ['finish_existing', 'lock_only'], true)) {
             if (!Installer::configured($base)) {
-                throw new RuntimeException('لا يوجد .env بعد — أكمل التنصيب أولًا.');
+                throw new RuntimeException('لا يوجد .env بعد — أكمل إعدادات التنصيب أولًا.');
             }
-            Installer::lock($base);
-            $done = 'تم القفل. install.php أصبح الآن مغلقًا (404).';
+            // Never lock a configured app without proving migrations can finish.
+            // This also makes a previous failed install resumable: only pending
+            // migrations are retried, and finish() writes the lock after success.
+            $executed = Installer::finish($base);
+            $n = count($executed);
+            $done = "تم استكمال التنصيب بنجاح! نُفِّذت {$n} migration معلّقة، وقُفل المثبّت.";
             if (is_file(__FILE__)) {
                 if (!@unlink(__FILE__)) {
                     $done .= ' <strong>احذف install.php يدويًا الآن.</strong>';
                 }
             }
         } elseif (Installer::configured($base)) {
-            // Existing config (CLI flow or manual .env) — never overwrite it.
-            throw new RuntimeException('.env موجود مسبقًا؛ لن يتم overriding له. إن كان كل شيء جاهزًا اضغط "قفل فقط" بالأسفل، أو احذف .env لإعادة التنصيب.');
+            // Existing config (CLI flow or failed prior install) — never overwrite it.
+            throw new RuntimeException('.env موجود مسبقًا ولن يتم استبداله. استخدم زر إكمال التنصيب لتشغيل migrations المعلّقة ثم قفل المثبّت.');
         } else {
             $v = array_map(static fn ($x) => is_string($x) ? trim($x) : '', $_POST);
             $appUrl = (string) ($v['APP_URL'] ?? '');
@@ -186,17 +190,17 @@ li{margin:4px 0}
 <?php if ($errors): foreach ($errors as $er): ?><div class="err"><?= e($er) ?></div><?php endforeach; endif; ?>
 
 <?php if ($configured):
-    // .env exists but the installer is NOT locked yet — offer locking.
-    // Key + token are required here too, so this button cannot be fired
-    // by a drive-by POST.
+    // .env exists but the installer is NOT locked yet. Resume safely by running
+    // every pending migration, then lock only if all migrations succeed.
+    // Key + token are required; this cannot be triggered by a drive-by POST.
 ?>
-    <p>.env موجود بالفعل (ربما ضبطته عبر الطرفية). يمكنك قفل المثبّت فقط:</p>
+    <p>.env موجود بالفعل. يمكنك إكمال التنصيب: سيُشغّل المثبّت migrations المعلّقة ثم يقفل نفسه فقط عند نجاحها.</p>
     <form method="post">
-    <input type="hidden" name="action" value="lock_only">
+    <input type="hidden" name="action" value="finish_existing">
     <input type="hidden" name="installer_token" value="<?= e($iform) ?>">
     <label>مفتاح التنصيب <span class="hint">افتح ملف <code>storage/app/install.key</code> عبر FTP/SSH وانسخ محتواه هنا</span>
     <input type="text" name="install_key" value="" autocomplete="off"></label>
-    <button class="btn" type="submit">قفل المثبّت فقط</button></form>
+    <button class="btn" type="submit">إكمال التنصيب وتشغيل migrations المعلّقة</button></form>
 <?php elseif ($ready): ?>
 <form method="post">
 <input type="hidden" name="action" value="install">
