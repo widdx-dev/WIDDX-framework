@@ -2376,6 +2376,16 @@ test('2.22 silent-failure guards: count() limit, array where, stale save, missin
     \Widdx\Schema::dropIfExists('wc2_items');
 });
 
+test('App completes the HTTP response before dispatching queued side effects', function () {
+    $app = (string) file_get_contents(__DIR__ . '/core/App.php');
+    $send = strpos($app, '$response->send();');
+    $finish = $send === false ? false : strpos($app, 'fastcgi_finish_request();', $send);
+    $flush = $send === false ? false : strpos($app, 'Event::flush();', $send);
+    assert_true($send !== false && $finish !== false && $flush !== false, 'response finish and queue flush must both be present');
+    assert_true($send < $finish && $finish < $flush, 'finish FastCGI response before queued event work');
+    assert_true(str_contains($app, "elseif (PHP_SAPI !== 'cli')"), 'non-FPM web SAPIs attempt to flush output buffers; CLI buffering is preserved');
+});
+
 test('2.23 the five production findings: installer debug default, upload dir escape, CORS allowlist, token indexes + prune, dead config key', function () {
     // 1. SEC-01 — a first run of public/install.php must not pre-check APP_DEBUG:
     // the page warns that the framework defaults to OFF while the box said ON.
