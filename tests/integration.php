@@ -1843,6 +1843,11 @@ $r = http($port2, 'GET', '/vaults', null, $jar2, null, null, ['Accept: applicati
 ok('1.3b guest + Accept json at auth gate = 401 JSON (not 302)', $r['status'] === 401 && str_contains($r['body'], 'error'), 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
 $r = http($port2, 'GET', '/api/does-not-exist', null, $jar2);
 ok('1.3b /api 404 renders as JSON', $r['status'] === 404 && str_contains($r['body'], 'error'), 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 120));
+ok('404 responses include baseline security headers',
+    ($r['headers']['x-frame-options'] ?? '') === 'SAMEORIGIN'
+        && ($r['headers']['x-content-type-options'] ?? '') === 'nosniff'
+        && ($r['headers']['referrer-policy'] ?? '') === 'strict-origin-when-cross-origin',
+    json_encode($r['headers']));
 // After 'make:auth' ran in this project (line 874) the users resource is no longer
 // ->public() — that is the DEPLOY-01 C contract — so /users/create now 302s for this
 // logged-out jar. /login is the form that is public by construction in this app.
@@ -1860,6 +1865,11 @@ $envKept = array_values(array_filter(explode("\n", $envRaw), fn($l) => !str_star
 file_put_contents($proj2 . '/.env', implode("\n", $envKept) . "\n");
 $r = http($port2, 'GET', '/it-boom', null, $jar2);
 ok('1.5 APP_DEBUG unset → friendly 500, no trace leak', $r['status'] === 500 && !str_contains($r['body'], 'SECRET-TRACE-15') && !str_contains($r['body'], 'Technical Details'), substr($r['body'], 0, 120));
+ok('500 responses include baseline security headers',
+    ($r['headers']['x-frame-options'] ?? '') === 'SAMEORIGIN'
+        && ($r['headers']['x-content-type-options'] ?? '') === 'nosniff'
+        && ($r['headers']['referrer-policy'] ?? '') === 'strict-origin-when-cross-origin',
+    json_encode($r['headers']));
 $r = http($port2, 'GET', '/it-boom', null, $jar2, null, null, ['Accept: application/json']);
 ok('1.5 JSON 500 hides the message when debug off', $r['status'] === 500 && str_contains($r['body'], 'Internal Server Error') && !str_contains($r['body'], 'SECRET-TRACE-15'), substr($r['body'], 0, 150));
 
