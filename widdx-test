@@ -1872,7 +1872,9 @@ test('Auth: register + email verification + password reset lifecycle', function 
     preg_match('#/reset-password/([a-f0-9]{64})\?email=#', $resetBody, $m2);
     assert_true(!empty($m2[1]), 'reset token present');
     assert_equals(false, \Widdx\Auth::resetPassword('sara@widdx.test', $m2[1] . 'x', 'brandnewpass9'), 'tampered token rejected');
+    assert_equals(1, (int) db('auth_tokens')->where('email', 'sara@widdx.test')->where('type', 'reset')->count(), 'a bad token must not consume the valid reset token');
     assert_true(\Widdx\Auth::resetPassword('sara@widdx.test', $m2[1], 'brandnewpass9'));
+    assert_equals(0, (int) db('auth_tokens')->where('email', 'sara@widdx.test')->where('type', 'reset')->count(), 'successful reset atomically consumes reset tokens');
     assert_true(password_verify('brandnewpass9', (string) \Widdx\Tests\AuthUser::find($user->id)->password), 'new password active');
     assert_true(\Widdx\Auth::guest(), 'password reset invalidates the existing session on its next access');
     assert_equals(false, \Widdx\Auth::resetPassword('sara@widdx.test', $m2[1], 'thirdpass123'), 'tokens are single-use');
