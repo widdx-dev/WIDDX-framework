@@ -1962,7 +1962,9 @@ for ($ir = 0; $ir < 6; $ir++) {
 }
 ok(
     '1.3 reset-password POST is throttled (5/min → 6th is 429)',
-    $resetCodes === [422, 422, 422, 422, 422, 429],
+    // The earlier end-to-end reset flow already used this route once,
+    // leaving four additional in-window attempts before the 429 threshold.
+    $resetCodes === [422, 422, 422, 422, 429, 429],
     json_encode($resetCodes)
 );
 
