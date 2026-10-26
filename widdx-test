@@ -1804,6 +1804,7 @@ test('Auth: register + email verification + password reset lifecycle', function 
         'password' => 'supersecret1', 'password_confirmation' => 'supersecret1',
     ], false);
     assert_true(!empty($user->id), 'registered');
+    \Widdx\Auth::login($user);
     $unverifiedReq = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/private']);
     $unverifiedResp = $verifiedMw->handle($unverifiedReq, fn () => \Widdx\Response::make('private'));
     assert_equals(302, $unverifiedResp->getStatus());
