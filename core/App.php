@@ -135,8 +135,23 @@ class App
         $response = SecurityHeaders::apply($response);
         $response->send();
 
-        // Fire queued events AFTER the response reached the client —
-        // listeners must never delay or corrupt the output.
+        // On PHP-FPM, finish the HTTP response now so queued work cannot affect
+        // its completion time (e.g. password-reset account lookup/SMTP delivery).
+        // For other web SAPIs, flush output buffers as best effort. CLI tests
+        // retain their normal output buffering behavior.
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
+        } elseif (PHP_SAPI !== 'cli') {
+            while (ob_get_level() > 0) {
+                if (!@ob_end_flush()) {
+                    break;
+                }
+            }
+            flush();
+        }
+
+        // Side effects now run after the response has been completed where the
+        // SAPI supports it; listener failures cannot append content to the body.
         Event::flush();
     }
 

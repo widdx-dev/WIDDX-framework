@@ -1858,12 +1858,17 @@ test('Auth: register + email verification + password reset lifecycle', function 
     assert_equals(200, $verifiedResp->getStatus());
     assert_equals('verified-ok', $verifiedResp->getContent(), 'verified users reach the protected handler');
 
-    // password reset: unknown email → false; known → mailed token link
-    assert_equals(false, \Widdx\Auth::sendResetLink('ghost@nowhere.test'));
-    assert_true(\Widdx\Auth::sendResetLink('sara@widdx.test'));
-    // 1.9: reset mail is deferred to Event::flush (post-response) on purpose.
+    // Password-reset requests do not query the user table until Event::flush(),
+    // so the HTTP response path does not reveal whether the email exists.
+    $mailCountBeforeReset = count($mail->logged());
+    assert_true(\Widdx\Auth::sendResetLink('ghost@nowhere.test'), 'unknown email request is accepted without revealing existence');
+    assert_true(\Widdx\Auth::sendResetLink('sara@widdx.test'), 'known email request is accepted');
+    assert_equals($mailCountBeforeReset, count($mail->logged()), 'reset requests do not send mail synchronously');
+    // Event::flush simulates the post-response work done by App::run().
     \Widdx\Event::flush();
-    $resetBody = (string) ($mail->logged()[1]['body'] ?? '');
+    assert_equals($mailCountBeforeReset + 1, count($mail->logged()), 'only the known account receives a reset email');
+    assert_equals(0, (int) db('auth_tokens')->where('email', 'ghost@nowhere.test')->where('type', 'reset')->count(), 'unknown emails get no persistent reset token');
+    $resetBody = (string) ($mail->logged()[$mailCountBeforeReset]['body'] ?? '');
     preg_match('#/reset-password/([a-f0-9]{64})\?email=#', $resetBody, $m2);
     assert_true(!empty($m2[1]), 'reset token present');
     assert_equals(false, \Widdx\Auth::resetPassword('sara@widdx.test', $m2[1] . 'x', 'brandnewpass9'), 'tampered token rejected');
@@ -2369,6 +2374,16 @@ test('2.22 silent-failure guards: count() limit, array where, stale save, missin
     assert_equals([], \Widdx\Database::connection()->tableColumns('wc2_no_such_table'), 'missing table => empty array contract');
 
     \Widdx\Schema::dropIfExists('wc2_items');
+});
+
+test('App completes the HTTP response before dispatching queued side effects', function () {
+    $app = (string) file_get_contents(__DIR__ . '/core/App.php');
+    $send = strpos($app, '$response->send();');
+    $finish = $send === false ? false : strpos($app, 'fastcgi_finish_request();', $send);
+    $flush = $send === false ? false : strpos($app, 'Event::flush();', $send);
+    assert_true($send !== false && $finish !== false && $flush !== false, 'response finish and queue flush must both be present');
+    assert_true($send < $finish && $finish < $flush, 'finish FastCGI response before queued event work');
+    assert_true(str_contains($app, "elseif (PHP_SAPI !== 'cli')"), 'non-FPM web SAPIs attempt to flush output buffers; CLI buffering is preserved');
 });
 
 test('2.23 the five production findings: installer debug default, upload dir escape, CORS allowlist, token indexes + prune, dead config key', function () {

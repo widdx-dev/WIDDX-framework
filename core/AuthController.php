@@ -87,8 +87,8 @@ class AuthController
     public function sendResetLink(): Response
     {
         request()->validate(['email' => 'required|email']);
-        // Returns false for unknown emails — we report success anyway
-        // (anti-enumeration: attackers must not learn who has an account).
+        // The request is queued without an account lookup. The lookup, token
+        // creation, and mail delivery happen after the response is sent.
         Auth::sendResetLink((string) request('email'));
         Session::flash('success', Lang::line('auth.link_sent'));
         return redirect('/forgot-password');
