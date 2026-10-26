@@ -256,6 +256,11 @@ class Auth
 
     public static function verified(mixed $user): bool
     {
+        // A missing user is never verified. Models without an email_verified_at
+        // column remain usable for apps that haven't enabled verification.
+        if ($user === null) {
+            return false;
+        }
         return !static::verificationAvailable($user) || !empty($user->email_verified_at);
     }
 
