@@ -1682,6 +1682,34 @@ ok(
         && ($r['headers']['x-content-type-options'] ?? '') === 'nosniff',
     'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 250)
 );
+
+// Active documents must never be served inline from the application origin.
+foreach ([
+    'unsafe.html' => '<!doctype html><script>document.body.innerText="XSS"</script>',
+    'unsafe.svg' => '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><text>x</text></svg>',
+] as $activeName => $activeBody) {
+    file_put_contents($proj2 . '/storage/app/public/it18/' . $activeName, $activeBody);
+    $r = http($port2, 'GET', '/storage/it18/' . $activeName, null, $jar2);
+    ok(
+        "1.8 storageRoutes neutralizes active upload {$activeName}",
+        $r['status'] === 200
+            && stripos((string) ($r['headers']['content-type'] ?? ''), 'text/plain') === 0
+            && stripos((string) ($r['headers']['content-disposition'] ?? ''), 'attachment;') === 0
+            && ($r['headers']['x-content-type-options'] ?? '') === 'nosniff',
+        'status=' . $r['status'] . ' headers=' . json_encode($r['headers'])
+    );
+}
+
+file_put_contents($proj2 . '/storage/app/public/it18/unknown.bin', "\x00\x01\x02\x03");
+$r = http($port2, 'GET', '/storage/it18/unknown.bin', null, $jar2);
+ok(
+    '1.8 unknown/binary uploads default to attachment',
+    $r['status'] === 200
+        && stripos((string) ($r['headers']['content-disposition'] ?? ''), 'attachment;') === 0
+        && ($r['headers']['x-content-type-options'] ?? '') === 'nosniff',
+    'status=' . $r['status'] . ' headers=' . json_encode($r['headers'])
+);
+
 $r = http($port2, 'GET', '/storage/../../composer.json', null, $jar2);
 ok('1.8 storageRoutes refuses path traversal', $r['status'] === 404, 'status=' . $r['status']);
 $it18Files = glob($proj2 . '/storage/app/public/it18/*') ?: [];
