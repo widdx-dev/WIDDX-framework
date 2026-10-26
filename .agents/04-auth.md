@@ -32,6 +32,8 @@ In PHP code:
 - `Auth::register(['name'…,'email'…,'password'…])` — hashes the password itself.
 - `Auth::logout()`.
 
+Password changes and password resets also revoke existing login sessions: each session records a non-reversible fingerprint of the saved password hash and is logged out on its next request if that hash changes. Sessions created before this protection was added have no fingerprint and must authenticate again after upgrading.
+
 Email verification creates tokens when the user table has `email_verified_at`, but it does not automatically restrict every protected page. To require a verified email, add `VerifiedMiddleware` to only the routes that need it:
 
 ```php
