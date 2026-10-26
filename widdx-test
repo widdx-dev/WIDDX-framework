@@ -1805,6 +1805,12 @@ test('Auth: register + email verification + password reset lifecycle', function 
     ], false);
     assert_true(!empty($user->id), 'registered');
     \Widdx\Auth::login($user);
+
+    // Sessions created before password fingerprints existed are forced to log in again.
+    \Widdx\Session::forget('auth_user_password_fingerprint');
+    assert_true(\Widdx\Auth::guest(), 'legacy session without a password fingerprint must fail closed');
+    \Widdx\Auth::login($user);
+
     $unverifiedReq = new \Widdx\Request([], [], ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/private']);
     $unverifiedResp = $verifiedMw->handle($unverifiedReq, fn () => \Widdx\Response::make('private'));
     assert_equals(302, $unverifiedResp->getStatus());
@@ -1863,6 +1869,7 @@ test('Auth: register + email verification + password reset lifecycle', function 
     assert_equals(false, \Widdx\Auth::resetPassword('sara@widdx.test', $m2[1] . 'x', 'brandnewpass9'), 'tampered token rejected');
     assert_true(\Widdx\Auth::resetPassword('sara@widdx.test', $m2[1], 'brandnewpass9'));
     assert_true(password_verify('brandnewpass9', (string) \Widdx\Tests\AuthUser::find($user->id)->password), 'new password active');
+    assert_true(\Widdx\Auth::guest(), 'password reset invalidates the existing session on its next access');
     assert_equals(false, \Widdx\Auth::resetPassword('sara@widdx.test', $m2[1], 'thirdpass123'), 'tokens are single-use');
 
     // The middleware fixture logged this test user in; clear that identity before
