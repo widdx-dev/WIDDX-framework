@@ -20,14 +20,24 @@ class SecurityHeaders
     {
         /** @var Response $response */
         $response = $next($request);
+        return static::apply($response);
+    }
 
+    /**
+     * Apply the baseline headers to a final response.
+     *
+     * App::run() also calls this after exception rendering so 404/419/500
+     * responses receive the same protections as successful route responses.
+     */
+    public static function apply(Response $response): Response
+    {
         $response
             ->setHeader('X-Content-Type-Options', 'nosniff')
             ->setHeader('X-Frame-Options', (string) config('app.security.frame_options', 'SAMEORIGIN'))
             ->setHeader('Referrer-Policy', (string) config('app.security.referrer_policy', 'strict-origin-when-cross-origin'));
 
-        // Never leak the PHP version (middleware runs before send(), so
-        // the SAPI header is still removable).
+        // Never leak the PHP version. This runs before the response is sent,
+        // including for error responses created outside the middleware stack.
         if (!headers_sent()) {
             header_remove('X-Powered-By');
         }
