@@ -88,9 +88,15 @@ class Auth
         if (password_needs_rehash($hash, PASSWORD_DEFAULT)) {
             $user->password = password_hash((string) $password, PASSWORD_DEFAULT);
             try {
-                $user->save();
+                if (!$user->save()) {
+                    // Keep the in-memory hash aligned with the database: the
+                    // login fingerprint below must not revoke a valid session
+                    // when this best-effort upgrade could not be persisted.
+                    $user->password = $hash;
+                }
             } catch (\Throwable) {
                 // Rehash is best-effort — login must not depend on it.
+                $user->password = $hash;
             }
         }
 
@@ -103,6 +109,7 @@ class Auth
     {
         Session::put('auth_user_id', $user->id);
         Session::put('auth_user_class', $user::class);
+        Session::put('auth_user_password_fingerprint', static::passwordFingerprint($user));
         // Guard against session fixation: issue a fresh session ID on login.
         Session::regenerate();
         // ...and a fresh CSRF token tied to the NEW session only.
@@ -114,6 +121,7 @@ class Auth
     {
         Session::forget('auth_user_id');
         Session::forget('auth_user_class');
+        Session::forget('auth_user_password_fingerprint');
         // The old session's CSRF token must die with the identity, and the
         // ID rotates so a copy taken while logged in is worthless after.
         Session::forget('_csrf_token');
@@ -147,9 +155,31 @@ class Auth
         }
         $class = Session::get('auth_user_class', static::userClass());
         if (!is_string($class) || !class_exists($class)) {
+            static::logout();
             return null;
         }
-        return $class::find($id);
+
+        $user = $class::find($id);
+        $fingerprint = Session::get('auth_user_password_fingerprint');
+        if (
+            $user === null
+            || !is_string($fingerprint)
+            || !hash_equals($fingerprint, static::passwordFingerprint($user))
+        ) {
+            // Password resets/admin changes invalidate every existing session
+            // on its next request. Sessions from before this hardening have no
+            // fingerprint and must sign in again rather than bypass revocation.
+            static::logout();
+            return null;
+        }
+
+        return $user;
+    }
+
+    /** Non-reversible session marker for the current stored password hash. */
+    protected static function passwordFingerprint(mixed $user): string
+    {
+        return hash('sha256', (string) ($user->password ?? ''));
     }
 
     // ---------- Registration ----------
