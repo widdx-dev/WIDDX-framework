@@ -268,7 +268,20 @@ class Auth
         $token = static::createToken($email, 'verify');
         $link = rtrim((string) config('app.url', 'http://localhost'), '/')
             . '/verify-email/' . $token . '?email=' . urlencode($email);
-        Mail::raw($email, 'Verify your email address', "Confirm your account with this link (valid 7 days):\n{$link}");
+        $subject = 'Verify your email address';
+        $body = "Confirm your account with this link (valid 7 days):\n{$link}";
+
+        // CLI commands have no HTTP response boundary at which App::run() can
+        // flush queued events, so retain immediate delivery for standalone CLI use.
+        if (PHP_SAPI === 'cli') {
+            Mail::raw($email, $subject, $body);
+            return;
+        }
+
+        // Web requests defer SMTP work until after the response is sent, matching
+        // password-reset delivery and avoiding mail IO in the response path.
+        static::ensureMailListener();
+        Event::queue('auth.mail', $email, $subject, $body);
     }
 
     public static function verifyEmail(string $email, ?string $token): bool
