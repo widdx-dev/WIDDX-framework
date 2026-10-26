@@ -268,7 +268,10 @@ class Auth
         $token = static::createToken($email, 'verify');
         $link = rtrim((string) config('app.url', 'http://localhost'), '/')
             . '/verify-email/' . $token . '?email=' . urlencode($email);
-        Mail::raw($email, 'Verify your email address', "Confirm your account with this link (valid 7 days):\n{$link}");
+        // Match password-reset delivery: defer SMTP work until the response
+        // has been sent so registration/resend requests do not block on mail IO.
+        static::ensureMailListener();
+        Event::queue('auth.mail', $email, 'Verify your email address', "Confirm your account with this link (valid 7 days):\n{$link}");
     }
 
     public static function verifyEmail(string $email, ?string $token): bool
