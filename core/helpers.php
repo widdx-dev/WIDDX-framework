@@ -744,7 +744,7 @@ if (!function_exists('authRoutes')) {
         get('/forgot-password', fn() => $c('showForgot'))->name('password.request');
         post('/forgot-password', fn() => $c('sendResetLink'))->middleware($throttle());
         get('/reset-password/{token}', fn(string $token) => $c('showReset', [$token]))->name('password.reset');
-        post('/reset-password', fn() => $c('reset'))->name('password.update');
+        post('/reset-password', fn() => $c('reset'))->name('password.update')->middleware($throttle());
         get('/email-verification', fn() => $c('showVerifyNotice'))->name('verification.notice');
         post('/email-verification', fn() => $c('resendVerification'))->name('verification.resend')->middleware($throttle());
         get('/verify-email/{token}', fn(string $token) => $c('verify', [$token]))->name('verification.verify');
