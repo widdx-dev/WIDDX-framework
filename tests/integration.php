@@ -1523,8 +1523,26 @@ ok('installer refuses to write .env when canonical APP_URL is missing',
 $r = http($port2, 'GET', '/', null, $jar2);
 ok('welcome page reachable pre-install', $r['status'] === 200);
 
-// Fill the installer form properly (sqlite, absolute path so php -S CWD
-// cannot matter) — token from the form + key read "over FTP" from disk.
+// Simulate a deployment whose final migration fails after .env is written.
+// The installer must stay open and later resume pending migrations instead of
+// offering a dangerous "lock only" action.
+$failedInstallMigration = $proj2 . '/database/migrations/9999_12_31_000000_it_installer_fail.php';
+file_put_contents($failedInstallMigration, <<<'MIGRATION'
+<?php
+
+declare(strict_types=1);
+
+return new class {
+    public function up(\PDO $pdo): void
+    {
+        throw new \RuntimeException('INSTALL_RETRY_PROBE');
+    }
+
+    public function down(\PDO $pdo): void {}
+};
+MIGRATION
+);
+
 $r = http($port2, 'POST', '/install.php', [
     'action' => 'install',
     'installer_token' => (string) $tok10,
@@ -1535,11 +1553,73 @@ $r = http($port2, 'POST', '/install.php', [
     'APP_LOCALE' => 'ar',
     'APP_DEBUG' => '1',
 ], $jar2);
-ok('install POST succeeds', $r['status'] === 200 && str_contains($r['body'], 'تم التنصيب'), substr($r['body'], 0, 300));
+ok(
+    'failed migration keeps .env and leaves installer unlocked and available',
+    $r['status'] === 200
+        && is_file($proj2 . '/.env')
+        && !is_file($proj2 . '/storage/app/installed.lock')
+        && is_file($proj2 . '/public/install.php')
+        && str_contains($r['body'], 'INSTALL_RETRY_PROBE'),
+    'status=' . $r['status'] . ' lock=' . (is_file($proj2 . '/storage/app/installed.lock') ? 'yes' : 'no')
+);
+
+@unlink($failedInstallMigration);
+$resumeMigrationName = '9999_12_31_000001_it_installer_resume';
+$resumeMigration = $proj2 . '/database/migrations/' . $resumeMigrationName . '.php';
+file_put_contents($resumeMigration, <<<'MIGRATION'
+<?php
+
+declare(strict_types=1);
+
+return new class {
+    public function up(\PDO $pdo): void
+    {
+        \Widdx\Schema::create('installer_resume_probe', function (\Widdx\Blueprint $t) {
+            $t->id();
+        }, $pdo);
+    }
+
+    public function down(\PDO $pdo): void
+    {
+        \Widdx\Schema::dropIfExists('installer_resume_probe', $pdo);
+    }
+};
+MIGRATION
+);
+
+$r = http($port2, 'GET', '/install.php', null, $jar2);
+$retryToken = preg_match('#name="installer_token" value="([^"]+)"#', $r['body'], $retryMatch) ? $retryMatch[1] : '';
+ok(
+    'existing .env page offers migration recovery instead of lock-only',
+    $r['status'] === 200
+        && str_contains($r['body'], 'finish_existing')
+        && str_contains($r['body'], 'تشغيل migrations المعلّقة')
+        && strlen($retryToken) >= 32
+);
+
+$r = http($port2, 'POST', '/install.php', [
+    'action' => 'finish_existing',
+    'installer_token' => $retryToken,
+    'install_key' => $key10,
+], $jar2);
+ok(
+    'installer resumes pending migrations and locks only after success',
+    $r['status'] === 200
+        && str_contains($r['body'], 'تم استكمال التنصيب بنجاح')
+        && is_file($proj2 . '/storage/app/installed.lock')
+        && !is_file($proj2 . '/public/install.php'),
+    'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 220)
+);
 ok('.env was created', is_file($proj2 . '/.env'));
 ok('1.10 .env written with 0600 perms', substr(sprintf('%o', (int) fileperms($proj2 . '/.env')), -4) === '0600', substr(sprintf('%o', (int) @fileperms($proj2 . '/.env')), -4));
 ok('1.10 installer deleted itself after success', !is_file($proj2 . '/public/install.php'));
 ok('1.10 install key removed once locked', !is_file($keyFile));
+
+$resumePdo = new PDO('sqlite:' . $proj2 . '/host.sqlite');
+$resumeTable = (int) $resumePdo->query("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='installer_resume_probe'")->fetchColumn();
+$resumeTracked = (int) $resumePdo->query('SELECT COUNT(*) FROM migrations WHERE migration = ' . $resumePdo->quote($resumeMigrationName))->fetchColumn();
+ok('retry applies and records the migration that was pending after failure', $resumeTable === 1 && $resumeTracked === 1, "table={$resumeTable} tracked={$resumeTracked}");
+$resumePdo = null;
 $env2 = (string) @file_get_contents($proj2 . '/.env');
 ok('.env carries the chosen settings', str_contains($env2, 'DB_CONNECTION=sqlite') && str_contains($env2, 'APP_LOCALE=ar') && str_contains($env2, 'host.sqlite') && str_contains($env2, 'APP_URL=https://hostapp.example.test'));
 ok('migration ran from the browser', is_file($proj2 . '/host.sqlite'));
