@@ -1865,6 +1865,9 @@ test('Auth: register + email verification + password reset lifecycle', function 
     assert_true(password_verify('brandnewpass9', (string) \Widdx\Tests\AuthUser::find($user->id)->password), 'new password active');
     assert_equals(false, \Widdx\Auth::resetPassword('sara@widdx.test', $m2[1], 'thirdpass123'), 'tokens are single-use');
 
+    // The middleware fixture logged this test user in; clear that identity before
+    // dropping its table so no later test can read a stale session user.
+    \Widdx\Session::flush();
     \Widdx\Schema::dropIfExists('auth_users');
     \Widdx\Schema::dropIfExists('auth_tokens');
     \Widdx\Auth::useModel(null);
