@@ -272,21 +272,54 @@ class Auth
             . '/reset-password/' . $token . '?email=' . urlencode($email);
     }
 
-    /** Validate token, set the new password, burn ALL reset tokens. */
+    /**
+     * Consume a reset token and change the password in one transaction.
+     *
+     * Claiming the token via DELETE is atomic: concurrent requests presenting
+     * the same token cannot both pass the one-use check. The password update
+     * and cleanup of sibling reset tokens commit with that claim.
+     */
     public static function resetPassword(string $email, ?string $token, string $password): bool
     {
-        if ($token === null || $token === '' || !static::tokenValid($email, 'reset', $token)) {
+        if ($token === null || $token === '') {
             return false;
         }
+
         $class = static::userClass();
-        $user = $class::query()->where('email', $email)->first();
-        if ($user === null) {
-            return false;
-        }
-        $user->password = password_hash($password, PASSWORD_DEFAULT);
-        $user->save();
-        static::deleteTokens($email, 'reset');
-        return true;
+        $now = date('Y-m-d H:i:s');
+        $oldest = date('Y-m-d H:i:s', time() - 60 * 60);
+        $tokenHash = hash('sha256', $token);
+
+        return Database::connection()->transaction(function () use ($email, $tokenHash, $oldest, $now, $class, $password): bool {
+            // Delete only an unexpired, non-future reset token. Row deletion is
+            // the atomic claim; a concurrent request will affect zero rows.
+            $claimed = db('auth_tokens')
+                ->where('email', $email)
+                ->where('type', 'reset')
+                ->where('token_hash', $tokenHash)
+                ->where('created_at', '>=', $oldest)
+                ->where('created_at', '<=', $now)
+                ->delete();
+
+            if ($claimed < 1 || !class_exists($class)) {
+                return false;
+            }
+
+            $user = $class::query()->where('email', $email)->first();
+            if ($user === null) {
+                return false;
+            }
+
+            $user->password = password_hash($password, PASSWORD_DEFAULT);
+            if (!$user->save()) {
+                // Database::transaction rolls back both the token claim and any
+                // partial changes when this exception escapes the callback.
+                throw new \RuntimeException('Could not persist the password reset.');
+            }
+
+            static::deleteTokens($email, 'reset');
+            return true;
+        });
     }
 
     // ---------- Email verification ----------
