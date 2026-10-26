@@ -144,11 +144,10 @@ class AuthController
     public function resendVerification(): Response
     {
         request()->validate(['email' => 'required|email']);
-        $class = Auth::userClass();
-        $user = class_exists($class) ? $class::query()->where('email', request('email'))->first() : null;
-        if ($user !== null && Auth::verificationAvailable($user) && !Auth::verified($user)) {
-            Auth::sendVerification($user);
-        }
+        // Account lookup, verification-state checks, token creation, and mail
+        // delivery happen after the HTTP response, so the generic success path
+        // does not reveal whether this email belongs to an account.
+        Auth::requestVerificationResend((string) request('email'));
         Session::flash('success', Lang::line('auth.verify_sent'));
         return redirect('/email-verification');
     }
