@@ -301,7 +301,7 @@ class Auth
                 ->where('created_at', '<=', $now)
                 ->delete();
 
-            if ($claimed !== 1 || !class_exists($class)) {
+            if ($claimed < 1 || !class_exists($class)) {
                 return false;
             }
 
