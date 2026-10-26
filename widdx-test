@@ -1657,6 +1657,36 @@ test('Auth: register + email verification + password reset lifecycle', function 
     \Widdx\Mail::setConnection($mail);
     \Widdx\Auth::useModel(\Widdx\Tests\AuthUser::class);
 
+    // Invalid/missing stored hashes must take the same expensive verify path
+    // as unknown emails; otherwise login timing reveals these account records.
+    $now = date('Y-m-d H:i:s');
+    $timingInsert = $pdo->prepare(
+        'INSERT INTO auth_users (name, email, password, email_verified_at, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?)'
+    );
+    foreach ([
+        ['Empty-hash account', 'empty-hash@widdx.test', ''],
+        ['Malformed-hash account', 'malformed-hash@widdx.test', 'not-a-password-hash'],
+    ] as [$timingName, $timingEmail, $timingHash]) {
+        $timingInsert->execute([$timingName, $timingEmail, $timingHash, $now, $now]);
+        $started = hrtime(true);
+        $accepted = \Widdx\Auth::attempt(['email' => $timingEmail, 'password' => 'wrong-password']);
+        $elapsedNs = hrtime(true) - $started;
+        assert_equals(false, $accepted, $timingEmail . ' must not authenticate');
+        assert_true(
+            $elapsedNs >= 5_000_000,
+            $timingEmail . ' should still perform a dummy password verification; elapsed=' . round($elapsedNs / 1_000_000, 2) . 'ms'
+        );
+    }
+
+    $started = hrtime(true);
+    $unknownAccepted = \Widdx\Auth::attempt(['email' => 'unknown@widdx.test', 'password' => 'wrong-password']);
+    $unknownElapsedNs = hrtime(true) - $started;
+    assert_equals(false, $unknownAccepted, 'unknown account must not authenticate');
+    assert_true(
+        $unknownElapsedNs >= 5_000_000,
+        'unknown account should perform dummy password verification; elapsed=' . round($unknownElapsedNs / 1_000_000, 2) . 'ms'
+    );
+
     $user = \Widdx\Auth::register([
         'name' => 'Sara', 'email' => 'sara@widdx.test',
         'password' => 'supersecret1', 'password_confirmation' => 'supersecret1',
