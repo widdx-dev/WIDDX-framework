@@ -129,6 +129,10 @@ class App
             $response = static::renderException($e);
         }
 
+        // The middleware decorates successful route responses, but exception
+        // rendering and unmatched routes can produce responses outside that
+        // stack. Apply the baseline to every final response, including errors.
+        $response = SecurityHeaders::apply($response);
         $response->send();
 
         // Fire queued events AFTER the response reached the client —
@@ -175,7 +179,7 @@ class App
     public static function registerErrorHandlers(): void
     {
         set_exception_handler(function (\Throwable $e) {
-            static::renderException($e)->send();
+            SecurityHeaders::apply(static::renderException($e))->send();
         });
 
         set_error_handler(function ($severity, $message, $file, $line) {
