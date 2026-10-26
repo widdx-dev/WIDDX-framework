@@ -1700,7 +1700,7 @@ foreach ([
     );
 }
 
-file_put_contents($proj2 . '/storage/app/public/it18/unknown.bin', "\\x00\\x01\\x02\\x03");
+file_put_contents($proj2 . '/storage/app/public/it18/unknown.bin', "\x00\x01\x02\x03");
 $r = http($port2, 'GET', '/storage/it18/unknown.bin', null, $jar2);
 ok(
     '1.8 unknown/binary uploads default to attachment',
