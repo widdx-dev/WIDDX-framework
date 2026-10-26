@@ -36,8 +36,9 @@ class Auth
     }
 
     /**
-     * Bcrypt of a throwaway string. attempt() verifies unknown users against
-     * it so "user not found" and "wrong password" take the same time —
+     * Bcrypt of a throwaway string. attempt() verifies unknown users and
+     * users with missing/unrecognized stored hashes against it so their login
+     * attempts have the same expensive path as an incorrect password —
      * otherwise attackers can enumerate accounts by stopwatch.
      */
     protected const TIMING_HASH = '$2y$12$rsA5reQ0bKC/0AehgyLIz.Uc2OyfENehP52tb2J61IUPgmq2i48KW';
