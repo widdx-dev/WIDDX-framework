@@ -1363,6 +1363,78 @@ test('2.10 Throttle is a fixed window keyed on the route pattern', function () {
     assert_true($ra >= 1 && $ra <= 60, 'Retry-After must be the real remaining time, got ' . $ra);
 });
 
+test('2.10 Throttle uses the atomic counter result and fails closed when it cannot increment', function () {
+    // Simulate concurrent callers that have all observed an old counter value:
+    // ordinary get() deliberately returns stale/default values for hit keys.
+    // The atomic increment result must be the source of truth for admission.
+    $cache = new class implements \Widdx\Contracts\CacheInterface {
+        public array $items = [];
+        public array $counters = [];
+        public bool $failIncrement = false;
+
+        public function get(string $key, mixed $default = null): mixed
+        {
+            return $this->items[$key] ?? $default;
+        }
+        public function put(string $key, mixed $value, int $seconds = 0): bool
+        {
+            $this->items[$key] = $value;
+            return true;
+        }
+        public function has(string $key): bool { return array_key_exists($key, $this->items); }
+        public function forget(string $key): bool { unset($this->items[$key]); return true; }
+        public function flush(): bool { $this->items = []; $this->counters = []; return true; }
+        public function pull(string $key, mixed $default = null): mixed
+        {
+            $v = $this->get($key, $default);
+            $this->forget($key);
+            return $v;
+        }
+        public function increment(string $key, int $value = 1, int $ttlOnCreate = 0): int|false
+        {
+            if ($this->failIncrement) {
+                return false;
+            }
+            $this->counters[$key] = ($this->counters[$key] ?? 0) + $value;
+            return $this->counters[$key];
+        }
+        public function decrement(string $key, int $value = 1): int|false
+        {
+            return $this->increment($key, -$value);
+        }
+    };
+
+    $mw = new \Widdx\ThrottleMiddleware(2, 60, $cache);
+    $ip = '203.0.113.' . (string) random_int(20, 240);
+    $allowed = 0;
+    $mk = function (string $id) use ($ip) {
+        $r = new \Widdx\Request([], [], [
+            'REQUEST_METHOD' => 'GET',
+            'REQUEST_URI' => '/products/' . $id,
+            'REMOTE_ADDR' => $ip,
+        ]);
+        $r->routePattern = '/products/{id}';
+        return $r;
+    };
+    $next = function () use (&$allowed) {
+        $allowed++;
+        return \Widdx\Response::make('ok');
+    };
+
+    assert_equals(200, $mw->handle($mk('1'), $next)->getStatus());
+    assert_equals(200, $mw->handle($mk('2'), $next)->getStatus());
+    $blocked = $mw->handle($mk('3'), $next);
+    assert_equals(429, $blocked->getStatus(), 'atomic count above max must be denied even if get() is stale');
+    assert_equals(2, $allowed, 'over-limit requests must not reach the handler');
+    assert_equals('0', $blocked->getHeaders()['X-RateLimit-Remaining'] ?? null);
+
+    $cache->failIncrement = true;
+    $failed = $mw->handle($mk('4'), $next);
+    assert_equals(503, $failed->getStatus(), 'cache counter failure must fail closed');
+    assert_equals('60', $failed->getHeaders()['Retry-After'] ?? null);
+    assert_equals(2, $allowed, 'handler must not run when counter storage fails');
+});
+
 test('2.11 Response::json pretty-prints only in debug mode', function () {
     $ref = new \ReflectionClass(\Widdx\App::class);
     $prop = $ref->getProperty('config');
