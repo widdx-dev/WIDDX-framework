@@ -5,13 +5,14 @@ declare(strict_types=1);
 namespace Widdx;
 
 /**
- * Global middleware that stamps sensible security headers on every response.
+ * Baseline security headers for application responses.
  *
- * Enable it in routes/web.php:
- *   \Widdx\Router::use(\Widdx\SecurityHeaders::class);
+ * App::run() applies these headers to the final response (including errors and
+ * unmatched routes); this middleware also decorates responses when used in a
+ * standalone Router pipeline.
  *
  * Tunable via config('app.security.*'):
- *   frame_options (default SAMEORIGIN), referrer_policy, content_type_nosniff,
+ *   frame_options (default SAMEORIGIN), referrer_policy,
  *   csp — Content-Security-Policy string, only sent when set.
  */
 class SecurityHeaders
