@@ -43,12 +43,13 @@ class ThrottleMiddleware
         $key = 'throttle:' . sha1($ip . '|' . $request->method() . '|' . $path);
         $windowKey = $key . ':window_end';
 
-        $cache = $this->cacheStore ?? cache();
+        $cache = null;
 
         // Count this request atomically BEFORE deciding whether to allow it.
         // A separate get()-then-increment() check races: many simultaneous
         // requests can all observe a value below the limit and all pass.
         try {
+            $cache = $this->cacheStore ?? cache();
             $hits = $cache->increment($key, 1, $this->decay);
         } catch (\Throwable) {
             $hits = false;
@@ -56,7 +57,7 @@ class ThrottleMiddleware
 
         // A broken/unwritable counter must not silently disable a security
         // control on login/reset endpoints. Fail closed so the caller retries.
-        if ($hits === false) {
+        if ($hits === false || !$cache instanceof CacheInterface) {
             return Response::json(['error' => 'Rate limiter temporarily unavailable'], 503)
                 ->setHeader('Retry-After', (string) $this->decay);
         }
