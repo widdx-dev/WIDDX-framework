@@ -1848,6 +1848,17 @@ test('Auth: register + email verification + password reset lifecycle', function 
     $body = (string) ($mail->logged()[0]['body'] ?? '');
     preg_match('#/verify-email/([a-f0-9]{64})\?email=#', $body, $m);
     assert_true(!empty($m[1]), 'verify token present in mail body');
+
+    // Verification-resend requests do not query account state or send mail
+    // until after the HTTP response, and unknown addresses get no token.
+    $mailCountBeforeResend = count($mail->logged());
+    assert_true(\Widdx\Auth::requestVerificationResend('ghost@nowhere.test'), 'unknown verification resend is accepted');
+    assert_true(\Widdx\Auth::requestVerificationResend('sara@widdx.test'), 'known verification resend is accepted');
+    assert_equals($mailCountBeforeResend, count($mail->logged()), 'verification resend does not send synchronously');
+    \Widdx\Event::flush();
+    assert_equals($mailCountBeforeResend + 1, count($mail->logged()), 'only the existing unverified user receives a resend mail');
+    assert_equals(0, (int) db('auth_tokens')->where('email', 'ghost@nowhere.test')->where('type', 'verify')->count(), 'unknown addresses get no verification token');
+
     assert_equals(false, \Widdx\Auth::verifyEmail('sara@widdx.test', 'deadbeef'), 'wrong token rejected');
     assert_true(\Widdx\Auth::verifyEmail('sara@widdx.test', $m[1]), 'valid token verifies');
     assert_true(!empty(\Widdx\Tests\AuthUser::find($user->id)->email_verified_at), 'flag stored');
