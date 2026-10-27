@@ -396,13 +396,14 @@ ok('the router points at at least 10 reference files', count($linked) >= 10, imp
 // zero-code fallback path (model + built-in pages) instead. Guarded by
 // $isFrameworkSource: copied from a real project, the scaffold inherits a User
 // that relates to classes the scaffold never receives.
+$demoFixture = $ROOT . '/tests/fixtures/demo-app';
 $repoDemo = $isFrameworkSource
-    && is_file($ROOT . '/app/Controllers/UserController.php')
-    && is_dir($ROOT . '/views/users');
+    && is_file($demoFixture . '/app/Controllers/UserController.php')
+    && is_dir($demoFixture . '/views/users');
 if ($repoDemo) {
-    copy($ROOT . '/app/Controllers/UserController.php', $proj . '/app/Controllers/UserController.php');
-    copy($ROOT . '/app/Models/User.php', $proj . '/app/Models/User.php');
-    shell('cp -r ' . escapeshellarg($ROOT . '/views/users') . ' ' . escapeshellarg($proj . '/views/'));
+    copy($demoFixture . '/app/Controllers/UserController.php', $proj . '/app/Controllers/UserController.php');
+    copy($demoFixture . '/app/Models/User.php', $proj . '/app/Models/User.php');
+    shell('cp -r ' . escapeshellarg($demoFixture . '/views/users') . ' ' . escapeshellarg($proj . '/views/'));
 }
 
 // Routes: full users resource + probe routes used by the scenarios below.
@@ -760,6 +761,29 @@ if (!empty($mig)) {
 // ------------------------------------------- 8b. zero-code CRUD (make:crud)
 
 sec('Zero-Code CRUD: make:crud + built-in views');
+
+// Project generators reject path fragments before writing files.
+$unsafeGeneratorArgs = [
+    ['make:controller', '../../Escape'],
+    ['make:model', '../../Escape'],
+    ['make:middleware', '../../Escape'],
+    ['make:migration', '../../Escape'],
+    ['make:seeder', '../../Escape'],
+    ['make:resource', '../../Escape'],
+    ['make:crud', '../../Escape', 'title:string'],
+    ['make:view', '../../Escape'],
+];
+foreach ($unsafeGeneratorArgs as $unsafeArgs) {
+    $command = 'cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY)
+        . ' widdx ' . implode(' ', array_map('escapeshellarg', $unsafeArgs));
+    [$unsafeCode, $unsafeOut] = shell($command);
+    ok('generator rejects path-like name: ' . implode(' ', $unsafeArgs), $unsafeCode !== 0, $unsafeOut);
+}
+ok('rejected generators did not write escaped files',
+    !is_file($proj . '/app/Escape.php')
+        && !is_file($proj . '/app/EscapeController.php')
+        && !is_file($proj . '/Escape.php')
+        && !is_file($TMP . '/Escape.php'));
 
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Post title:string body:text? views:integer? price:float? published:bool?');
 ok('make:crud exits 0', $code === 0, $out);
