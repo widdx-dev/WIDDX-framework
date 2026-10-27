@@ -58,9 +58,16 @@ if (!is_string($iform) || $iform === '') {
     $iform = bin2hex(random_bytes(16));
     Session::put('_installer_token', $iform);
 }
-Installer::installKey($base); // create on first GET; value is NEVER rendered
+$installerKeyError = null;
+try {
+    Installer::installKey($base); // create on first GET; value is NEVER rendered
+} catch (Throwable $e) {
+    // Keep the installer page usable: report the storage failure instead of
+    // emitting a PHP warning or presenting a form that can never authenticate.
+    $installerKeyError = $e->getMessage();
+}
 
-$errors = [];
+$errors = $installerKeyError !== null ? [$installerKeyError] : [];
 $done = null;
 $old = [];
 
@@ -98,6 +105,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             throw new RuntimeException('.env موجود مسبقًا ولن يتم استبداله. استخدم زر إكمال التنصيب لتشغيل migrations المعلّقة ثم قفل المثبّت.');
         } else {
             $v = array_map(static fn ($x) => is_string($x) ? trim($x) : '', $_POST);
+            // Do not trim credentials: leading/trailing spaces are valid password
+            // characters and must survive the installer round-trip unchanged.
+            if (isset($_POST['DB_PASSWORD']) && is_string($_POST['DB_PASSWORD'])) {
+                $v['DB_PASSWORD'] = $_POST['DB_PASSWORD'];
+            }
             $appUrl = (string) ($v['APP_URL'] ?? '');
             $urlParts = $appUrl !== '' ? parse_url($appUrl) : false;
             if (!is_array($urlParts)
@@ -140,6 +152,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 }
 
 $checks = Installer::requirements($base);
+if ($installerKeyError !== null) {
+    $checks[] = [
+        'label' => 'مفتاح المثبّت',
+        'ok' => false,
+        'hint' => $installerKeyError,
+    ];
+}
 $ready = true;
 foreach ($checks as $c) {
     if (!$c['ok']) {
@@ -189,7 +208,7 @@ li{margin:4px 0}
 
 <?php if ($errors): foreach ($errors as $er): ?><div class="err"><?= e($er) ?></div><?php endforeach; endif; ?>
 
-<?php if ($configured):
+<?php if ($configured && $ready):
     // .env exists but the installer is NOT locked yet. Resume safely by running
     // every pending migration, then lock only if all migrations succeed.
     // Key + token are required; this cannot be triggered by a drive-by POST.

@@ -406,6 +406,39 @@ test('Request spoofs method via _method', function () {
     assert_equals('PUT', $request->method());
 });
 
+test('Request::oldInput excludes secret fields recursively', function () {
+    $request = new \Widdx\Request(
+        ['search' => 'catalog', 'apiKey' => 'query-secret', 'safeQuery' => 'yes'],
+        [
+            'name' => 'Alice',
+            'email' => 'alice@example.com',
+            'password' => 'plain-secret',
+            'password_confirmation' => 'plain-secret',
+            'csrf_token' => 'csrf-secret',
+            'resetToken' => 'reset-secret',
+            'profile' => [
+                'display_name' => 'Alice',
+                'clientSecret' => 'nested-secret',
+                'timezone' => 'Asia/Hebron',
+            ],
+        ],
+        ['REQUEST_METHOD' => 'POST']
+    );
+    $request->routeParams = ['token' => 'route-secret', 'id' => '42'];
+
+    assert_equals([
+        'search' => 'catalog',
+        'safeQuery' => 'yes',
+        'name' => 'Alice',
+        'email' => 'alice@example.com',
+        'profile' => [
+            'display_name' => 'Alice',
+            'timezone' => 'Asia/Hebron',
+        ],
+        'id' => '42',
+    ], $request->oldInput());
+});
+
 // Queue tests
 test('SyncQueue executes immediately', function () {
     \Widdx\Tests\TestJob::$logFile = $file = sys_get_temp_dir() . '/widdx_job_test.txt';
@@ -613,6 +646,68 @@ test('Installer: buildEnv + lock + requirements + testConnection', function () {
     assert_true(!str_contains($env, 'DB_PORT='), 'empty values are skipped');
     assert_true(str_contains($env, 'DB_PASSWORD="a b=c"'), 'space/= must be quoted');
     assert_true(str_contains($env, 'APP_DEBUG=true'));
+
+    // Quoted installer values must round-trip backslashes, quotes, equals, and
+    // significant leading/trailing spaces without changing the database password.
+    $specialPassword = '  lead\\path "quoted"=tail  ';
+    $roundtrip = \Widdx\Installer::buildEnv([
+        'DB_CONNECTION' => 'mysql',
+        'DB_HOST' => '127.0.0.1',
+        'DB_DATABASE' => 'test_db',
+        'DB_USERNAME' => 'test_user',
+        'DB_PASSWORD' => $specialPassword,
+    ]);
+    assert_true((bool) preg_match('/^DB_PASSWORD=(.*)$/m', $roundtrip, $passwordLine), 'serialized password line exists');
+    $envBase = sys_get_temp_dir() . '/widdx-env-roundtrip-' . bin2hex(random_bytes(6));
+    $probeKey = 'WIDDX_ENV_ROUNDTRIP_' . strtoupper(bin2hex(random_bytes(6)));
+    $overrideKey = 'WIDDX_ENV_OVERRIDE_' . strtoupper(bin2hex(random_bytes(6)));
+    mkdir($envBase, 0700, true);
+    try {
+        // Mirror the encoded value under a unique name so a preconfigured
+        // DB_PASSWORD in the CI environment cannot affect this test.
+        file_put_contents(
+            $envBase . '/.env',
+            $probeKey . '=' . $passwordLine[1] . "\n" . $overrideKey . "=from-file\n"
+        );
+        unset($_ENV[$probeKey], $_ENV[$overrideKey]);
+        putenv($probeKey);
+        putenv($overrideKey . '=from-process');
+        \Widdx\App::loadEnv($envBase);
+        assert_equals($specialPassword, getenv($probeKey), 'dotenv values must round-trip exactly');
+        assert_equals('from-process', getenv($overrideKey), 'real process environment overrides .env');
+    } finally {
+        unset($_ENV[$probeKey], $_ENV[$overrideKey]);
+        putenv($probeKey);
+        putenv($overrideKey);
+        @unlink($envBase . '/.env');
+        @rmdir($envBase);
+    }
+
+    // A failed or partial config write must not be treated as a successful install.
+    $writeBase = sys_get_temp_dir() . '/widdx-env-write-' . bin2hex(random_bytes(6));
+    mkdir($writeBase, 0700, true);
+    try {
+        \Widdx\Installer::writeEnv($writeBase, [
+            'DB_CONNECTION' => 'sqlite',
+            'DB_DATABASE' => './database.sqlite',
+            'APP_URL' => 'https://example.test',
+        ]);
+        $writtenEnv = file_get_contents($writeBase . '/.env');
+        assert_true(is_string($writtenEnv) && str_contains($writtenEnv, 'APP_DEBUG=false'), 'installer writes a complete env file');
+        assert_equals(0600, fileperms($writeBase . '/.env') & 0777, '.env permissions are private');
+
+        $refusedOverwrite = false;
+        try {
+            \Widdx\Installer::writeEnv($writeBase, ['DB_CONNECTION' => 'sqlite', 'APP_URL' => 'https://other.test']);
+        } catch (\RuntimeException $e) {
+            $refusedOverwrite = str_contains($e->getMessage(), 'Refusing to overwrite');
+        }
+        assert_true($refusedOverwrite, 'writeEnv must never overwrite an existing config');
+        assert_equals($writtenEnv, file_get_contents($writeBase . '/.env'), 'existing config remains unchanged');
+    } finally {
+        @unlink($writeBase . '/.env');
+        @rmdir($writeBase);
+    }
 
     // 1.10: CR/LF in a value would append rogue lines to .env — refuse hard.
     // (must be the server branch, since sqlite only writes DB_DATABASE)

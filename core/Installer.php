@@ -35,18 +35,33 @@ class Installer
     public static function installKey(string $base): string
     {
         $file = $base . self::KEY;
+        if (is_link($file)) {
+            throw new \RuntimeException('Installer key path must not be a symbolic link.');
+        }
         if (is_file($file)) {
-            $key = trim((string) file_get_contents($file));
-            if ($key !== '') {
-                return $key;
+            $contents = @file_get_contents($file);
+            if ($contents === false) {
+                throw new \RuntimeException('The installer key exists but cannot be read. Check storage/app permissions.');
             }
+            $key = trim($contents);
+            if (preg_match('/\A[a-f0-9]{32}\z/i', $key) !== 1) {
+                throw new \RuntimeException('The installer key file is invalid. Restore a valid 32-character hexadecimal key.');
+            }
+            return $key;
         }
+
         $dir = dirname($file);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0775, true);
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            throw new \RuntimeException('Cannot create storage/app for the installer key. Check directory permissions.');
         }
+        if (!is_writable($dir)) {
+            throw new \RuntimeException('storage/app is not writable. Fix its permissions before installing.');
+        }
+
         $key = bin2hex(random_bytes(16));
-        file_put_contents($file, $key . "\n");
+        if (@file_put_contents($file, $key . "\n", LOCK_EX) === false) {
+            throw new \RuntimeException('Cannot persist the installer key. Check disk space and storage/app permissions.');
+        }
         @chmod($file, 0600);
         return $key;
     }
@@ -110,7 +125,7 @@ class Installer
 
     protected static function storageWritable(string $base): bool
     {
-        foreach (['storage/cache', 'storage/logs', 'storage/sessions'] as $dir) {
+        foreach (['storage/cache', 'storage/logs', 'storage/sessions', 'storage/app'] as $dir) {
             $full = $base . '/' . $dir;
             if (!is_dir($full) || !is_writable($full)) {
                 return false;
@@ -221,10 +236,37 @@ class Installer
 
     public static function writeEnv(string $base, array $v): void
     {
-        // 0600: the file will hold DB credentials — unreadable by other
-        // accounts on shared hosting, writable only by us.
-        file_put_contents($base . '/.env', static::buildEnv($v));
-        @chmod($base . '/.env', 0600);
+        $target = $base . '/.env';
+        if (file_exists($target) || is_link($target)) {
+            throw new \RuntimeException('Refusing to overwrite an existing .env file.');
+        }
+        if (!is_dir($base) || !is_writable($base)) {
+            throw new \RuntimeException('Project root is not writable; cannot create .env.');
+        }
+
+        // Write beside the destination, apply restrictive permissions before it
+        // becomes live, then rename so a short/failed write never becomes config.
+        $contents = static::buildEnv($v);
+        $temp = $base . '/.env.' . bin2hex(random_bytes(8)) . '.tmp';
+        try {
+            $written = @file_put_contents($temp, $contents, LOCK_EX);
+            if ($written === false || $written !== strlen($contents)) {
+                throw new \RuntimeException('Could not write the complete .env file. Check disk space and permissions.');
+            }
+            if (!@chmod($temp, 0600)) {
+                throw new \RuntimeException('Could not restrict .env permissions to 0600. Check hosting file-permission support.');
+            }
+            if (file_exists($target) || is_link($target)) {
+                throw new \RuntimeException('Refusing to overwrite an existing .env file.');
+            }
+            if (!@rename($temp, $target)) {
+                throw new \RuntimeException('Could not activate the .env file. Check project-root permissions.');
+            }
+        } finally {
+            if (is_file($temp)) {
+                @unlink($temp);
+            }
+        }
     }
 
     /**
@@ -243,12 +285,32 @@ class Installer
     /** Create the self-lock file (storage/app may not exist yet). */
     public static function lock(string $base): void
     {
-        $dir = dirname($base . self::LOCK);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0775, true);
+        $path = $base . self::LOCK;
+        $dir = dirname($path);
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            throw new \RuntimeException('Cannot create storage/app to lock the installer.');
         }
-        file_put_contents($base . self::LOCK, 'installed ' . date('c') . "\n");
-        // The install key has served its purpose — remove it.
+        if (!is_writable($dir)) {
+            throw new \RuntimeException('storage/app is not writable; the installer cannot be locked.');
+        }
+
+        $contents = 'installed ' . date('c') . "\n";
+        $temp = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
+        try {
+            $written = @file_put_contents($temp, $contents, LOCK_EX);
+            if ($written === false || $written !== strlen($contents)) {
+                throw new \RuntimeException('Could not persist the installer lock. The installer remains available for recovery.');
+            }
+            if (!@rename($temp, $path)) {
+                throw new \RuntimeException('Could not activate the installer lock. Check storage/app permissions.');
+            }
+        } finally {
+            if (is_file($temp)) {
+                @unlink($temp);
+            }
+        }
+
+        // Delete the proof-of-possession key only after the lock is on disk.
         @unlink($base . self::KEY);
     }
 }

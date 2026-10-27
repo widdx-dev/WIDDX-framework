@@ -289,13 +289,21 @@ function grab_csrf(int $port, string $formPath, array &$jar): string
     return preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $m) === 1 ? $m[1] : '';
 }
 
-function start_server(string $proj, int $port): int
+function start_server(string $proj, int $port, bool $inheritAppEnvironment = true): int
 {
     @mkdir($proj . '/storage/sessions', 0777, true);
     $router = is_file($proj . '/public/router.php')
         ? ' ' . escapeshellarg($proj . '/public/router.php')
         : '';
-    $cmd = 'nohup ' . escapeshellarg(PHP_BINARY)
+    // Some scenarios explicitly verify the project's .env settings rather than
+    // the CI matrix database. In those cases, scrub inherited APP_/DB_ variables
+    // so the server behaves like an isolated hosting account and uses that .env.
+    $launcher = escapeshellarg(PHP_BINARY);
+    if (!$inheritAppEnvironment) {
+        $launcher = 'env -u DB_CONNECTION -u DB_HOST -u DB_PORT -u DB_DATABASE -u DB_USERNAME -u DB_PASSWORD'
+            . ' -u APP_URL -u APP_LOCALE -u APP_DEBUG ' . $launcher;
+    }
+    $cmd = 'nohup ' . $launcher
         . ' -d session.save_path=' . escapeshellarg($proj . '/storage/sessions')
         . " -S 127.0.0.1:{$port} -t " . escapeshellarg($proj . '/public')
         . $router
@@ -1514,7 +1522,7 @@ file_put_contents(
 );
 
 $port2 = pick_port();
-$pid2 = start_server($proj2, $port2);
+$pid2 = start_server($proj2, $port2, false);
 $jar2 = [];
 
 $r = http($port2, 'GET', '/install.php', null, $jar2);
@@ -1765,7 +1773,7 @@ file_put_contents($proj2 . '/routes/web.php', "\nresource('probenos')->public();
 // Allow opcache.revalidate_freq to notice the appended route without
 // replacing the running server process (its PID owns the session test fixture).
 stop_server($pid2, $port2);
-$pid2 = start_server($proj2, $port2);
+$pid2 = start_server($proj2, $port2, false);
 // web group is on by default since 1.3 — reuse a session-valid token.
 $tokP2 = grab_csrf($port2, '/notes/create', $jar2);
 $r = http($port2, 'POST', '/probenos', ['csrf_token' => $tokP2, 'name' => 'sneak', 'is_admin' => '1'], $jar2);
@@ -1874,7 +1882,7 @@ PHP, FILE_APPEND);
 // Route registration is cached by the long-running PHP server's OPcache.
 // Restart instead of sleeping: validate_timestamps may be disabled in CI.
 stop_server($pid2, $port2);
-$pid2 = start_server($proj2, $port2);
+$pid2 = start_server($proj2, $port2, false);
 $r = http($port2, 'GET', '/mkvault', null, $jar2);
 $probeDetail = 'status=' . $r['status'] . ' body=' . substr($r['body'], 0, 160);
 if ($r['status'] !== 200) {
@@ -1940,7 +1948,7 @@ ok('1.2 controller \$public = true opens guest access', $r['status'] === 200, 's
 
 file_put_contents($proj2 . '/routes/web.php', "\nresource('secrets')->public();\n", FILE_APPEND);
 stop_server($pid2, $port2);
-$pid2 = start_server($proj2, $port2);
+$pid2 = start_server($proj2, $port2, false);
 $r = http($port2, 'GET', '/secrets', null, $jar2);
 ok('1.2 resource()->public() opens the whole group', $r['status'] === 200, 'status=' . $r['status']);
 
@@ -1970,7 +1978,7 @@ ok('1.3 stateless API guest reaches the 401 auth gate (not 419)', $r['status'] =
 
 file_put_contents($proj2 . '/routes/web.php', "\nauthRoutes();\n", FILE_APPEND);
 stop_server($pid2, $port2);
-$pid2 = start_server($proj2, $port2);
+$pid2 = start_server($proj2, $port2, false);
 $r = http($port2, 'GET', '/login', null, $jar2);
 $tokL = preg_match('#name="csrf_token" value="([^"]+)"#', $r['body'], $mL) === 1 ? $mL[1] : '';
 ok('1.3 login page renders with token', $r['status'] === 200 && strlen($tokL) >= 32, 'status=' . $r['status']);

@@ -41,7 +41,7 @@ class AuthController
             return redirect('/');
         }
         Session::flash('_errors', ['email' => [Lang::line('auth.failed')]]);
-        Session::flash('_old', request()->except(['password', 'csrf_token']));
+        Session::flash('_old', request()->oldInput());
         return redirect('/login');
     }
 
@@ -68,7 +68,7 @@ class AuthController
         } catch (ValidationException $e) {
             // model-level rules disagree — show them like any validation failure
             Session::flash('_errors', $e->errors);
-            Session::flash('_old', request()->except(['password', 'password_confirmation', 'csrf_token']));
+            Session::flash('_old', request()->oldInput());
             return redirect('/register');
         }
         if (Auth::verificationAvailable($user) && !Auth::verified($user)) {

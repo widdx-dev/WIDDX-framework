@@ -325,6 +325,37 @@ class Request
         return $data;
     }
 
+    /**
+     * Inputs suitable for repopulating a form after validation fails.
+     *
+     * Never flash credentials, tokens, API keys, or other secret-bearing fields
+     * into the session. Sensitive keys are filtered recursively so nested JSON
+     * payloads receive the same protection as ordinary HTML forms.
+     */
+    public function oldInput(): array
+    {
+        return static::withoutSensitiveOldInput($this->except([]));
+    }
+
+    protected static function withoutSensitiveOldInput(array $input): array
+    {
+        foreach ($input as $key => $value) {
+            $normalized = strtolower((string) preg_replace('/(?<!^)[A-Z]/', '_$0', (string) $key));
+            $normalized = str_replace('-', '_', $normalized);
+
+            if (preg_match('/(?:^|_)(?:password|passwd|passcode|token|secret|api_key|apikey|authorization|private_key|otp|recovery_code)(?:_|$)/', $normalized) === 1) {
+                unset($input[$key]);
+                continue;
+            }
+
+            if (is_array($value)) {
+                $input[$key] = static::withoutSensitiveOldInput($value);
+            }
+        }
+
+        return $input;
+    }
+
     public function has(string $key): bool
     {
         return array_key_exists($key, $this->all());

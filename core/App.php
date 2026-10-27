@@ -44,11 +44,17 @@ class App
             [$key, $value] = explode('=', $line, 2);
             $key = trim($key);
             $value = trim(trim($value));
-            // Remove surrounding quotes
+            // Remove surrounding quotes and decode only the two escapes emitted by
+            // Installer::buildEnv(). Other backslashes remain literal (e.g. "\n"
+            // in a password is not converted into a newline).
             if (strlen($value) >= 2 && (($value[0] === '"' && $value[-1] === '"') || ($value[0] === "'" && $value[-1] === "'"))) {
+                $quote = $value[0];
                 $value = substr($value, 1, -1);
+                if ($quote === '"') {
+                    $value = str_replace(['\\\\', '\\"'], ['\\', '"'], $value);
+                }
             }
-            if ($key === '' || array_key_exists($key, $_ENV)) {
+            if ($key === '' || array_key_exists($key, $_ENV) || getenv($key) !== false) {
                 continue;
             }
             $_ENV[$key] = $value;
@@ -245,7 +251,7 @@ class App
         if ($e instanceof Exceptions\ValidationException && PHP_SAPI !== 'cli') {
             Session::flash('_errors', $e->errors);
             try {
-                Session::flash('_old', request()->except(['password', 'password_confirmation', 'csrf_token']));
+                Session::flash('_old', request()->oldInput());
             } catch (\Throwable) {
                 // Ignore — redirect without old input
             }
