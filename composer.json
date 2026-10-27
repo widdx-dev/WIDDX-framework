@@ -3,7 +3,16 @@
     "description": "Widdx - a simple PHP framework inspired by Laravel but much simpler",
     "type": "framework",
     "license": "MIT",
-    "keywords": ["framework", "mvc", "php", "zero-code", "crud", "sqlite", "router", "orm"],
+    "keywords": [
+        "framework",
+        "mvc",
+        "php",
+        "zero-code",
+        "crud",
+        "sqlite",
+        "router",
+        "orm"
+    ],
     "require": {
         "php": ">=8.1",
         "ext-pdo": "*",
@@ -15,7 +24,6 @@
     "autoload": {
         "psr-4": {
             "Widdx\\": "core/",
-            "App\\": "app/",
             "Config\\": "config/"
         },
         "files": [
@@ -24,7 +32,8 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "Widdx\\Tests\\": "tests/"
+            "Widdx\\Tests\\": "tests/",
+            "App\\": "tests/fixtures/demo-app/app/"
         }
     },
     "authors": [
