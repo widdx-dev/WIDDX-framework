@@ -660,18 +660,25 @@ test('Installer: buildEnv + lock + requirements + testConnection', function () {
     assert_true((bool) preg_match('/^DB_PASSWORD=(.*)$/m', $roundtrip, $passwordLine), 'serialized password line exists');
     $envBase = sys_get_temp_dir() . '/widdx-env-roundtrip-' . bin2hex(random_bytes(6));
     $probeKey = 'WIDDX_ENV_ROUNDTRIP_' . strtoupper(bin2hex(random_bytes(6)));
+    $overrideKey = 'WIDDX_ENV_OVERRIDE_' . strtoupper(bin2hex(random_bytes(6)));
     mkdir($envBase, 0700, true);
     try {
         // Mirror the encoded value under a unique name so a preconfigured
         // DB_PASSWORD in the CI environment cannot affect this test.
-        file_put_contents($envBase . '/.env', $probeKey . '=' . $passwordLine[1] . "\n");
-        unset($_ENV[$probeKey]);
+        file_put_contents(
+            $envBase . '/.env',
+            $probeKey . '=' . $passwordLine[1] . "\n" . $overrideKey . "=from-file\n"
+        );
+        unset($_ENV[$probeKey], $_ENV[$overrideKey]);
         putenv($probeKey);
+        putenv($overrideKey . '=from-process');
         \Widdx\App::loadEnv($envBase);
         assert_equals($specialPassword, getenv($probeKey), 'dotenv values must round-trip exactly');
+        assert_equals('from-process', getenv($overrideKey), 'real process environment overrides .env');
     } finally {
-        unset($_ENV[$probeKey]);
+        unset($_ENV[$probeKey], $_ENV[$overrideKey]);
         putenv($probeKey);
+        putenv($overrideKey);
         @unlink($envBase . '/.env');
         @rmdir($envBase);
     }
