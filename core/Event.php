@@ -70,36 +70,65 @@ class Event
         static::$queued[] = ['event' => $event, 'args' => $args];
     }
 
+    /** Maximum generations of events dispatched by one flush. Prevents a listener that
+     * keeps re-queueing itself from hanging a worker indefinitely. */
+    protected const MAX_FLUSH_ROUNDS = 100;
+
     /**
-     * Dispatch queued events without allowing a failed post-response listener
-     * to corrupt the already-sent HTTP response or prevent later events.
+     * Dispatch queued events after the response has been sent.
      *
-     * The current batch is removed before dispatch. Events queued by a listener
-     * are retained for the next flush instead of being accidentally discarded.
+     * Each batch is removed before dispatch; events enqueued by listeners are
+     * then processed in the next round during this same flush. Listener errors
+     * are isolated individually, so one broken subscriber cannot prevent other
+     * subscribers or queued events from running.
      */
     public static function flush(): void
     {
-        $batch = static::$queued;
-        static::$queued = [];
+        $round = 0;
+        while (static::$queued !== [] && $round < self::MAX_FLUSH_ROUNDS) {
+            $batch = static::$queued;
+            static::$queued = [];
+            $round++;
 
-        foreach ($batch as $q) {
-            try {
-                static::fire($q['event'], ...$q['args']);
-            } catch (\Throwable $e) {
-                // Queued work runs after a response has been sent, so bubbling
-                // this exception can append an error page to a successful body.
-                // Log without event arguments; they may contain tokens or PII.
-                try {
-                    logger('error', 'Queued event listener failed.', [
-                        'event' => (string) ($q['event'] ?? 'unknown'),
-                        'exception' => get_class($e),
-                        'message' => $e->getMessage(),
-                    ]);
-                } catch (\Throwable) {
-                    error_log('Widdx queued event listener failed: event='
-                        . (string) ($q['event'] ?? 'unknown') . ' exception=' . get_class($e));
+            foreach ($batch as $q) {
+                $event = (string) ($q['event'] ?? 'unknown');
+                foreach (static::$listeners[$event] ?? [] as $listener) {
+                    try {
+                        $listener(...($q['args'] ?? []));
+                    } catch (\Throwable $e) {
+                        static::logQueuedFailure($event, $e);
+                    }
                 }
             }
+        }
+
+        // A pathological listener chain may enqueue forever. Drop the remaining
+        // in-memory work after the cap and report it, rather than hanging PHP-FPM.
+        if (static::$queued !== []) {
+            $remaining = count(static::$queued);
+            static::$queued = [];
+            try {
+                logger('error', 'Queued event flush limit reached; remaining events discarded.', [
+                    'round_limit' => self::MAX_FLUSH_ROUNDS,
+                    'discarded_events' => $remaining,
+                ]);
+            } catch (\Throwable) {
+                error_log('Widdx queued event flush limit reached; remaining events discarded: ' . $remaining);
+            }
+        }
+    }
+
+    /** Log a queued-listener failure without its arguments, which may contain secrets or PII. */
+    protected static function logQueuedFailure(string $event, \Throwable $e): void
+    {
+        try {
+            logger('error', 'Queued event listener failed.', [
+                'event' => $event,
+                'exception' => get_class($e),
+                'message' => $e->getMessage(),
+            ]);
+        } catch (\Throwable) {
+            error_log('Widdx queued event listener failed: event=' . $event . ' exception=' . get_class($e));
         }
     }
 

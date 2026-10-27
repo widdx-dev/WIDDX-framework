@@ -224,27 +224,59 @@ test('Event fires listeners', function () {
     assert_true($called);
 });
 
-test('Event::flush isolates queued listener failures and continues with later events', function () {
-    \Widdx\Event::forget('test.queued.failure');
-    \Widdx\Event::forget('test.queued.after');
+test('Event::flush isolates listener failures, drains nested events, and prevents repeat dispatch', function () {
+    foreach ([
+        'test.queued.failure',
+        'test.queued.after',
+        'test.queued.parent',
+        'test.queued.child',
+    ] as $eventName) {
+        \Widdx\Event::forget($eventName);
+    }
     $seen = [];
     \Widdx\Event::listen('test.queued.failure', function (): void {
         throw new \RuntimeException('queued-event-probe');
     });
+    // A failing listener must not skip other subscribers to the same event.
+    \Widdx\Event::listen('test.queued.failure', function () use (&$seen): void {
+        $seen[] = 'same-event-after-failure';
+    });
     \Widdx\Event::listen('test.queued.after', function (string $value) use (&$seen): void {
+        $seen[] = $value;
+    });
+    \Widdx\Event::listen('test.queued.parent', function () use (&$seen): void {
+        $seen[] = 'parent';
+        \Widdx\Event::queue('test.queued.child', 'nested-event');
+    });
+    \Widdx\Event::listen('test.queued.child', function (string $value) use (&$seen): void {
         $seen[] = $value;
     });
 
     \Widdx\Event::queue('test.queued.failure');
     \Widdx\Event::queue('test.queued.after', 'after-failure');
+    \Widdx\Event::queue('test.queued.parent');
     try {
         \Widdx\Event::flush();
-        assert_equals(['after-failure'], $seen, 'later queued events must run even when an earlier listener throws');
+        assert_equals(
+            ['same-event-after-failure', 'after-failure', 'parent', 'nested-event'],
+            $seen,
+            'flush must continue after listener errors and drain events queued by listeners'
+        );
         \Widdx\Event::flush();
-        assert_equals(['after-failure'], $seen, 'the completed batch must not run twice');
+        assert_equals(
+            ['same-event-after-failure', 'after-failure', 'parent', 'nested-event'],
+            $seen,
+            'the completed and nested batches must not run twice'
+        );
     } finally {
-        \Widdx\Event::forget('test.queued.failure');
-        \Widdx\Event::forget('test.queued.after');
+        foreach ([
+            'test.queued.failure',
+            'test.queued.after',
+            'test.queued.parent',
+            'test.queued.child',
+        ] as $eventName) {
+            \Widdx\Event::forget($eventName);
+        }
     }
 });
 
