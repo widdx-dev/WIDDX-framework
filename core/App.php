@@ -54,7 +54,7 @@ class App
                     $value = str_replace(['\\\\', '\\"'], ['\\', '"'], $value);
                 }
             }
-            if ($key === '' || array_key_exists($key, $_ENV)) {
+            if ($key === '' || array_key_exists($key, $_ENV) || getenv($key) !== false) {
                 continue;
             }
             $_ENV[$key] = $value;
