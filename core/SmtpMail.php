@@ -101,54 +101,124 @@ class SmtpMail implements MailInterface
 
     public function raw(string $to, string $subject, string $body, array $headers = []): bool
     {
-        // Merge per-send headers with instance-level fluent headers so
-        // replyTo()/cc()/bcc() are never silently dropped.
-        $allHeaders = array_merge(
-            ['From' => "{$this->fromName} <{$this->from}>"],
-            $this->headers,
-            $headers
-        );
-
-        // Envelope recipients: To + Cc + Bcc (Bcc is stripped from the data).
-        $recipients = $this->extractEmails($to);
-        foreach (['Cc', 'Bcc'] as $key) {
-            if (isset($allHeaders[$key])) {
-                $recipients = array_merge($recipients, $this->extractEmails($allHeaders[$key]));
-            }
-        }
-        $recipients = array_values(array_unique($recipients));
-        // Keep To/Cc inside the message DATA; strip Bcc entirely from it.
-        if (!isset($allHeaders['To'])) {
-            $allHeaders['To'] = $to;
-        }
-        unset($allHeaders['Bcc']);
-
-        // Attachments turn the payload into a multipart/mixed message.
-        $dataBody = $body;
-        if ($this->attachments !== []) {
-            $boundary = 'widdx-' . bin2hex(random_bytes(8));
-            $allHeaders['Content-Type'] = 'multipart/mixed; boundary="' . $boundary . '"';
-            $dataBody = $this->buildMultipart($boundary, $body);
-        }
-
-        $message = $this->buildMessage($subject, $allHeaders, $dataBody);
-
         try {
+            // Validate values that PHP mail() and SMTP both use as headers/envelope.
+            // The actual message body is intentionally not restricted by this guard.
+            $to = $this->sanitize($to, 'recipient');
+            $subject = $this->sanitize($subject, 'subject');
+
+            // Header names are case-insensitive. Normalize standard names before
+            // processing Cc/Bcc, so e.g. "bcc" cannot bypass the Bcc stripping.
+            $allHeaders = $this->normalizeHeaders(array_merge(
+                ['From' => "{$this->fromName} <{$this->from}>"],
+                $this->headers,
+                $headers
+            ));
+            unset($allHeaders['Subject']); // The $subject argument is authoritative.
+
+            // The envelope includes To, Cc and Bcc; only Bcc is omitted from message DATA.
+            $recipients = $this->envelopeRecipients($to, $allHeaders);
+            if ($recipients === []) {
+                throw new Exceptions\MailException('No valid recipient addresses were provided.');
+            }
+            $allHeaders = $this->messageHeaders($allHeaders, $to);
+
+            // Attachments turn the payload into a multipart/mixed attachment.
+            $dataBody = $body;
+            if ($this->attachments !== []) {
+                $boundary = 'widdx-' . bin2hex(random_bytes(8));
+                $allHeaders['Content-Type'] = 'multipart/mixed; boundary="' . $boundary . '"';
+                $dataBody = $this->buildMultipart($boundary, $body);
+            }
+
+            $message = $this->buildMessage($subject, $allHeaders, $dataBody);
+
             // No host configured — fall back to PHP's mail() function.
             if ($this->host === '') {
                 $headerLines = [];
                 foreach ($allHeaders as $name => $value) {
-                    $headerLines[] = $name . ': ' . $this->sanitize($value, "header '{$name}'");
+                    $safeName = $this->normalizeHeaderName((string) $name);
+                    $headerLines[] = $safeName . ': ' . $this->sanitize((string) $value, "header '{$safeName}'");
                 }
-                return @mail($to, $subject, $dataBody, implode("\r\n", $headerLines));
+                // Use the computed envelope list so Bcc recipients also receive mail
+                // on the PHP mail() fallback, while the message To header stays unchanged.
+                return @mail(implode(', ', $recipients), $subject, $dataBody, implode("\r\n", $headerLines));
             }
 
             $this->smtpSend($recipients, $message);
             return true;
         } finally {
-            // One-shot fluent state: the next send starts clean.
+            // Clear one-shot attachments even if header validation fails before transport.
             $this->attachments = [];
         }
+    }
+
+    /** Build the SMTP/PHP-mail envelope recipients from To, Cc and Bcc headers. */
+    protected function envelopeRecipients(string $to, array $headers): array
+    {
+        $recipients = $this->extractEmails($to);
+        foreach (['Cc', 'Bcc'] as $key) {
+            if (isset($headers[$key])) {
+                $recipients = array_merge($recipients, $this->extractEmails($headers[$key]));
+            }
+        }
+        return array_values(array_unique($recipients));
+    }
+
+    /** Keep a visible To header and ensure no Bcc address is written into message DATA. */
+    protected function messageHeaders(array $headers, string $to): array
+    {
+        if (!isset($headers['To'])) {
+            $headers['To'] = $to;
+        }
+        unset($headers['Bcc']);
+        return $headers;
+    }
+
+    /**
+     * Validate and canonicalize standard header names. Reject control characters,
+     * whitespace, colon and non-ASCII before a name can reach the message builder.
+     */
+    protected function normalizeHeaderName(string $name): string
+    {
+        if (preg_match('/\A[\x21-\x39\x3B-\x7E]+\z/', $name) !== 1) {
+            throw new Exceptions\MailException('Refusing invalid email header name.');
+        }
+
+        return match (strtolower($name)) {
+            'from' => 'From',
+            'to' => 'To',
+            'cc' => 'Cc',
+            'bcc' => 'Bcc',
+            'reply-to' => 'Reply-To',
+            'content-type' => 'Content-Type',
+            'content-transfer-encoding' => 'Content-Transfer-Encoding',
+            'content-disposition' => 'Content-Disposition',
+            'mime-version' => 'MIME-Version',
+            'subject' => 'Subject',
+            default => $name,
+        };
+    }
+
+    /** Normalize case-insensitive header names and reject CR/LF in values. */
+    protected function normalizeHeaders(array $headers): array
+    {
+        $normalized = [];
+        foreach ($headers as $rawName => $rawValue) {
+            $name = $this->normalizeHeaderName((string) $rawName);
+            if (is_array($rawValue) || (is_object($rawValue) && !($rawValue instanceof \Stringable))) {
+                throw new Exceptions\MailException("Refusing header '{$name}': value must be scalar or stringable.");
+            }
+            $value = $this->sanitize((string) $rawValue, "header '{$name}'");
+
+            // Preserve multiple Cc/Bcc entries that differ only in header casing.
+            if (in_array($name, ['Cc', 'Bcc'], true) && isset($normalized[$name]) && $value !== '') {
+                $normalized[$name] = trim($normalized[$name] . ', ' . $value, ', ');
+            } else {
+                $normalized[$name] = $value;
+            }
+        }
+        return $normalized;
     }
 
     /** RFC 2046 multipart/mixed body: text part + base64 attachments. */
@@ -162,7 +232,7 @@ class SmtpMail implements MailInterface
             if ($data === false) {
                 throw new Exceptions\MailException('Cannot read attachment: ' . $attachment['path']);
             }
-            $name = $this->sanitize($attachment['name'], 'attachment name');
+            $name = $this->safeAttachmentName($attachment['name']);
             $parts[] = "--{$boundary}\r\nContent-Type: " . static::mimeFor($name) . "; name=\"{$name}\"\r\n"
                 . "Content-Transfer-Encoding: base64\r\n"
                 . "Content-Disposition: attachment; filename=\"{$name}\"\r\n\r\n"
@@ -170,6 +240,18 @@ class SmtpMail implements MailInterface
         }
         $parts[] = "--{$boundary}--";
         return implode("\r\n", $parts);
+    }
+
+    /** Keep attachment parameter values safe inside quoted MIME header fields. */
+    protected function safeAttachmentName(string $name): string
+    {
+        $name = $this->sanitize($name, 'attachment name');
+        $name = preg_replace('/[^A-Za-z0-9._-]/', '_', basename($name)) ?? '';
+        $name = trim($name, '.');
+        if ($name === '' || $name === '..') {
+            return 'attachment';
+        }
+        return substr($name, 0, 150);
     }
 
     /** Best-effort content type by extension. */
@@ -200,9 +282,11 @@ class SmtpMail implements MailInterface
         $lines[] = 'Date: ' . $now;
         $lines[] = 'Message-ID: <' . bin2hex(random_bytes(8)) . '@' . gethostname() . '>';
         foreach ($headers as $name => $value) {
+            $name = $this->normalizeHeaderName((string) $name);
             $lines[] = $name . ': ' . $this->sanitize((string) $value, "header '{$name}'");
         }
         if ($subject !== '') {
+            $subject = $this->sanitize($subject, 'subject');
             $encoded = $this->encodeHeaderLine('Subject', $subject);
             $lines[] = $encoded;
         }

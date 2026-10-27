@@ -411,6 +411,68 @@ test('LogMail clear works', function () {
     assert_equals(0, count($mail->logged()));
 });
 
+test('SmtpMail rejects header injection and canonicalizes Bcc case', function () {
+    $mail = new \Widdx\SmtpMail();
+
+    foreach ([
+        ['recipient@example.test', "Subject\r\nBcc: attacker@example.test", []],
+        ["recipient@example.test\r\nBcc: attacker@example.test", 'Subject', []],
+        ['recipient@example.test', 'Subject', ["X-Test\r\nBcc" => 'attacker@example.test']],
+    ] as [$to, $subject, $headers]) {
+        $threw = false;
+        try {
+            $mail->raw($to, $subject, 'body', $headers);
+        } catch (\Widdx\Exceptions\MailException) {
+            $threw = true;
+        }
+        assert_true($threw, 'recipient, subject and header names must reject CR/LF injection');
+    }
+
+    // Header fields are case-insensitive: lower-case bcc must be normalized so
+    // the raw() path includes it in the envelope and strips it from message DATA.
+    $normalize = new \ReflectionMethod(\Widdx\SmtpMail::class, 'normalizeHeaders');
+    $normalize->setAccessible(true);
+    $headers = $normalize->invoke($mail, [
+        'Bcc' => 'first@example.test',
+        'bcc' => 'second@example.test',
+        'X-Trace' => 'safe',
+    ]);
+    assert_equals('first@example.test, second@example.test', $headers['Bcc'] ?? null);
+    assert_equals('safe', $headers['X-Trace'] ?? null);
+
+    $envelopeMethod = new \ReflectionMethod(\Widdx\SmtpMail::class, 'envelopeRecipients');
+    $envelopeMethod->setAccessible(true);
+    assert_equals(
+        ['recipient@example.test', 'copy@example.test', 'first@example.test', 'second@example.test'],
+        $envelopeMethod->invoke($mail, 'recipient@example.test', array_merge($headers, ['Cc' => 'copy@example.test'])),
+        'To, Cc and case-insensitive Bcc recipients must all remain in the delivery envelope'
+    );
+    $messageHeadersMethod = new \ReflectionMethod(\Widdx\SmtpMail::class, 'messageHeaders');
+    $messageHeadersMethod->setAccessible(true);
+    $visibleHeaders = $messageHeadersMethod->invoke($mail, $headers, 'recipient@example.test');
+    assert_true(!array_key_exists('Bcc', $visibleHeaders), 'Bcc must never be written to message DATA');
+    assert_equals('recipient@example.test', $visibleHeaders['To'] ?? null, 'visible To remains unchanged');
+
+    // Rejected validation also clears one-shot attachments; a later send must
+    // not accidentally inherit a file attached for the failed message.
+    $attachment = tempnam(sys_get_temp_dir(), 'widdx-mail-attach');
+    file_put_contents($attachment, 'secret attachment');
+    try {
+        $mail->attach($attachment, 'private report.txt');
+        try {
+            $mail->raw('recipient@example.test', "bad\r\nSubject", 'body');
+            assert_true(false, 'invalid subject must be rejected');
+        } catch (\Widdx\Exceptions\MailException) {
+            // expected
+        }
+        $property = new \ReflectionProperty(\Widdx\SmtpMail::class, 'attachments');
+        $property->setAccessible(true);
+        assert_equals([], $property->getValue($mail), 'failed sends must clear attached files');
+    } finally {
+        @unlink($attachment);
+    }
+});
+
 // Cache tests
 test('FileCache stores and retrieves', function () {
     $cache = new \Widdx\FileCache();
