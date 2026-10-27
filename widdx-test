@@ -2399,6 +2399,31 @@ test('App completes the HTTP response before dispatching queued side effects', f
     assert_true(str_contains($app, "elseif (PHP_SAPI !== 'cli')"), 'non-FPM web SAPIs attempt to flush output buffers; CLI buffering is preserved');
 });
 
+test('Database treats only explicit missing-table errors as absent schema', function () {
+    $method = new \ReflectionMethod(\Widdx\Database::class, 'isMissingTableError');
+    $method->setAccessible(true);
+    $isMissing = static fn (string $message): bool => (bool) $method->invoke(null, $message);
+
+    assert_true(
+        $isMissing('SQLSTATE[42P01]: ERROR: relation "missing_table" does not exist'),
+        'a PostgreSQL undefined-table error should preserve the empty-array contract'
+    );
+    assert_true(
+        $isMissing('SQLSTATE[HY000]: no such table: missing_table'),
+        'a SQLite missing-table error should preserve the empty-array contract'
+    );
+    assert_equals(
+        false,
+        $isMissing('SQLSTATE[42501]: ERROR: permission denied for relation "users"'),
+        'a permission-denied relation error must propagate, not masquerade as a missing table'
+    );
+    assert_equals(
+        false,
+        $isMissing('SQLSTATE[08006]: connection failure while reading information_schema'),
+        'connection failures must propagate'
+    );
+});
+
 test('2.23 the five production findings: installer debug default, upload dir escape, CORS allowlist, token indexes + prune, dead config key', function () {
     // 1. SEC-01 — a first run of public/install.php must not pre-check APP_DEBUG:
     // the page warns that the framework defaults to OFF while the box said ON.
