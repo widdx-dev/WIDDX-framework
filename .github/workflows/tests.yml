@@ -1,5 +1,9 @@
 name: tests
 
+# CI needs read-only source access; no job publishes packages or writes repository state.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main, master]
