@@ -1863,8 +1863,28 @@ test('Auth: register + email verification + password reset lifecycle', function 
     ]);
     assert_equals(401, $verifiedMw->handle($guestJsonReq, fn () => \Widdx\Response::make('private'))->getStatus());
 
-    // Invalid/missing stored hashes must take the same expensive verify path
-    // as unknown emails; otherwise login timing reveals these account records.
+    // Verify the dummy bcrypt hashes cover the default costs used by supported PHP
+    // versions, and that a known hash is padded with the opposite cost.
+    $authReflection = new \ReflectionClass(\Widdx\Auth::class);
+    $timingHash10 = $authReflection->getReflectionConstant('TIMING_HASH_COST_10')->getValue();
+    $timingHash12 = $authReflection->getReflectionConstant('TIMING_HASH_COST_12')->getValue();
+    assert_equals(10, (int) (password_get_info($timingHash10)['options']['cost'] ?? 0));
+    assert_equals(12, (int) (password_get_info($timingHash12)['options']['cost'] ?? 0));
+    $paddingMethod = $authReflection->getMethod('bcryptPaddingHash');
+    $paddingMethod->setAccessible(true);
+    assert_equals(
+        12,
+        (int) (password_get_info($paddingMethod->invoke(null, password_get_info($timingHash10)))['options']['cost'] ?? 0),
+        'cost-10 user hashes must be padded with a cost-12 dummy verification'
+    );
+    assert_equals(
+        10,
+        (int) (password_get_info($paddingMethod->invoke(null, password_get_info($timingHash12)))['options']['cost'] ?? 0),
+        'cost-12 user hashes must be padded with a cost-10 dummy verification'
+    );
+
+    // Invalid/missing stored hashes and unknown emails must take both dummy costs.
+    // This reduces timing differences between accounts created by different PHP versions.
     $now = date('Y-m-d H:i:s');
     $timingInsert = $pdo->prepare(
         'INSERT INTO auth_users (name, email, password, email_verified_at, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?)'
@@ -1872,6 +1892,8 @@ test('Auth: register + email verification + password reset lifecycle', function 
     foreach ([
         ['Empty-hash account', 'empty-hash@widdx.test', ''],
         ['Malformed-hash account', 'malformed-hash@widdx.test', 'not-a-password-hash'],
+        ['Cost-10 account', 'cost-10@widdx.test', password_hash('real-password', PASSWORD_BCRYPT, ['cost' => 10])],
+        ['Cost-12 account', 'cost-12@widdx.test', password_hash('real-password', PASSWORD_BCRYPT, ['cost' => 12])],
     ] as [$timingName, $timingEmail, $timingHash]) {
         $timingInsert->execute([$timingName, $timingEmail, $timingHash, $now, $now]);
         $started = hrtime(true);
