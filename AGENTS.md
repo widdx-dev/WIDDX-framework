@@ -6,7 +6,7 @@ Two layers, and only one of them is binding.
   router. It is short on purpose — a long file is a file a model stops following.
 - **`.agents/*.md`**: the reference. Open exactly the one your task needs (ROUTER below). Never read all of them.
 
-One line = one fact. Version: v0.3.8. Every claim here is measured (unit suite + integration suite; the runner
+One line = one fact. Version: v0.4.0. Every claim here is measured (unit suite + integration suite; the runner
 prints its own totals), not assumed.
 
 ---
