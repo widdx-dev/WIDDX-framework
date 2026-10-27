@@ -116,20 +116,12 @@ class SmtpMail implements MailInterface
             ));
             unset($allHeaders['Subject']); // The $subject argument is authoritative.
 
-            // Envelope recipients: To + Cc + Bcc (Bcc is stripped from DATA below).
-            $recipients = $this->extractEmails($to);
-            foreach (['Cc', 'Bcc'] as $key) {
-                if (isset($allHeaders[$key])) {
-                    $recipients = array_merge($recipients, $this->extractEmails($allHeaders[$key]));
-                }
+            // The envelope includes To, Cc and Bcc; only Bcc is omitted from message DATA.
+            $recipients = $this->envelopeRecipients($to, $allHeaders);
+            if ($recipients === []) {
+                throw new Exceptions\MailException('No valid recipient addresses were provided.');
             }
-            $recipients = array_values(array_unique($recipients));
-
-            // Keep To/Cc inside message DATA; never expose Bcc in the message itself.
-            if (!isset($allHeaders['To'])) {
-                $allHeaders['To'] = $to;
-            }
-            unset($allHeaders['Bcc']);
+            $allHeaders = $this->messageHeaders($allHeaders, $to);
 
             // Attachments turn the payload into a multipart/mixed attachment.
             $dataBody = $body;
@@ -148,7 +140,9 @@ class SmtpMail implements MailInterface
                     $safeName = $this->normalizeHeaderName((string) $name);
                     $headerLines[] = $safeName . ': ' . $this->sanitize((string) $value, "header '{$safeName}'");
                 }
-                return @mail($to, $subject, $dataBody, implode("\r\n", $headerLines));
+                // Use the computed envelope list so Bcc recipients also receive mail
+                // on the PHP mail() fallback, while the message To header stays unchanged.
+                return @mail(implode(', ', $recipients), $subject, $dataBody, implode("\r\n", $headerLines));
             }
 
             $this->smtpSend($recipients, $message);
@@ -157,6 +151,28 @@ class SmtpMail implements MailInterface
             // Clear one-shot attachments even if header validation fails before transport.
             $this->attachments = [];
         }
+    }
+
+    /** Build the SMTP/PHP-mail envelope recipients from To, Cc and Bcc headers. */
+    protected function envelopeRecipients(string $to, array $headers): array
+    {
+        $recipients = $this->extractEmails($to);
+        foreach (['Cc', 'Bcc'] as $key) {
+            if (isset($headers[$key])) {
+                $recipients = array_merge($recipients, $this->extractEmails($headers[$key]));
+            }
+        }
+        return array_values(array_unique($recipients));
+    }
+
+    /** Keep a visible To header and ensure no Bcc address is written into message DATA. */
+    protected function messageHeaders(array $headers, string $to): array
+    {
+        if (!isset($headers['To'])) {
+            $headers['To'] = $to;
+        }
+        unset($headers['Bcc']);
+        return $headers;
     }
 
     /**
