@@ -406,6 +406,39 @@ test('Request spoofs method via _method', function () {
     assert_equals('PUT', $request->method());
 });
 
+test('Request::oldInput excludes secret fields recursively', function () {
+    $request = new \Widdx\Request(
+        ['search' => 'catalog', 'apiKey' => 'query-secret', 'safeQuery' => 'yes'],
+        [
+            'name' => 'Alice',
+            'email' => 'alice@example.com',
+            'password' => 'plain-secret',
+            'password_confirmation' => 'plain-secret',
+            'csrf_token' => 'csrf-secret',
+            'resetToken' => 'reset-secret',
+            'profile' => [
+                'display_name' => 'Alice',
+                'clientSecret' => 'nested-secret',
+                'timezone' => 'Asia/Hebron',
+            ],
+        ],
+        ['REQUEST_METHOD' => 'POST']
+    );
+    $request->routeParams = ['token' => 'route-secret', 'id' => '42'];
+
+    assert_equals([
+        'search' => 'catalog',
+        'safeQuery' => 'yes',
+        'name' => 'Alice',
+        'email' => 'alice@example.com',
+        'profile' => [
+            'display_name' => 'Alice',
+            'timezone' => 'Asia/Hebron',
+        ],
+        'id' => '42',
+    ], $request->oldInput());
+});
+
 // Queue tests
 test('SyncQueue executes immediately', function () {
     \Widdx\Tests\TestJob::$logFile = $file = sys_get_temp_dir() . '/widdx_job_test.txt';
