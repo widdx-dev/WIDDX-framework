@@ -98,6 +98,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             throw new RuntimeException('.env موجود مسبقًا ولن يتم استبداله. استخدم زر إكمال التنصيب لتشغيل migrations المعلّقة ثم قفل المثبّت.');
         } else {
             $v = array_map(static fn ($x) => is_string($x) ? trim($x) : '', $_POST);
+            // Do not trim credentials: leading/trailing spaces are valid password
+            // characters and must survive the installer round-trip unchanged.
+            if (isset($_POST['DB_PASSWORD']) && is_string($_POST['DB_PASSWORD'])) {
+                $v['DB_PASSWORD'] = $_POST['DB_PASSWORD'];
+            }
             $appUrl = (string) ($v['APP_URL'] ?? '');
             $urlParts = $appUrl !== '' ? parse_url($appUrl) : false;
             if (!is_array($urlParts)
