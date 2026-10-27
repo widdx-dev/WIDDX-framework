@@ -245,7 +245,7 @@ class App
         if ($e instanceof Exceptions\ValidationException && PHP_SAPI !== 'cli') {
             Session::flash('_errors', $e->errors);
             try {
-                Session::flash('_old', request()->except(['password', 'password_confirmation', 'csrf_token']));
+                Session::flash('_old', request()->oldInput());
             } catch (\Throwable) {
                 // Ignore — redirect without old input
             }
