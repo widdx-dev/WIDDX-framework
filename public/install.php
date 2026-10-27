@@ -208,7 +208,7 @@ li{margin:4px 0}
 
 <?php if ($errors): foreach ($errors as $er): ?><div class="err"><?= e($er) ?></div><?php endforeach; endif; ?>
 
-<?php if ($configured):
+<?php if ($configured && $ready):
     // .env exists but the installer is NOT locked yet. Resume safely by running
     // every pending migration, then lock only if all migrations succeed.
     // Key + token are required; this cannot be triggered by a drive-by POST.
