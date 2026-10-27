@@ -664,7 +664,7 @@ test('Installer: buildEnv + lock + requirements + testConnection', function () {
     try {
         // Mirror the encoded value under a unique name so a preconfigured
         // DB_PASSWORD in the CI environment cannot affect this test.
-        file_put_contents($envBase . '/.env', $roundtrip . $probeKey . '=' . $passwordLine[1] . "\n");
+        file_put_contents($envBase . '/.env', $probeKey . '=' . $passwordLine[1] . "\n");
         unset($_ENV[$probeKey]);
         putenv($probeKey);
         \Widdx\App::loadEnv($envBase);
