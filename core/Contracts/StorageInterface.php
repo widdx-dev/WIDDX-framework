@@ -44,6 +44,9 @@ interface StorageInterface
     /** Delete directory */
     public function deleteDirectory(string $path): bool;
 
-    /** Get public URL */
+    /**
+     * Get a public URL for an explicitly public path (e.g. public/uploads/photo.png).
+     * Private storage paths must not be exposed by this method.
+     */
     public function url(string $path): string;
 }
