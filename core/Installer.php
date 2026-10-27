@@ -35,18 +35,33 @@ class Installer
     public static function installKey(string $base): string
     {
         $file = $base . self::KEY;
+        if (is_link($file)) {
+            throw new \RuntimeException('Installer key path must not be a symbolic link.');
+        }
         if (is_file($file)) {
-            $key = trim((string) file_get_contents($file));
-            if ($key !== '') {
-                return $key;
+            $contents = @file_get_contents($file);
+            if ($contents === false) {
+                throw new \RuntimeException('The installer key exists but cannot be read. Check storage/app permissions.');
             }
+            $key = trim($contents);
+            if (preg_match('/\A[a-f0-9]{32}\z/i', $key) !== 1) {
+                throw new \RuntimeException('The installer key file is invalid. Restore a valid 32-character hexadecimal key.');
+            }
+            return $key;
         }
+
         $dir = dirname($file);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0775, true);
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            throw new \RuntimeException('Cannot create storage/app for the installer key. Check directory permissions.');
         }
+        if (!is_writable($dir)) {
+            throw new \RuntimeException('storage/app is not writable. Fix its permissions before installing.');
+        }
+
         $key = bin2hex(random_bytes(16));
-        file_put_contents($file, $key . "\n");
+        if (@file_put_contents($file, $key . "\n", LOCK_EX) === false) {
+            throw new \RuntimeException('Cannot persist the installer key. Check disk space and storage/app permissions.');
+        }
         @chmod($file, 0600);
         return $key;
     }
@@ -110,7 +125,7 @@ class Installer
 
     protected static function storageWritable(string $base): bool
     {
-        foreach (['storage/cache', 'storage/logs', 'storage/sessions'] as $dir) {
+        foreach (['storage/cache', 'storage/logs', 'storage/sessions', 'storage/app'] as $dir) {
             $full = $base . '/' . $dir;
             if (!is_dir($full) || !is_writable($full)) {
                 return false;
