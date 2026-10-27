@@ -52,9 +52,15 @@ class AuthController
 
     public function register(): Response
     {
+        $userModel = Auth::userClass();
+        if (!class_exists($userModel)) {
+            throw new Exceptions\BindingException('Configured auth model [' . $userModel . '] does not exist.');
+        }
+        $userTable = (new $userModel())->getTable();
+
         $data = request()->validate([
             'name' => 'required|string|min:2|max:100',
-            'email' => 'required|email|max:255|unique:users,email',
+            'email' => 'required|email|max:255|unique:' . $userTable . ',email',
             'password' => 'required|string|min:8|confirmed',
         ]);
         try {
