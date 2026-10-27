@@ -65,6 +65,10 @@ class MakeCrud
 
         $base = defined('WIDDX_BASE_PATH') ? WIDDX_BASE_PATH : dirname(__DIR__, 2);
         $model = self::studly($rawName);
+        if (preg_match('/\A[A-Z][A-Za-z0-9]*\z/', $model) !== 1) {
+            fwrite(STDERR, "Invalid model name [{$model}]. Use letters and numbers, starting with a letter.\n");
+            exit(1);
+        }
         $snake = strtolower((string) preg_replace('/(?<!^)[A-Z]/', '_$0', $model));
         $table = self::pluralize($snake);
 

@@ -17,6 +17,11 @@
 A very simple PHP framework, inspired by Laravel but much simpler.
 Philosophy: **Write minimal code — the framework infers the rest.**
 
+This repository contains the framework source, not a runnable sample application. Demo controllers,
+models, routes, and views used by the test suite live under `tests/fixtures/demo-app/`.
+Create an application with `php widdx new my-app`; use `php widdx new demo-app --demo` only
+when you explicitly need a disposable local demo.
+
 ## Learning resources / المصادر التعليمية
 
 For programmers learning Widdx; basic programming knowledge is assumed.
@@ -529,9 +534,11 @@ php widdx make:crud Invoice amount:float company:fk(Company)  # real FOREIGN KEY
 ### File Uploads — one line, or zero lines
 
 ```php
-// Manual:
-$path = request()->file('cover')->store('covers');  // → 'covers/20261013_ab12_sea.gif'
-// $path goes into your DB column; render with storage()->url($path)
+// Public files must live under public/ so storageRoutes() can serve them safely.
+storageRoutes(); // Register once in routes/web.php
+$path = request()->file('cover')->store('public/covers'); // → 'public/covers/20261013_ab12_sea.gif'
+$url = storage()->url($path); // → /storage/covers/20261013_ab12_sea.gif
+// Files stored outside public/ remain private; url() rejects those paths.
 
 // The object gives you everything a real check needs:
 $f = request()->file('cover');
@@ -648,26 +655,25 @@ php widdx schedule:run                    # cron: one entry runs the due tasks
 
 ## Structure
 
+This repository contains the framework source and its tests. Application folders such as
+`app/`, `database/`, and `views/` are created inside each project by `php widdx new my-app`.
+The sample app used only by regression tests lives in `tests/fixtures/demo-app/`.
+
 ```
-├── app/Controllers  app/Models  app/Middleware
-├── core/
-│   ├── Contracts/   CacheInterface, QueueInterface, MailInterface,
-│   │                StorageInterface, LoggerInterface, SessionInterface,
-│   │                AuthInterface, EventInterface
-│   ├── Router, Container, Model, QueryBuilder, Database, View, App
-│   ├── Event, Migration, CsrfMiddleware, ServiceProvider, ServiceProviderRegistry
-│   ├── FileCache, ArrayCache, FileLogger, LocalStorage
-│   ├── Session, Auth, AuthMiddleware, CrudController, ApiCrudController
-│   ├── Queue, DatabaseQueue, SyncQueue, Job
-│   ├── Mail, LogMail, SmtpMail, Mailable, PendingMailable, SendMailJob
-│   ├── helpers.php, Exceptions/
-├── config/          app.php, database.php, cache.php, logging.php, auth.php, queue.php, mail.php
-├── database/migrations/  database/seeders/
-├── routes/web.php
-├── views/           welcome + users/* + errors/* + layouts/*
-├── public/index.php Single entry point
-├── widdx             CLI tool
-└── composer.json
+├── core/             Framework runtime, ORM, router, auth, storage, queues, mail
+│   ├── Contracts/    Pluggable cache, queue, mail, storage, logger, session, auth and event APIs
+│   ├── Relations/    Model relationships
+│   ├── Cli/          Code generators
+│   ├── views/        Built-in auth, CRUD and error templates
+│   └── helpers.php   Public helper functions
+├── config/           Framework default configuration
+├── lang/             Built-in English and Arabic messages
+├── public/           Front controller, installer and development router
+├── routes/web.php    Empty source placeholder; projects get their own routes
+├── tests/            Unit/integration tests and demo-only fixtures
+├── docs/             English and Arabic learning guides
+├── widdx             CLI and project scaffolder
+└── widdx-test        Test runner
 ```
 
 ## Contracts (Extensibility)

@@ -144,11 +144,10 @@ abstract class Model implements \JsonSerializable
         $skip = array_unique([$this->primaryKey, 'created_at', 'updated_at', 'id', ...$this->hidden]);
         $cols = array_values(array_diff($this->columns(), $skip));
         $cols = array_values(array_filter($cols, fn(string $column): bool => $this->isSensitiveFieldAllowed($column)));
-        if (!empty($this->fillable)) {
-            $fillableOnly = array_values(array_intersect($cols, $this->fillable));
-            $cols = $fillableOnly ?: $cols;
+        if ($this->fillable === ['*']) {
+            return $cols;
         }
-        return $cols;
+        return array_values(array_intersect($cols, $this->fillable));
     }
 
     /**

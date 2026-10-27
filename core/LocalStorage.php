@@ -117,7 +117,25 @@ class LocalStorage implements StorageInterface
 
     public function url(string $path): string
     {
-        return $this->url . '/' . ltrim($path, '/');
+        $path = str_replace('\\', '/', $path);
+        if (str_contains($path, "\0")
+            || str_starts_with($path, '/')
+            || preg_match('#^[a-zA-Z]:#', $path) === 1) {
+            throw new WiddxException('Public storage URLs require a relative path under public/.');
+        }
+
+        $segments = explode('/', $path);
+        if (($segments[0] ?? null) !== 'public' || count($segments) < 2) {
+            throw new WiddxException('Only files stored under public/ have public URLs. Store public files under public/<directory> and register storageRoutes().');
+        }
+        foreach ($segments as $segment) {
+            if ($segment === '' || $segment === '.' || $segment === '..') {
+                throw new WiddxException('Invalid public storage URL path.');
+            }
+        }
+
+        array_shift($segments); // public/ is the storage root, not part of the URL.
+        return $this->url . '/' . implode('/', $segments);
     }
 
     /** Absolute root of this disk (used by UploadedFile::store()). */

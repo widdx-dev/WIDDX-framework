@@ -15,7 +15,9 @@ if (is_file($autoload)) {
         $prefixes = [
             'Widdx\\Tests\\' => __DIR__ . '/tests/',
             'Widdx\\' => __DIR__ . '/core/',
-            'App\\' => __DIR__ . '/app/',
+            'App\\' => is_file(__DIR__ . '/app/Models/User.php')
+                ? __DIR__ . '/app/'
+                : __DIR__ . '/tests/fixtures/demo-app/app/',
             'Psr\\' => __DIR__ . '/polyfill/', // offline stand-in for psr/container
         ];
         foreach ($prefixes as $prefix => $dir) {
@@ -170,6 +172,43 @@ test('Router matches dynamic params', function () {
 test('Model infers table name', function () {
     assert_equals('users', \App\Models\User::inferTable());
     assert_equals('models', \Widdx\Model::inferTable());
+});
+
+test('Model formColumns strictly respects its fillable allow-list', function () {
+    $pdo = \Widdx\Database::connection()->pdo();
+    \Widdx\Schema::dropIfExists('form_columns_probe', $pdo);
+    try {
+        \Widdx\Schema::create('form_columns_probe', function (\Widdx\Blueprint $table): void {
+            $table->id();
+            $table->string('visible');
+            $table->string('other');
+            $table->timestamps();
+        }, $pdo);
+
+        $empty = new class extends \Widdx\Model {
+            protected ?string $table = 'form_columns_probe';
+            protected array $fillable = [];
+        };
+        $unknown = new class extends \Widdx\Model {
+            protected ?string $table = 'form_columns_probe';
+            protected array $fillable = ['not_a_column'];
+        };
+        $restricted = new class extends \Widdx\Model {
+            protected ?string $table = 'form_columns_probe';
+            protected array $fillable = ['visible'];
+        };
+        $all = new class extends \Widdx\Model {
+            protected ?string $table = 'form_columns_probe';
+            protected array $fillable = ['*'];
+        };
+
+        assert_equals([], $empty->formColumns(), 'empty fillable must fail closed');
+        assert_equals([], $unknown->formColumns(), 'a mismatched allow-list must not expose every column');
+        assert_equals(['visible'], $restricted->formColumns(), 'only explicitly fillable columns should render');
+        assert_equals(['visible', 'other'], $all->formColumns(), 'wildcard is the explicit allow-all opt-in');
+    } finally {
+        \Widdx\Schema::dropIfExists('form_columns_probe', $pdo);
+    }
 });
 
 test('Model pluralizes correctly', function () {
@@ -340,7 +379,7 @@ test('QueryBuilder generates correct SQL', function () {
 
 // View tests
 test('View renders template', function () {
-    \Widdx\View::setBasePath(__DIR__ . '/views');
+    \Widdx\View::setBasePath(__DIR__ . '/tests/fixtures/demo-app/views');
     $html = \Widdx\View::make('welcome');
     // Assert the structure, not the text: 'welcome' prints config('app.name'),
     // which is "Widdx" in the framework repo and the project name in a scaffold.
@@ -494,6 +533,31 @@ test('LocalStorage stores and retrieves', function () {
     $storage = new \Widdx\LocalStorage();
     $storage->put('test.txt', 'Hello World');
     assert_equals('Hello World', $storage->get('test.txt'));
+});
+
+test('LocalStorage public URLs strip the public/ storage root and reject private paths', function () {
+    $root = sys_get_temp_dir() . '/widdx-storage-url-' . bin2hex(random_bytes(6));
+    $storage = new \Widdx\LocalStorage($root, '/storage');
+    try {
+        assert_equals('/storage/uploads/photo.png', $storage->url('public/uploads/photo.png'));
+        $privateRejected = false;
+        try {
+            $storage->url('uploads/private.png');
+        } catch (\Widdx\Exceptions\WiddxException) {
+            $privateRejected = true;
+        }
+        assert_true($privateRejected, 'private paths must not receive public URLs');
+
+        $traversalRejected = false;
+        try {
+            $storage->url('public/../private.png');
+        } catch (\Widdx\Exceptions\WiddxException) {
+            $traversalRejected = true;
+        }
+        assert_true($traversalRejected, 'URL path traversal must be rejected');
+    } finally {
+        @rmdir($root);
+    }
 });
 
 test('LocalStorage exists check', function () {
@@ -1765,7 +1829,7 @@ test('2.12 the measured doc facts stay written down and the dead ones stay out',
         'README.md' => ['if it was already running, restart it', 'that runs the middleware twice',
                         'unpublished on Packagist'],
         'core/Cli/MakeCrud.php' => ['restart is required'],
-        'routes/web.php' => ['ALREADY on'],
+        'routes/web.php' => ['intentionally registers no application routes'],
     ];
     foreach ($required as $name => $phrases) {
         assert_true(isset($docs[$name]), "{$name} is missing from the repo");

@@ -4,7 +4,6 @@ parameters:
     phpVersion: 80100
     paths:
         - core
-        - app
         - config
         - routes
         - public
@@ -14,6 +13,7 @@ parameters:
     excludePaths:
         analyse:
             - core/views
+            - tests/fixtures/demo-app/views
     ignoreErrors:
         # Model::query()/newFromTruncated() and Job factories MUST late-static-bind
         # to the called class — `new static()` is the intended pattern here.
