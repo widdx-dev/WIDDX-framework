@@ -647,6 +647,35 @@ test('Installer: buildEnv + lock + requirements + testConnection', function () {
     assert_true(str_contains($env, 'DB_PASSWORD="a b=c"'), 'space/= must be quoted');
     assert_true(str_contains($env, 'APP_DEBUG=true'));
 
+    // Quoted installer values must round-trip backslashes, quotes, equals, and
+    // significant leading/trailing spaces without changing the database password.
+    $specialPassword = '  lead\\path "quoted"=tail  ';
+    $roundtrip = \Widdx\Installer::buildEnv([
+        'DB_CONNECTION' => 'mysql',
+        'DB_HOST' => '127.0.0.1',
+        'DB_DATABASE' => 'test_db',
+        'DB_USERNAME' => 'test_user',
+        'DB_PASSWORD' => $specialPassword,
+    ]);
+    assert_true((bool) preg_match('/^DB_PASSWORD=(.*)$/m', $roundtrip, $passwordLine), 'serialized password line exists');
+    $envBase = sys_get_temp_dir() . '/widdx-env-roundtrip-' . bin2hex(random_bytes(6));
+    $probeKey = 'WIDDX_ENV_ROUNDTRIP_' . strtoupper(bin2hex(random_bytes(6)));
+    mkdir($envBase, 0700, true);
+    try {
+        // Mirror the encoded value under a unique name so a preconfigured
+        // DB_PASSWORD in the CI environment cannot affect this test.
+        file_put_contents($envBase . '/.env', $roundtrip . $probeKey . '=' . $passwordLine[1] . "\n");
+        unset($_ENV[$probeKey]);
+        putenv($probeKey);
+        \Widdx\App::loadEnv($envBase);
+        assert_equals($specialPassword, getenv($probeKey), 'dotenv values must round-trip exactly');
+    } finally {
+        unset($_ENV[$probeKey]);
+        putenv($probeKey);
+        @unlink($envBase . '/.env');
+        @rmdir($envBase);
+    }
+
     // 1.10: CR/LF in a value would append rogue lines to .env — refuse hard.
     // (must be the server branch, since sqlite only writes DB_DATABASE)
     $threw = false;
