@@ -58,9 +58,16 @@ if (!is_string($iform) || $iform === '') {
     $iform = bin2hex(random_bytes(16));
     Session::put('_installer_token', $iform);
 }
-Installer::installKey($base); // create on first GET; value is NEVER rendered
+$installerKeyError = null;
+try {
+    Installer::installKey($base); // create on first GET; value is NEVER rendered
+} catch (Throwable $e) {
+    // Keep the installer page usable: report the storage failure instead of
+    // emitting a PHP warning or presenting a form that can never authenticate.
+    $installerKeyError = $e->getMessage();
+}
 
-$errors = [];
+$errors = $installerKeyError !== null ? [$installerKeyError] : [];
 $done = null;
 $old = [];
 
@@ -145,6 +152,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 }
 
 $checks = Installer::requirements($base);
+if ($installerKeyError !== null) {
+    $checks[] = [
+        'label' => 'مفتاح المثبّت',
+        'ok' => false,
+        'hint' => $installerKeyError,
+    ];
+}
 $ready = true;
 foreach ($checks as $c) {
     if (!$c['ok']) {
