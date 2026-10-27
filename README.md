@@ -17,6 +17,11 @@
 A very simple PHP framework, inspired by Laravel but much simpler.
 Philosophy: **Write minimal code — the framework infers the rest.**
 
+This repository contains the framework source, not a runnable sample application. Demo controllers,
+models, routes, and views used by the test suite live under `tests/fixtures/demo-app/`.
+Create an application with `php widdx new my-app`; use `php widdx new demo-app --demo` only
+when you explicitly need a disposable local demo.
+
 ## Learning resources / المصادر التعليمية
 
 For programmers learning Widdx; basic programming knowledge is assumed.
@@ -529,9 +534,11 @@ php widdx make:crud Invoice amount:float company:fk(Company)  # real FOREIGN KEY
 ### File Uploads — one line, or zero lines
 
 ```php
-// Manual:
-$path = request()->file('cover')->store('covers');  // → 'covers/20261013_ab12_sea.gif'
-// $path goes into your DB column; render with storage()->url($path)
+// Public files must live under public/ so storageRoutes() can serve them safely.
+storageRoutes(); // Register once in routes/web.php
+$path = request()->file('cover')->store('public/covers'); // → 'public/covers/20261013_ab12_sea.gif'
+$url = storage()->url($path); // → /storage/covers/20261013_ab12_sea.gif
+// Files stored outside public/ remain private; url() rejects those paths.
 
 // The object gives you everything a real check needs:
 $f = request()->file('cover');
