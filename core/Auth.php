@@ -36,12 +36,16 @@ class Auth
     }
 
     /**
-     * Bcrypt of a throwaway string. attempt() verifies unknown users and
-     * users with missing/unrecognized stored hashes against it so their login
-     * attempts have the same expensive path as an incorrect password —
-     * otherwise attackers can enumerate accounts by stopwatch.
+     * Fixed dummy bcrypt hashes at the default costs used by this framework's
+     * supported PHP versions: cost 10 before PHP 8.4, cost 12 on PHP 8.4+.
+     *
+     * Failed login attempts for ordinary framework-created bcrypt hashes do
+     * one cost-10 and one cost-12 verification, regardless of account presence.
+     * This reduces the common timing oracle when deployments span PHP versions
+     * or still contain hashes created before a default-cost upgrade.
      */
-    protected const TIMING_HASH = '$2y$12$rsA5reQ0bKC/0AehgyLIz.Uc2OyfENehP52tb2J61IUPgmq2i48KW';
+    protected const TIMING_HASH_COST_10 = '$2y$10$enj5nDX8tpEhsght0zten.efSIQad0z0dK.yzfqeZEm.6l8jeMCFC';
+    protected const TIMING_HASH_COST_12 = '$2y$12$rsA5reQ0bKC/0AehgyLIz.Uc2OyfENehP52tb2J61IUPgmq2i48KW';
 
     /**
      * Attempt login with credentials (e.g. ['email' => ..., 'password' => ...]).
@@ -64,8 +68,9 @@ class Auth
         $user = $query->first();
 
         if (!$user || $password === null) {
-            // Burn the same bcrypt cycle as the real verify path.
-            password_verify((string) ($password ?? ''), self::TIMING_HASH);
+            // Unknown users take both default bcrypt costs, matching the two
+            // verifications below for framework-created cost-10/cost-12 hashes.
+            static::burnDummyPasswordVerifications((string) ($password ?? ''));
             return false;
         }
 
@@ -73,15 +78,28 @@ class Auth
         $hashInfo = $hash !== '' ? password_get_info($hash) : [];
         $hasUsableHash = $hash !== '' && ($hashInfo['algoName'] ?? 'unknown') !== 'unknown';
 
-        // Even an account with no usable stored password must consume one
-        // password-verification cycle. A short-circuit here lets attackers
-        // distinguish seeded/disabled or corrupt-hash accounts from unknown
-        // emails by timing.
-        $verified = password_verify(
-            (string) $password,
-            $hasUsableHash ? $hash : self::TIMING_HASH
-        );
-        if (!$hasUsableHash || !$verified) {
+        if (!$hasUsableHash) {
+            // Empty/corrupt stored hashes also take the same dual dummy path.
+            static::burnDummyPasswordVerifications((string) $password);
+            return false;
+        }
+
+        $verified = password_verify((string) $password, $hash);
+
+        // A normal framework bcrypt hash uses cost 10 or 12 depending on the
+        // PHP version that created it. Pad with the other cost so a failed
+        // login performs the same pair of expensive verifications as an
+        // unknown account, without skipping verification of the stored hash.
+        if (($hashInfo['algoName'] ?? '') === 'bcrypt') {
+            password_verify((string) $password, static::bcryptPaddingHash($hashInfo));
+        } else {
+            // Preserve compatibility with valid hashes from custom algorithms.
+            // Cost-based timing equalization is defined for the framework's
+            // default bcrypt hashes; custom algorithms may have their own costs.
+            password_verify((string) $password, self::TIMING_HASH_COST_10);
+        }
+
+        if (!$verified) {
             return false;
         }
         // Transparent upgrade: old-cost hashes are rehashed with current defaults.
@@ -102,6 +120,25 @@ class Auth
 
         static::login($user);
         return true;
+    }
+
+    /** Run both fixed dummy bcrypt checks for an account lookup miss. */
+    protected static function burnDummyPasswordVerifications(string $password): void
+    {
+        password_verify($password, self::TIMING_HASH_COST_10);
+        password_verify($password, self::TIMING_HASH_COST_12);
+    }
+
+    /**
+     * Select the opposite default bcrypt cost from the stored hash.
+     * PASSWORD_DEFAULT-created bcrypt hashes are cost 10 or 12 on supported
+     * framework PHP runtimes; the other hash makes the failed-attempt work sum
+     * approximately the same as the unknown-account path.
+     */
+    protected static function bcryptPaddingHash(array $hashInfo): string
+    {
+        $cost = (int) ($hashInfo['options']['cost'] ?? 0);
+        return $cost <= 10 ? self::TIMING_HASH_COST_12 : self::TIMING_HASH_COST_10;
     }
 
     /** Log in a user instance */
