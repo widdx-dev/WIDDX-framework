@@ -1,0 +1,79 @@
+name: Publish changelog release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - CHANGELOG.md
+
+# This workflow only creates a release from the latest dated semantic-version
+# heading in CHANGELOG.md. Keep write permission limited to this publishing job.
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release notes
+        uses: actions/checkout@v4
+
+      - name: Create GitHub release from CHANGELOG.md
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+            const match = changelog.match(/^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})[ \t]*$/m);
+
+            if (!match) {
+              core.setFailed('No dated semantic-version heading was found in CHANGELOG.md.');
+              return;
+            }
+
+            const version = match[1];
+            const releaseDate = match[2];
+            const heading = match[0];
+            const start = changelog.indexOf(heading);
+            const bodyStart = start + heading.length;
+            const nextSection = changelog.indexOf('\n## ', bodyStart);
+            const body = changelog.slice(bodyStart, nextSection === -1 ? undefined : nextSection).trim();
+
+            if (!body) {
+              core.setFailed(`The changelog section for v${version} is empty.`);
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tagName = `v${version}`;
+
+            try {
+              const existing = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag: tagName
+              });
+              core.info(`Release ${tagName} already exists at ${existing.data.html_url}; nothing to do.`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            const release = await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tagName,
+              target_commitish: context.sha,
+              name: `Widdx ${tagName} — ${releaseDate}`,
+              body,
+              draft: false,
+              prerelease: false,
+              make_latest: 'true'
+            });
+
+            core.info(`Published ${release.data.html_url}`);

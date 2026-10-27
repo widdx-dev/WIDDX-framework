@@ -41,6 +41,19 @@ For programmers learning Widdx; basic programming knowledge is assumed.
 - Composer — **optional** (`public/index.php` has a built-in fallback autoloader)
 - SQLite (default, zero config) or MySQL/PostgreSQL/SQL Server/Oracle
 
+## Upgrade notes: v0.3.8 → v0.4.0
+
+Read the full [v0.4.0 changelog](CHANGELOG.md#040---2026-10-27) before upgrading an existing application. The following changes may affect existing projects:
+
+- **CRUD access:** generated `resource()` and `apiResource()` routes are protected by default. Add authentication and policies, or use `->public()` only for resources intentionally open to everyone.
+- **API CSRF:** write requests that carry the PHP session cookie now require a session-bound CSRF token. Obtain and send the token for browser-based API clients; stateless clients without that cookie remain exempt.
+- **Existing password data:** the framework does not automatically migrate plaintext passwords already stored in a database. Reset those passwords or perform a reviewed migration appropriate to the data formats in your database.
+- **Sensitive fields:** explicitly allow protected privilege, verification, and token columns only through both `$fillable` and `$sensitiveFillable`, with an authorization check.
+- **Existing sessions:** sessions created before password-hash fingerprinting was introduced must authenticate again after upgrading.
+- **Deployment:** use a canonical HTTPS `APP_URL` on public sites, set `APP_DEBUG=false`, keep `storage/` writable but private, and prefer a document root pointing to `public/`. The installer refuses to overwrite an existing `.env`.
+
+The security defaults are intentional. Do not make a resource public simply to work around a 401/403 response; first confirm which users should have access.
+
 ## Installation
 
 ```bash
