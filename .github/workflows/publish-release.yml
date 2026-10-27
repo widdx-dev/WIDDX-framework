@@ -28,7 +28,7 @@ jobs:
           script: |
             const fs = require('fs');
             const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
-            const match = changelog.match(/^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})\s*$/m);
+            const match = changelog.match(/^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})[ \t]*$/m);
 
             if (!match) {
               core.setFailed('No dated semantic-version heading was found in CHANGELOG.md.');
