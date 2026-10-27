@@ -138,13 +138,7 @@ class Database
             // NOT be conflated with "no such table" — callers like
             // Auth::verificationAvailable() would otherwise quietly treat every
             // user as already verified when introspection merely failed.
-            $msg = strtolower($e->getMessage());
-            $missing = str_contains($msg, 'no such table')
-                || str_contains($msg, 'does not exist')
-                || str_contains($msg, "doesn't exist")
-                || str_contains($msg, 'unknown table')
-                || str_contains($msg, 'relation ')
-                || str_contains($msg, 'base table');
+            $missing = self::isMissingTableError($e->getMessage());
             if ($missing) {
                 return [];
             }
@@ -152,6 +146,21 @@ class Database
                 "Failed to read columns of [{$table}]: {$e->getMessage()}", 0, $e
             );
         }
+    }
+
+    /**
+     * Recognize missing-table errors without swallowing permission or connection
+     * failures. In particular, PostgreSQL permission errors contain the words
+     * "relation ..." but do NOT mean the table is absent.
+     */
+    protected static function isMissingTableError(string $message): bool
+    {
+        $msg = strtolower($message);
+        return str_contains($msg, 'no such table')
+            || str_contains($msg, 'does not exist')
+            || str_contains($msg, "doesn't exist")
+            || str_contains($msg, 'unknown table')
+            || str_contains($msg, 'base table or view not found');
     }
 
     protected function connect(array $cfg): \PDO
