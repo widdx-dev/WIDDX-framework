@@ -676,6 +676,32 @@ test('Installer: buildEnv + lock + requirements + testConnection', function () {
         @rmdir($envBase);
     }
 
+    // A failed or partial config write must not be treated as a successful install.
+    $writeBase = sys_get_temp_dir() . '/widdx-env-write-' . bin2hex(random_bytes(6));
+    mkdir($writeBase, 0700, true);
+    try {
+        \Widdx\Installer::writeEnv($writeBase, [
+            'DB_CONNECTION' => 'sqlite',
+            'DB_DATABASE' => './database.sqlite',
+            'APP_URL' => 'https://example.test',
+        ]);
+        $writtenEnv = file_get_contents($writeBase . '/.env');
+        assert_true(is_string($writtenEnv) && str_contains($writtenEnv, 'APP_DEBUG=false'), 'installer writes a complete env file');
+        assert_equals(0600, fileperms($writeBase . '/.env') & 0777, '.env permissions are private');
+
+        $refusedOverwrite = false;
+        try {
+            \Widdx\Installer::writeEnv($writeBase, ['DB_CONNECTION' => 'sqlite', 'APP_URL' => 'https://other.test']);
+        } catch (\RuntimeException $e) {
+            $refusedOverwrite = str_contains($e->getMessage(), 'Refusing to overwrite');
+        }
+        assert_true($refusedOverwrite, 'writeEnv must never overwrite an existing config');
+        assert_equals($writtenEnv, file_get_contents($writeBase . '/.env'), 'existing config remains unchanged');
+    } finally {
+        @unlink($writeBase . '/.env');
+        @rmdir($writeBase);
+    }
+
     // 1.10: CR/LF in a value would append rogue lines to .env — refuse hard.
     // (must be the server branch, since sqlite only writes DB_DATABASE)
     $threw = false;
