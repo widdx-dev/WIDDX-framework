@@ -440,6 +440,19 @@ test('SmtpMail rejects header injection and canonicalizes Bcc case', function ()
     assert_equals('first@example.test, second@example.test', $headers['Bcc'] ?? null);
     assert_equals('safe', $headers['X-Trace'] ?? null);
 
+    $envelopeMethod = new \ReflectionMethod(\Widdx\SmtpMail::class, 'envelopeRecipients');
+    $envelopeMethod->setAccessible(true);
+    assert_equals(
+        ['recipient@example.test', 'copy@example.test', 'first@example.test', 'second@example.test'],
+        $envelopeMethod->invoke($mail, 'recipient@example.test', array_merge($headers, ['Cc' => 'copy@example.test'])),
+        'To, Cc and case-insensitive Bcc recipients must all remain in the delivery envelope'
+    );
+    $messageHeadersMethod = new \ReflectionMethod(\Widdx\SmtpMail::class, 'messageHeaders');
+    $messageHeadersMethod->setAccessible(true);
+    $visibleHeaders = $messageHeadersMethod->invoke($mail, $headers, 'recipient@example.test');
+    assert_true(!array_key_exists('Bcc', $visibleHeaders), 'Bcc must never be written to message DATA');
+    assert_equals('recipient@example.test', $visibleHeaders['To'] ?? null, 'visible To remains unchanged');
+
     // Rejected validation also clears one-shot attachments; a later send must
     // not accidentally inherit a file attached for the failed message.
     $attachment = tempnam(sys_get_temp_dir(), 'widdx-mail-attach');
