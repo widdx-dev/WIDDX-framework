@@ -44,9 +44,15 @@ class App
             [$key, $value] = explode('=', $line, 2);
             $key = trim($key);
             $value = trim(trim($value));
-            // Remove surrounding quotes
+            // Remove surrounding quotes and decode only the two escapes emitted by
+            // Installer::buildEnv(). Other backslashes remain literal (e.g. "\n"
+            // in a password is not converted into a newline).
             if (strlen($value) >= 2 && (($value[0] === '"' && $value[-1] === '"') || ($value[0] === "'" && $value[-1] === "'"))) {
+                $quote = $value[0];
                 $value = substr($value, 1, -1);
+                if ($quote === '"') {
+                    $value = str_replace(['\\\\', '\\"'], ['\\', '"'], $value);
+                }
             }
             if ($key === '' || array_key_exists($key, $_ENV)) {
                 continue;
