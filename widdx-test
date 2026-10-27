@@ -1829,7 +1829,7 @@ test('2.12 the measured doc facts stay written down and the dead ones stay out',
         'README.md' => ['if it was already running, restart it', 'that runs the middleware twice',
                         'unpublished on Packagist'],
         'core/Cli/MakeCrud.php' => ['restart is required'],
-        'routes/web.php' => ['ALREADY on'],
+        'routes/web.php' => ['intentionally registers no application routes'],
     ];
     foreach ($required as $name => $phrases) {
         assert_true(isset($docs[$name]), "{$name} is missing from the repo");
