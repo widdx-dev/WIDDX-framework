@@ -190,7 +190,7 @@ class SmtpMail implements MailInterface
         $normalized = [];
         foreach ($headers as $rawName => $rawValue) {
             $name = $this->normalizeHeaderName((string) $rawName);
-            if (is_array($rawValue) || (is_object($rawValue) && !$rawValue instanceof \Stringable)) {
+            if (is_array($rawValue) || (is_object($rawValue) && !($rawValue instanceof \Stringable))) {
                 throw new Exceptions\MailException("Refusing header '{$name}': value must be scalar or stringable.");
             }
             $value = $this->sanitize((string) $rawValue, "header '{$name}'");
