@@ -106,6 +106,15 @@ function studly(string $name): string
     return $name;
 }
 
+/** Reject path fragments and invalid PHP identifiers before generators write files. */
+function validate_generated_class_name(string $name, string $kind): void
+{
+    if (preg_match('/\A[A-Z][A-Za-z0-9]*\z/', $name) !== 1) {
+        fwrite(STDERR, "Invalid {$kind} name [{$name}]. Use letters and numbers, starting with a letter.\n");
+        exit(1);
+    }
+}
+
 function write_file(string $path, string $content): void
 {
     $dir = dirname($path);
@@ -856,6 +865,7 @@ switch ($command) {
         }
         $name = studly($raw);
         $name = str_ends_with($name, 'Controller') ? $name : $name . 'Controller';
+        validate_generated_class_name($name, 'controller');
         $resource = in_array('--resource', $argv, true);
 
         $methods = $resource ? <<<'PHP'
@@ -917,6 +927,7 @@ PHP;
         // Model class must be StudlyCase — lowercase breaks PSR-4 autoload on
         // case-sensitive filesystems (App\Models\user vs app/Models/User.php).
         $modelName = studly(rtrim($viewBase, 's'));
+        validate_generated_class_name($modelName, 'model');
         // Longest placeholders first: 'REPLACE' is a prefix of 'REPLACE_RULES',
         // and 'REPLACE::' marks model class references.
         $methods = str_replace('REPLACE_RULES', "'name' => 'required|string'", $methods);
@@ -948,6 +959,7 @@ PHP;
             exit(1);
         }
         $name = studly($raw);
+        validate_generated_class_name($name, 'model');
         $stub = <<<PHP
 <?php
 
@@ -983,6 +995,7 @@ PHP;
             exit(1);
         }
         $name = studly($raw);
+        validate_generated_class_name($name, 'middleware');
         $stub = <<<PHP
 <?php
 
@@ -1013,6 +1026,7 @@ PHP;
             exit(1);
         }
         $name = studly($raw);
+        validate_generated_class_name($name, 'migration');
         // Convert back to snake_case BEFORE stripping the verb prefix, then
         // drop a trailing '_table' (e.g. CreateUsersTable → users).
         $snake = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $name));
@@ -1070,6 +1084,7 @@ PHP;
             exit(1);
         }
         $name = studly($raw);
+        validate_generated_class_name($name, 'seeder');
         $stub = <<<PHP
 <?php
 
@@ -1101,6 +1116,7 @@ PHP;
             exit(1);
         }
         $name = studly($raw);
+        validate_generated_class_name($name, 'resource');
         $table = strtolower($name) . 's';
 
         // Create model
@@ -1440,6 +1456,12 @@ PHP);
         $raw = $argv[1] ?? null;
         if (!$raw) {
             fwrite(STDERR, "Specify view name. Example: php widdx make:view users/index\n");
+            exit(1);
+        }
+        $raw = str_replace('\\', '/', $raw);
+        if (str_starts_with($raw, '/')
+            || preg_match('#\A[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*\z#', $raw) !== 1) {
+            fwrite(STDERR, "Invalid view path [{$raw}]. Use relative names such as users/index.\n");
             exit(1);
         }
         $stub = <<<'PHP'
