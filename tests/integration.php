@@ -332,6 +332,17 @@ function stop_server(int $pid, int $port): void
     throw new RuntimeException("server on port {$port} did not stop after PID {$pid} was killed");
 }
 
+// ------------------------------------------------------- 0. framework/app boundary
+
+if ($isFrameworkSource) {
+    [$guardCode, $guardOut] = shell('cd ' . escapeshellarg($ROOT) . ' && '
+        . escapeshellarg(PHP_BINARY) . ' widdx make:model FrameworkMustNotBeGenerated');
+    ok('framework source rejects application generators', $guardCode !== 0
+        && str_contains($guardOut, 'not the WIDDX framework source repository'), $guardOut);
+    ok('framework source has no root app or views directory',
+        !is_dir($ROOT . '/app') && !is_dir($ROOT . '/views'));
+}
+
 // ------------------------------------------------------- 1. scaffold project
 
 sec('Scaffold: php widdx new app --demo');
