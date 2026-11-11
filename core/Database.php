@@ -98,6 +98,7 @@ class Database
             return [];
         }
         $quoted = str_replace('"', '', $table);
+        $bindTable = $table; // pgsql may split a schema-qualified name into schema + table
         try {
             switch ($this->driver()) {
                 case 'sqlite':
@@ -119,14 +120,37 @@ class Database
                         'SELECT COLUMN_NAME FROM ALL_TAB_COLUMNS WHERE TABLE_NAME = ? ORDER BY COLUMN_ID'
                     );
                     break;
-                default: // pgsql, sqlsrv, and any information_schema-compliant driver
+                case 'pgsql':
+                case 'postgres':
+                case 'postgresql':
+                    // PostgreSQL keeps one information_schema row PER SCHEMA, so a
+                    // table name that exists in two schemas (auth.users and
+                    // public.users) would otherwise return BOTH column lists
+                    // merged and break Model::columns(). An explicit schema.table
+                    // name selects that schema; a bare name resolves the way
+                    // unqualified queries do — through current_schema().
+                    if (str_contains($table, '.')) {
+                        [$schemaName, $bindTable] = explode('.', $table, 2);
+                        // $schemaName passed the alnum/underscore guard at the top
+                        // of this method, so it can be inlined as a literal safely.
+                        $schemaSql = "'" . str_replace("'", "''", $schemaName) . "'";
+                    } else {
+                        $schemaSql = 'current_schema()';
+                    }
+                    $stmt = $this->pdo->prepare(
+                        "SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                         WHERE TABLE_SCHEMA = {$schemaSql} AND TABLE_NAME = ?
+                         ORDER BY ORDINAL_POSITION"
+                    );
+                    break;
+                default: // sqlsrv and any information_schema-compliant driver
                     $stmt = $this->pdo->prepare(
                         'SELECT COLUMN_NAME FROM information_schema.COLUMNS
                          WHERE TABLE_NAME = ? ORDER BY ORDINAL_POSITION'
                     );
                     break;
             }
-            $stmt->execute([stripos($this->driver(), 'oci') === false ? $table : strtoupper($table)]);
+            $stmt->execute([stripos($this->driver(), 'oci') === false ? $bindTable : strtoupper($table)]);
             $cols = [];
             foreach ($stmt->fetchAll(\PDO::FETCH_NUM) as $row) {
                 $cols[] = (string) $row[0];
@@ -232,7 +256,12 @@ class Database
             }
             touch($path); // Auto-create for zero-config experience
         }
-        return new \PDO('sqlite:' . $path);
+        $pdo = new \PDO('sqlite:' . $path);
+        // SQLite compiles REFERENCES / ON DELETE CASCADE into the schema but does
+        // NOT enforce them — every new connection must opt in explicitly. The
+        // schema builder emits those constraints, so enforce them at runtime too.
+        $pdo->exec('PRAGMA foreign_keys = ON;');
+        return $pdo;
     }
 
     /**

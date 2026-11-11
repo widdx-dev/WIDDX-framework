@@ -377,6 +377,74 @@ test('QueryBuilder generates correct SQL', function () {
     assert_true(str_contains($sql, 'LIMIT'));
 });
 
+test('QueryBuilder groups where(Closure) conditions in parentheses', function () {
+    $pdo = new \PDO('sqlite::memory:');
+    $pdo->exec('CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, category TEXT, price REAL)');
+    $pdo->exec("INSERT INTO products (name, category, price) VALUES
+        ('PHP in practice', 'books', 10), ('Cooking with Widdx', 'books', 5), ('PHP tricks', 'games', 3)");
+
+    // Search screen: a filtered category AND (name OR name) text match.
+    [$sql, $bindings] = (new \Widdx\QueryBuilder('products', null, $pdo, 'sqlite'))
+        ->where('category', 'books')
+        ->where(function (\Widdx\QueryBuilder $q) {
+            $q->where('name', 'LIKE', '%PHP%')->orWhere('name', 'LIKE', '%Widdx%');
+        })
+        ->toSelectSql();
+    assert_true(
+        str_contains($sql, 'WHERE "category" = :w0 AND ("name" LIKE :w1 OR "name" LIKE :w2)'),
+        'grouped SQL shape unexpected: ' . $sql
+    );
+    assert_equals(['w0' => 'books', 'w1' => '%PHP%', 'w2' => '%Widdx%'], $bindings);
+
+    // The same query actually runs and narrows correctly.
+    $rows = (new \Widdx\QueryBuilder('products', null, $pdo, 'sqlite'))
+        ->where('category', 'books')
+        ->where(function (\Widdx\QueryBuilder $q) {
+            $q->where('name', 'LIKE', '%PHP%')->orWhere('name', 'LIKE', '%Widdx%');
+        })
+        ->get();
+    assert_equals(2, count($rows), 'grouped where must keep the outer filter intact');
+
+    // orWhere(Closure) glues the group with OR.
+    [$orSql] = (new \Widdx\QueryBuilder('products', null, $pdo, 'sqlite'))
+        ->where('category', 'books')
+        ->orWhere(function (\Widdx\QueryBuilder $q) {
+            $q->where('price', '<', 4);
+        })
+        ->toSelectSql();
+    assert_true(str_contains($orSql, 'OR ("price" < :w1)'), 'OR group glue unexpected: ' . $orSql);
+
+    // An empty group (optional filter that matched nothing) adds no SQL at all.
+    [$emptySql] = (new \Widdx\QueryBuilder('products', null, $pdo, 'sqlite'))
+        ->where('category', 'books')
+        ->where(function (\Widdx\QueryBuilder $q) {
+            // conditional filter stayed empty
+        })
+        ->toSelectSql();
+    assert_true(!str_contains($emptySql, '('), 'empty group must add nothing: ' . $emptySql);
+});
+
+test('Model::where forwards closures as parenthesized groups', function () {
+    // Identifier quoting differs per driver — strip it before asserting shape.
+    [$sql] = \Widdx\Tests\Player::where('team_id', 3)
+        ->where(fn(\Widdx\QueryBuilder $q) => $q->where('name', 'LIKE', '%a%')->orWhere('name', 'LIKE', '%b%'))
+        ->toSelectSql();
+    $flat = str_replace(['"', '`', '[', ']'], '', $sql);
+    assert_true(str_contains($flat, 'AND (name LIKE :w1 OR name LIKE :w2)'), 'nested group SQL: ' . $sql);
+});
+
+test('SQLite connections enforce declared foreign keys', function () {
+    $db = new \Widdx\Database(['driver' => 'sqlite', 'database' => ':memory:']);
+    $pdo = $db->pdo();
+    assert_equals(1, (int) $pdo->query('PRAGMA foreign_keys')->fetchColumn(), 'PRAGMA foreign_keys must be ON');
+    $pdo->exec('CREATE TABLE authors (id INTEGER PRIMARY KEY)');
+    $pdo->exec('CREATE TABLE books (id INTEGER PRIMARY KEY, author_id INTEGER REFERENCES authors(id) ON DELETE CASCADE)');
+    $pdo->exec('INSERT INTO authors (id) VALUES (1)');
+    $pdo->exec('INSERT INTO books (author_id) VALUES (1)');
+    $pdo->exec('DELETE FROM authors WHERE id = 1');
+    assert_equals(0, (int) $pdo->query('SELECT COUNT(*) FROM books')->fetchColumn(), 'ON DELETE CASCADE must remove child rows');
+});
+
 // View tests
 test('View renders template', function () {
     \Widdx\View::setBasePath(__DIR__ . '/tests/fixtures/demo-app/views');
@@ -386,6 +454,38 @@ test('View renders template', function () {
     assert_true(str_contains($html, '<!DOCTYPE html>') && str_contains($html, '</html>'), 'rendered output is not a document');
 });
 
+test('View keeps template resolution inside the views directory', function () {
+    \Widdx\View::setBasePath(__DIR__ . '/tests/fixtures/demo-app/views');
+    assert_true(\Widdx\View::exists('welcome'));
+    assert_true(!\Widdx\View::exists('users/../../config/app'), 'escaped path must not exist');
+    $threw = false;
+    try {
+        \Widdx\View::make('users/../../config/app');
+    } catch (\Widdx\Exceptions\ViewNotFoundException) {
+        $threw = true;
+    }
+    assert_true($threw, 'traversal-looking name must raise ViewNotFoundException');
+
+    // A symlink planted inside views/ and pointing outside is refused now:
+    // realpath() unmasks it and the containment check rejects the target.
+    $link = __DIR__ . '/tests/fixtures/demo-app/views/it-escape.php';
+    $linked = @symlink(__DIR__ . '/config/app.php', $link);
+    if ($linked) {
+        try {
+            assert_true(!\Widdx\View::exists('it-escape'), 'escaping symlink must not exist');
+            $threw = false;
+            try {
+                \Widdx\View::make('it-escape');
+            } catch (\Widdx\Exceptions\ViewNotFoundException) {
+                $threw = true;
+            }
+            assert_true($threw, 'escaping symlink must be refused');
+        } finally {
+            @unlink($link);
+        }
+    }
+});
+
 // Response tests
 test('Response JSON encodes correctly', function () {
     $response = \Widdx\Response::json(['key' => 'value']);
@@ -393,6 +493,21 @@ test('Response JSON encodes correctly', function () {
         str_contains((string) ($response->getHeaders()['Content-Type'] ?? ''), 'application/json'),
         'JSON response must advertise application/json Content-Type.'
     );
+});
+
+test('Response addHeader keeps repeated Set-Cookie lines; setHeader still replaces', function () {
+    $r = \Widdx\Response::make('ok')
+        ->addHeader('Set-Cookie', 'session=abc; Path=/; HttpOnly')
+        ->addHeader('set-cookie', 'prefs=dark; Path=/'); // case-insensitive append
+    $cookies = $r->getHeaders()['Set-Cookie'] ?? null;
+    assert_equals(
+        ['session=abc; Path=/; HttpOnly', 'prefs=dark; Path=/'],
+        $cookies,
+        'both Set-Cookie lines must survive (setHeader used to drop the first)'
+    );
+
+    $single = \Widdx\Response::make('x')->setHeader('X-Mode', 'a')->setHeader('X-Mode', 'b');
+    assert_equals('b', $single->getHeaders()['X-Mode'] ?? null, 'setHeader keeps replace semantics');
 });
 
 // Request tests
@@ -545,6 +660,59 @@ test('SmtpMail rejects header injection and canonicalizes Bcc case', function ()
     }
 });
 
+test('SmtpMail RFC2047-encodes non-ASCII display names in From/Reply-To', function () {
+    $mail = new \Widdx\SmtpMail();
+    $format = new \ReflectionMethod(\Widdx\SmtpMail::class, 'formatAddress');
+    $format->setAccessible(true);
+
+    // ASCII names pass through untouched (plain phrases need no quotes).
+    assert_equals('IT Support <sender@example.test>', $format->invoke($mail, 'sender@example.test', 'IT Support'));
+
+    // An Arabic display-name becomes single-line pure-ASCII RFC 2047 words.
+    $arabic = $format->invoke($mail, 'sender@example.test', 'شركة المثال');
+    assert_true(str_contains($arabic, '=?UTF-8?B?'), 'Arabic name must be encoded-word encoded: ' . $arabic);
+    assert_true(str_ends_with($arabic, '<sender@example.test>'), 'address part stays intact');
+    assert_true(preg_match('/[^\x00-\x7F]/', $arabic) !== 1, 'encoded header must be pure ASCII');
+    assert_true(!str_contains($arabic, "\r") && !str_contains($arabic, "\n"), 'encoded header must stay single-line');
+    preg_match_all('/=\?UTF-8\?B\?([A-Za-z0-9+\/=]+)\?=/', $arabic, $m);
+    assert_equals(
+        'شركة المثال',
+        implode(' ', array_map('base64_decode', $m[1])),
+        'encoded words must decode back to the original name'
+    );
+
+    // ASCII names with RFC 5322 specials are quoted, quotes escaped.
+    assert_equals('"Admin (Ops)" <sender@example.test>', $format->invoke($mail, 'sender@example.test', 'Admin (Ops)'));
+
+    // replyTo() applies the same encoding to its display-name.
+    $mail2 = new \Widdx\SmtpMail();
+    $mail2->replyTo('reply@example.test', 'الدعم الفني');
+    $headersProp = new \ReflectionProperty(\Widdx\SmtpMail::class, 'headers');
+    $headersProp->setAccessible(true);
+    $stored = (array) $headersProp->getValue($mail2);
+    assert_true(str_contains($stored['Reply-To'] ?? '', '=?UTF-8?B?'), 'Reply-To name must be RFC 2047 encoded');
+    assert_true(preg_match('/[^\x00-\x7F]/', $stored['Reply-To'] ?? '') !== 1, 'Reply-To header is pure ASCII');
+
+    // And the default From line built by raw() carries the encoded config name:
+    // with an Arabic MAIL_FROM_NAME the header must stay ASCII and injection-free.
+    $fromProp = new \ReflectionProperty(\Widdx\SmtpMail::class, 'fromName');
+    $fromProp->setAccessible(true);
+    $fromProp->setValue($mail2, 'شركة المثال');
+    $build = new \ReflectionMethod(\Widdx\SmtpMail::class, 'buildMessage');
+    $build->setAccessible(true);
+    $fromHeader = $format->invoke($mail2, 'sender@example.test', $fromProp->getValue($mail2));
+    $message = $build->invoke($mail2, 'مرحبا', ['From' => $fromHeader], 'body');
+    $fromLine = '';
+    foreach (explode("\r\n", $message) as $line) {
+        if (str_starts_with($line, 'From:')) {
+            $fromLine = $line;
+            break;
+        }
+    }
+    assert_true($fromLine !== '' && str_contains($fromLine, '=?UTF-8?B?'), 'From line carries the encoded name: ' . $fromLine);
+    assert_true(preg_match('/[^\x00-\x7F]/', $fromLine) !== 1, 'From line is pure ASCII');
+});
+
 // Cache tests
 test('FileCache stores and retrieves', function () {
     $cache = new \Widdx\FileCache();
@@ -626,6 +794,15 @@ test('Lang::isRtl + lang_attrs() emit dir/lang html attributes', function () {
     assert_equals('lang="en" dir="ltr"', lang_attrs('en'));
     // current locale is 'en' in the unit environment (no app.locale config)
     assert_true(str_contains(lang_attrs(), 'dir="ltr"'), 'default locale is ltr');
+    // A request-derived locale must never break out of the HTML attribute:
+    // non-locale characters are stripped and the result is escaped.
+    assert_equals(
+        'lang="enonclickalert1" dir="ltr"',
+        lang_attrs('en" onclick="alert(1)'),
+        'quotes and JS payloads must be stripped from the lang attribute'
+    );
+    assert_equals('lang="script" dir="ltr"', lang_attrs('<script>'), 'angle brackets are stripped — value stays inert');
+    assert_equals('lang="en" dir="ltr"', lang_attrs('""'), 'a locale that strips to nothing falls back to en');
 });
 
 // Shared-hosting web installer logic (no server needed — pure functions)

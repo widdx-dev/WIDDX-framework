@@ -370,7 +370,11 @@ abstract class Model implements \JsonSerializable
         return $model;
     }
 
-    public static function where(string $column, mixed $operatorOrValue, mixed $value = null): QueryBuilder
+    /**
+     * User::where('email', $email) — or a closure for a parenthesized group:
+     * User::where(fn($q) => $q->where('name', 'LIKE', "%$s%")->orWhere('email', 'LIKE', "%$s%"))
+     */
+    public static function where(string|\Closure $column, mixed $operatorOrValue = null, mixed $value = null): QueryBuilder
     {
         $q = static::query();
         return func_num_args() === 2

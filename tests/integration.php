@@ -377,7 +377,11 @@ $publicFallback = strpos($generatedHtaccess, 'RewriteRule ^(.*)$ public/$1 [L]')
 ok('generated shared-hosting rewrite stops before prefixing public twice',
     $publicPass !== false && $publicFallback !== false && $publicPass < $publicFallback);
 ok('generated shared-hosting config denies private source directories',
-    str_contains($generatedHtaccess, 'RewriteRule ^(?:app|core|config|database|vendor|polyfill|tests|routes'));
+    str_contains($generatedHtaccess, 'RewriteRule ^(?:app|core|config|database|lang|vendor|polyfill|tests|routes'));
+ok('generated shared-hosting config forbids raw storage files but keeps the PHP storage route',
+    str_contains($generatedHtaccess, "RewriteCond %{REQUEST_FILENAME} -f\n    RewriteRule ^storage/ - [F,L,NC]")
+        && !str_contains($generatedHtaccess, '(?:app|core|config|database|storage|lang'),
+    'real files under storage/ must 403 while /storage/ URLs fall through to PHP');
 ok('source and generated rewrite guards block hidden paths without breaking ACME',
     str_contains($generatedHtaccess, 'RewriteRule (^|/)\\.(?!well-known(?:/|$)) - [F,L,NC]')
         && str_contains($sourceHtaccess, 'RewriteRule (^|/)\\.(?!well-known(?:/|$)) - [F,L,NC]'));
@@ -386,6 +390,9 @@ $sourcePublicPass = strpos($sourceHtaccess, 'RewriteRule ^public/ - [L]');
 $sourcePublicFallback = strpos($sourceHtaccess, 'RewriteRule ^(.*)$ public/$1 [L]');
 ok('framework root rewrite also prevents a public/public loop',
     $sourcePublicPass !== false && $sourcePublicFallback !== false && $sourcePublicPass < $sourcePublicFallback);
+ok('framework root config applies the same lang/storage hardening',
+    str_contains($sourceHtaccess, '(?:app|core|config|database|lang|vendor')
+        && str_contains($sourceHtaccess, "RewriteCond %{REQUEST_FILENAME} -f\n    RewriteRule ^storage/ - [F,L,NC]"));
 
 // A project made from an absolute path (`php widdx new /tmp/x/pkg-name`) must still
 // get a legal composer package name. The whole argument used to be pasted into it,
@@ -509,6 +516,19 @@ post('/it-setpass', function () {
 // php -S, which made these assertions flake.
 \Widdx\Request::setTrustedProxies(['127.0.0.1']);
 get('/it-ip', fn() => Response::json(['ip' => request()->ip()]));
+// Two cookies in ONE response: Response::addHeader must keep both Set-Cookie
+// lines — the old single-value header map silently dropped the first one.
+get('/it-cookies', fn() => Response::make('ok')
+    ->addHeader('Set-Cookie', 'it_a=one; Path=/')
+    ->addHeader('Set-Cookie', 'it_b=two; Path=/'));
+// Nested where(Closure): a filtered list with an OR search group.
+get('/it-search', function () {
+    $rows = db('users')
+        ->where(fn($q) => $q->where('name', 'LIKE', '%' . request()->query('q') . '%')
+                            ->orWhere('email', 'LIKE', '%' . request()->query('q') . '%'))
+        ->get();
+    return Response::json(['count' => count($rows)]);
+});
 ROUTES;
 file_put_contents($proj . '/routes/web.php', $probes . "\n", FILE_APPEND);
 
@@ -1178,6 +1198,23 @@ ok('no XFF → peer ip', ($j['ip'] ?? '') === '127.0.0.1', $r['body']);
 $r = http($port, 'GET', '/it-ip', null, $jar, null, null, ['X-Forwarded-For: 203.0.113.7, 10.0.0.9']);
 $j = json_decode($r['body'], true);
 ok('trusted proxy → right-most hop', ($j['ip'] ?? '') === '10.0.0.9', $r['body']);
+
+// addHeader(): both Set-Cookie lines must reach the wire (and the jar) — the
+// old single-value header map kept only the last one.
+$r = http($port, 'GET', '/it-cookies', null, $jar);
+$scLine = (string) ($r['headers']['set-cookie'] ?? '');
+ok('two Set-Cookie headers in one response',
+    $r['status'] === 200 && str_contains($scLine, 'it_a=one') && str_contains($scLine, 'it_b=two'),
+    "status={$r['status']} set-cookie={$scLine}");
+ok('cookie jar received both cookies', ($jar['it_a'] ?? '') === 'one' && ($jar['it_b'] ?? '') === 'two');
+
+// where(Closure) over HTTP: the OR search group must not swallow the WHERE.
+$r = http($port, 'GET', '/it-search?q=' . rawurlencode('Admin'), null, $jar);
+$j = json_decode($r['body'], true);
+ok('grouped where(Closure) search runs over HTTP', ($j['count'] ?? -1) >= 1, $r['body']);
+$r = http($port, 'GET', '/it-search?q=' . rawurlencode('no-such-thing-it'), null, $jar);
+$j = json_decode($r['body'], true);
+ok('grouped where(Closure) narrows to zero for a miss', ($j['count'] ?? -1) === 0, $r['body']);
 
 // 2) make:crud fk(Author): real REFERENCES + exists rule + select
 [$code, $out] = shell('cd ' . escapeshellarg($proj) . ' && ' . escapeshellarg(PHP_BINARY) . ' widdx make:crud Author name:string >/dev/null 2>&1; '
@@ -2157,6 +2194,61 @@ $pid5 = start_server($TMP . '/lockonly', $port5);
 $r = http($port5, 'GET', '/install.php');
 ok('1.10 lock without .env still refuses (404, not re-installable)', $r['status'] === 404, 'status=' . $r['status']);
 stop_server($pid5, $port5);
+
+// ------------------------------------------------------------------ pgsql
+// Multi-schema PostgreSQL: the same table name living in two schemas must not
+// merge its column lists in tableColumns() — Model::columns() and zero-code
+// CRUD forms silently break when it does. Runs only on the pgsql CI leg.
+$drvPgs = (string) (getenv('DB_CONNECTION') ?: 'sqlite');
+if (in_array($drvPgs, ['pgsql', 'postgres', 'postgresql'], true)) {
+    sec('PostgreSQL multi-schema tableColumns scoping');
+
+    if (!class_exists(\Widdx\Database::class)) {
+        if (is_file($ROOT . '/vendor/autoload.php')) {
+            require $ROOT . '/vendor/autoload.php';
+        } else {
+            spl_autoload_register(static function (string $class) use ($ROOT): void {
+                foreach (['Widdx\\' => $ROOT . '/core/', 'Psr\\' => $ROOT . '/polyfill/'] as $prefix => $dir) {
+                    if (str_starts_with($class, $prefix)) {
+                        $f = $dir . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+                        if (is_file($f)) {
+                            require $f;
+                            return;
+                        }
+                    }
+                }
+            });
+            require_once $ROOT . '/core/helpers.php';
+        }
+    }
+
+    $probePdoPgs = project_pdo('unused.sqlite');
+    $probePdoPgs->exec('DROP TABLE IF EXISTS public.schema_probe CASCADE');
+    $probePdoPgs->exec('DROP SCHEMA IF EXISTS auth_it CASCADE');
+    $probePdoPgs->exec('CREATE SCHEMA auth_it');
+    $probePdoPgs->exec('CREATE TABLE auth_it.schema_probe (auth_secret text, password text)');
+    $probePdoPgs->exec('CREATE TABLE public.schema_probe (id int, email text)');
+
+    $pgsDb = new \Widdx\Database([
+        'driver'   => 'pgsql',
+        'host'     => (string) (getenv('DB_HOST') ?: '127.0.0.1'),
+        'port'     => (int) (getenv('DB_PORT') ?: 5432),
+        'database' => (string) (getenv('DB_DATABASE') ?: 'widdx'),
+        'username' => (string) (getenv('DB_USERNAME') ?: 'postgres'),
+        'password' => (string) (getenv('DB_PASSWORD') ?: ''),
+    ]);
+
+    $cols = $pgsDb->tableColumns('schema_probe');
+    sort($cols);
+    ok('pgsql tableColumns returns only current-schema columns', $cols === ['email', 'id'], implode(',', $cols));
+
+    $colsAuth = $pgsDb->tableColumns('auth_it.schema_probe');
+    sort($colsAuth);
+    ok('pgsql schema-qualified table reads exactly that schema', $colsAuth === ['auth_secret', 'password'], implode(',', $colsAuth));
+
+    $probePdoPgs->exec('DROP TABLE IF EXISTS public.schema_probe CASCADE');
+    $probePdoPgs->exec('DROP SCHEMA IF EXISTS auth_it CASCADE');
+}
 
 // ------------------------------------------------------------------ summary
 

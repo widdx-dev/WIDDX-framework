@@ -84,9 +84,19 @@ class QueryBuilder
 
     /**
      * where('age', 18) or where('age', '>', 18) or where('name', 'LIKE', '%a%')
+     *
+     * Grouped conditions — a closure receives a fresh builder and everything
+     * inside it lands in parentheses, glued with AND:
+     *   ->where('category', 'books')
+     *   ->where(fn($q) => $q->where('name', 'LIKE', "%{$s}%")
+     *                        ->orWhere('email', 'LIKE', "%{$s}%"))
+     * compiles to WHERE "category" = ? AND ("name" LIKE ? OR "email" LIKE ?)
      */
-    public function where(string $column, mixed $operatorOrValue, mixed $value = null): self
+    public function where(string|\Closure $column, mixed $operatorOrValue = null, mixed $value = null): self
     {
+        if ($column instanceof \Closure) {
+            return $this->whereGroup($column, 'AND');
+        }
         if (func_num_args() === 2) {
             $value = $operatorOrValue;
             $operator = is_array($value) ? 'IN' : '=';
@@ -99,8 +109,16 @@ class QueryBuilder
         return $this;
     }
 
-    public function orWhere(string $column, mixed $operatorOrValue, mixed $value = null): self
+    /**
+     * orWhere('age', 18) — or a closure for an OR group:
+     *   ->where('active', 1)
+     *   ->orWhere(fn($q) => $q->where('vip', 1)->where('score', '>', 90))
+     */
+    public function orWhere(string|\Closure $column, mixed $operatorOrValue = null, mixed $value = null): self
     {
+        if ($column instanceof \Closure) {
+            return $this->whereGroup($column, 'OR');
+        }
         if (func_num_args() === 2) {
             $value = $operatorOrValue;
             $operator = is_array($value) ? 'IN' : '=';
@@ -110,6 +128,23 @@ class QueryBuilder
         $this->validateOperator($operator);
         $this->validateColumn($column);
         $this->wheres[] = [$column, $operator, $value, 'OR'];
+        return $this;
+    }
+
+    /**
+     * Run the callback against a fresh grouped builder. Empty groups add
+     * nothing, so ->where(fn($q) => null) is a safe no-op for optional filters.
+     */
+    protected function whereGroup(\Closure $callback, string $boolean): self
+    {
+        // self (not static): the group only compiles WHERE fragments — model
+        // hydration and table context stay with the outer query.
+        $group = new self($this->table, null, $this->pdo, $this->driver);
+        $group->allowedColumns = $this->allowedColumns;
+        $callback($group);
+        if ($group->wheres !== []) {
+            $this->wheres[] = ['__group__', null, $group, $boolean];
+        }
         return $this;
     }
 
@@ -361,6 +396,19 @@ class QueryBuilder
         $i = $startIndex;
         foreach ($this->wheres as $idx => [$col, $op, $val, $boolean]) {
             $prefix = $idx === 0 ? 'WHERE' : $boolean;
+            if ($col === '__group__' && $val instanceof self) {
+                // Parenthesized sub-conditions from where(Closure). The nested
+                // builder continues the placeholder numbering ($i) so its keys
+                // never collide with the outer query's.
+                [$innerSql, $innerBindings] = $val->buildWhere($i);
+                $innerSql = (string) preg_replace('/\AWHERE\s+/', '', $innerSql);
+                $parts[] = $prefix . ' (' . $innerSql . ')';
+                foreach ($innerBindings as $innerKey => $innerVal) {
+                    $bindings[$innerKey] = $innerVal;
+                }
+                $i += count($innerBindings);
+                continue;
+            }
             if ($val === null) {
                 $parts[] = $prefix . ' ' . $this->wrap($col) . ($op === '!=' || $op === '<>' ? ' IS NOT NULL' : ' IS NULL');
                 continue;
