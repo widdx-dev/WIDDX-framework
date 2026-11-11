@@ -343,9 +343,9 @@ class SmtpMail implements MailInterface
      *
      * The WHOLE phrase is encoded — never word-by-word: RFC 2047 §6.2 makes
      * conformant clients DROP whitespace between adjacent encoded-words, so
-     * "شركة عرسان" encoded per-word would render as "شركةعرسان". Whole-phrase
-     * encoding also wraps RFC 5322 specials of a mixed name ("شركة عرسان
-     * (ORSAN)") inside the base64 payload, where they need no quoting at all.
+     * "متجر ويديكس" encoded per-word would render as "متجرويديكس". Whole-phrase
+     * encoding also wraps RFC 5322 specials of a mixed name ("متجر ويديكس
+     * (Support)") inside the base64 payload, where they need no quoting at all.
      * Pure PHP — no mbstring dependency.
      */
     protected function encodeWords(string $value): string
