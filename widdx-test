@@ -466,6 +466,18 @@ test('View keeps template resolution inside the views directory', function () {
     }
     assert_true($threw, 'traversal-looking name must raise ViewNotFoundException');
 
+    // Null bytes are rejected BEFORE realpath()/is_file() — PHP 8.1+ throws a
+    // ValueError on them; a template lookup must answer ViewNotFoundException.
+    $nulName = 'wel' . chr(0) . 'come';
+    assert_true(!\Widdx\View::exists($nulName), 'null-byte name must not exist');
+    $threw = false;
+    try {
+        \Widdx\View::make($nulName);
+    } catch (\Widdx\Exceptions\ViewNotFoundException) {
+        $threw = true;
+    }
+    assert_true($threw, 'null-byte name must raise ViewNotFoundException, not ValueError');
+
     // A symlink planted inside views/ and pointing outside is refused now:
     // realpath() unmasks it and the containment check rejects the target.
     $link = __DIR__ . '/tests/fixtures/demo-app/views/it-escape.php';
@@ -675,11 +687,32 @@ test('SmtpMail RFC2047-encodes non-ASCII display names in From/Reply-To', functi
     assert_true(preg_match('/[^\x00-\x7F]/', $arabic) !== 1, 'encoded header must be pure ASCII');
     assert_true(!str_contains($arabic, "\r") && !str_contains($arabic, "\n"), 'encoded header must stay single-line');
     preg_match_all('/=\?UTF-8\?B\?([A-Za-z0-9+\/=]+)\?=/', $arabic, $m);
+    // Whole-phrase encoding: adjacent encoded-words concatenate with NOTHING
+    // added — the space lives inside the payload (RFC 2047 §6.2 drops the
+    // whitespace BETWEEN words).
     assert_equals(
         'شركة المثال',
-        implode(' ', array_map('base64_decode', $m[1])),
+        implode('', array_map('base64_decode', $m[1])),
         'encoded words must decode back to the original name'
     );
+
+    // A mixed name keeps its spaces AND gets its RFC 5322 specials wrapped:
+    // the whole phrase is one encoded payload, nothing stays bare.
+    $mixed = $format->invoke($mail, 'sender@example.test', 'شركة عرسان (ORSAN)');
+    preg_match_all('/=\?UTF-8\?B\?([A-Za-z0-9+\/=]+)\?=/', $mixed, $m2);
+    assert_equals('شركة عرسان (ORSAN)', implode('', array_map('base64_decode', $m2[1])), 'mixed name round-trips: ' . $mixed);
+    assert_true(preg_match('/\A(=\?UTF-8\?B\?[A-Za-z0-9+\/=]+\?= ?)+ <[^>]+>\z/', $mixed) === 1, 'no bare specials outside encoded-words');
+
+    // A long name wraps into several encoded-words, each within the 75-char
+    // RFC 2047 limit and never mid-UTF-8-sequence.
+    $longName = 'شركة ' . str_repeat('العالمية للتقنية ', 4) . 'المحدودة';
+    $long = $format->invoke($mail, 'sender@example.test', $longName);
+    preg_match_all('/=\?UTF-8\?B\?[A-Za-z0-9+\/=]+\?=/', $long, $m3);
+    assert_true(count($m3[0]) >= 2, 'long name must wrap into multiple encoded-words');
+    assert_true(implode('', array_map(static function (string $w): string {
+        return (string) base64_decode((string) preg_replace('/\A=\?UTF-8\?B\?|\?=\z/', '', $w));
+    }, $m3[0])) === $longName, 'wrapped words must reassemble the exact name');
+    assert_true(max(array_map('strlen', $m3[0])) <= 75, 'every encoded-word within the 75-char limit');
 
     // ASCII names with RFC 5322 specials are quoted, quotes escaped.
     assert_equals('"Admin (Ops)" <sender@example.test>', $format->invoke($mail, 'sender@example.test', 'Admin (Ops)'));

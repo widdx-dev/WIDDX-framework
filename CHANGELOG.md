@@ -17,6 +17,8 @@ All notable changes to Widdx are documented here.
 - New SQLite connections now run `PRAGMA foreign_keys = ON;` so `REFERENCES` / `ON DELETE CASCADE` constraints declared in migrations are actually enforced at runtime (SQLite leaves them per-connection opt-in).
 - `Response::addHeader()` appends headers instead of replacing them — several `Set-Cookie` lines can now share one response — and `Response::send()` emits repeat values without wiping the session cookie queued by PHP (`Set-Cookie` is append-only).
 - Query Builder `where()`/`orWhere()` accept a closure for parenthesized condition groups (`AND (... OR ...)`), with correct placeholder numbering across nesting and no-SQL no-op for empty groups.
+- SMTP phrase encoding is now whole-phrase base64 UTF-8 — per RFC 2047 §6.2 conformant clients drop whitespace between adjacent encoded-words (a per-word encoding of "شركة عرسان" would render "شركةعرسان"), so spaces now live inside the payload. It also wraps RFC 5322 specials of mixed names, works without mbstring, and covers the Subject line too.
+- `View` template resolution rejects null-byte names before `realpath()`/`is_file()` can see them (PHP 8.1+ throws `ValueError` on null bytes; lookups now answer `ViewNotFoundException`).
 
 ## [0.4.0] - 2026-10-27
 

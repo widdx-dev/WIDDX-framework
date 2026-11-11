@@ -305,14 +305,14 @@ class SmtpMail implements MailInterface
         return trim($value);
     }
 
-    /** Encode non-ASCII header values (RFC 2047) when mbstring is available. */
+    /**
+     * Encode non-ASCII header values (RFC 2047). Shares encodeWords() so the
+     * subject gets the same whole-phrase treatment as display names — spaces
+     * inside the phrase survive on every client, with or without mbstring.
+     */
     protected function encodeHeaderLine(string $name, string $value): string
     {
-        if (function_exists('mb_encode_mimeheader') && preg_match('/[^\x20-\x7E]/', $value)) {
-            $value = mb_encode_mimeheader($value, 'UTF-8', 'B', "\r\n");
-            return $name . ': ' . $value;
-        }
-        return $name . ': ' . $value;
+        return $name . ': ' . $this->encodeWords($value);
     }
 
     /**
@@ -340,28 +340,58 @@ class SmtpMail implements MailInterface
      * RFC 2047 encode a header phrase, guaranteed single-line: header values
      * with newlines are refused by sanitize(), so the encoded form must never
      * fold onto continuation lines.
+     *
+     * The WHOLE phrase is encoded — never word-by-word: RFC 2047 §6.2 makes
+     * conformant clients DROP whitespace between adjacent encoded-words, so
+     * "شركة عرسان" encoded per-word would render as "شركةعرسان". Whole-phrase
+     * encoding also wraps RFC 5322 specials of a mixed name ("شركة عرسان
+     * (ORSAN)") inside the base64 payload, where they need no quoting at all.
+     * Pure PHP — no mbstring dependency.
      */
     protected function encodeWords(string $value): string
     {
         if (preg_match('/[^\x20-\x7E]/', $value) !== 1) {
             return $value; // pure ASCII — nothing to encode
         }
-        if (function_exists('mb_encode_mimeheader')) {
-            // mb_* folds long phrases with CRLF+space; joining the folds leaves
-            // a valid sequence of adjacent encoded-words on a single line.
-            return str_replace("\r\n ", ' ', mb_encode_mimeheader($value, 'UTF-8', 'B', "\r\n"));
+        $words = [];
+        foreach (self::utf8Chunks($value, 45) as $chunk) {
+            // 45 bytes → 60 base64 chars → encoded-word = 72 chars (max 75).
+            $words[] = '=?UTF-8?B?' . base64_encode($chunk) . '?=';
         }
-        // No mbstring: wrap each non-ASCII word as its own =?UTF-8?B?...?= word.
-        $out = [];
-        foreach (preg_split('/\s+/', trim($value)) ?: [] as $word) {
-            if ($word === '') {
-                continue;
+        // The join space between adjacent encoded-words is dropped by decoders,
+        // leaving exactly the original bytes after concatenation.
+        return implode(' ', $words);
+    }
+
+    /**
+     * Split into chunks of at most $maxBytes bytes without ever cutting a
+     * multi-byte UTF-8 sequence. Invalid byte input degrades to raw byte
+     * chunks (the base64 payload is opaque either way).
+     *
+     * @return string[]
+     */
+    protected static function utf8Chunks(string $value, int $maxBytes): array
+    {
+        if (preg_match('//u', $value) === 1) {
+            // With /u each "." match is one whole UTF-8 character.
+            preg_match_all('/./us', $value, $m);
+            $chars = $m[0];
+        } else {
+            $chars = str_split($value);
+        }
+        $chunks = [];
+        $current = '';
+        foreach ($chars as $char) {
+            if ($current !== '' && strlen($current) + strlen($char) > $maxBytes) {
+                $chunks[] = $current;
+                $current = '';
             }
-            $out[] = preg_match('/[^\x20-\x7E]/', $word) === 1
-                ? '=?UTF-8?B?' . base64_encode($word) . '?='
-                : $word;
+            $current .= $char;
         }
-        return implode(' ', $out);
+        if ($current !== '') {
+            $chunks[] = $current;
+        }
+        return $chunks;
     }
 
     /** Pull bare email addresses out of a header value or address list. */

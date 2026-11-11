@@ -112,7 +112,9 @@ class View
      */
     protected static function resolveTemplate(string $base, string $view): ?string
     {
-        if ($base === '') {
+        // A null byte must never reach realpath()/is_file(): PHP 8.1+ throws a
+        // ValueError there instead of returning false. Treat it as "not found".
+        if ($base === '' || str_contains($view, "\0")) {
             return null;
         }
         $baseReal = realpath($base);
