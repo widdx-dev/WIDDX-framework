@@ -698,9 +698,9 @@ test('SmtpMail RFC2047-encodes non-ASCII display names in From/Reply-To', functi
 
     // A mixed name keeps its spaces AND gets its RFC 5322 specials wrapped:
     // the whole phrase is one encoded payload, nothing stays bare.
-    $mixed = $format->invoke($mail, 'sender@example.test', 'شركة عرسان (ORSAN)');
+    $mixed = $format->invoke($mail, 'sender@example.test', 'متجر ويديكس (Support)');
     preg_match_all('/=\?UTF-8\?B\?([A-Za-z0-9+\/=]+)\?=/', $mixed, $m2);
-    assert_equals('شركة عرسان (ORSAN)', implode('', array_map('base64_decode', $m2[1])), 'mixed name round-trips: ' . $mixed);
+    assert_equals('متجر ويديكس (Support)', implode('', array_map('base64_decode', $m2[1])), 'mixed name round-trips: ' . $mixed);
     assert_true(preg_match('/\A(=\?UTF-8\?B\?[A-Za-z0-9+\/=]+\?= ?)+ <[^>]+>\z/', $mixed) === 1, 'no bare specials outside encoded-words');
 
     // A long name wraps into several encoded-words, each within the 75-char
