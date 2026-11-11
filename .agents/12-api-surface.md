@@ -28,6 +28,12 @@ static is a fatal error on the first request that touches it.
   count exists toSelectSql`. There is NO `pluck chunk sum avg min max in whereRaw groupBy having join`.
   For an aggregate the builder lacks, use `->get()` and count in PHP, or raw PDO:
   `db('users')->get()` / `\Widdx\Database::connection()->pdo()`.
+  `where()`/`orWhere()` also accept a closure for a parenthesized AND/OR group:
+  `->where('category', $c)->where(fn($q) => $q->where('name', 'LIKE', "%$s%")->orWhere('email', 'LIKE', "%$s%"))`
+  compiles to `WHERE "category" = ? AND ("name" LIKE ? OR "email" LIKE ?)`; an empty closure adds nothing.
+- **Response**: `setHeader()` replaces; `addHeader()` appends — use it for repeated headers (several
+  `Set-Cookie` lines in one response). `Set-Cookie` is append-only at send time, so PHP's session
+  cookie is never wiped.
 - **Blueprint** (inside `Schema::create('x', function (Blueprint $t) { … })`):
   `id bigId increments string char text longText integer tinyInteger smallInteger mediumInteger bigInteger
   foreignId float double decimal boolean date datetime timestamp time json uuid enum timestamps index unique

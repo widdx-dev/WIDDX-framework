@@ -14,7 +14,15 @@ Options -Indexes
     RewriteRule (^|/)\.(?!well-known(?:/|$)) - [F,L,NC]
 
     # Block direct URL access to private project source and metadata directories.
-    RewriteRule ^(?:app|core|config|database|vendor|polyfill|tests|routes|\.agents|\.git)(?:/|$) - [F,L,NC]
+    RewriteRule ^(?:app|core|config|database|lang|vendor|polyfill|tests|routes|\.agents|\.git)(?:/|$) - [F,L,NC]
+
+    # storage/ holds logs, sessions, cache and uploaded files — none of it may be
+    # served raw. Public uploads are exposed only through the storageRoutes() PHP
+    # endpoint (which forces real Content-Type + nosniff and downloads for active
+    # content), so forbid direct hits on REAL files here while /storage/... URLs
+    # for non-existent paths keep falling through to the PHP router below.
+    RewriteCond %{REQUEST_FILENAME} -f
+    RewriteRule ^storage/ - [F,L,NC]
 
     # These root files are development/project internals, not public resources.
     RewriteRule ^(?:\.env(?:\..*)?|composer\.(?:json|lock)|database\.sqlite|widdx(?:-test)?|phpstan(?:\.dist)?\.neon|README(?:\.md)?|AGENTS\.md|CHANGELOG\.md|LICENSE|\.gitignore|CLAUDE\.md|GEMINI\.md|llms\.txt|\.cursorrules)$ - [F,L,NC]

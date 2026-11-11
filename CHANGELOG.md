@@ -4,6 +4,20 @@ All notable changes to Widdx are documented here.
 
 ## Unreleased
 
+### Security
+
+- `lang_attrs()` no longer prints a caller-supplied locale raw inside the HTML `lang` attribute: non-locale characters are stripped (BCP-47 / setlocale shape) and the value is escaped with `e()`, closing an attribute-injection vector for request-derived locales.
+- `View::make()`, `View::core()` and `View::exists()` now resolve templates with `realpath()` and prove the result stays inside the configured views directory — the same containment rule as `LocalStorage::fullPath()` — so raw separators or a symlink planted in `views/` can no longer render files outside it.
+- SMTP `From` and `Reply-To` display names are RFC 2047 encoded when non-ASCII (and quoted when they contain RFC 5322 specials), so Arabic sender names are no longer mangled or rejected by strict SMTP servers; the encoded form stays single-line and ASCII-only.
+- The root `.htaccess` (and the one `widdx new` generates) also blocks the `lang/` directory, and forbids direct hits on real files under `storage/` (logs, sessions, cache, uploaded payloads) while still letting the PHP-guarded `storageRoutes()` endpoint serve public uploads — nothing under `storage/` is ever served raw.
+
+### Fixes and reliability
+
+- PostgreSQL `Database::tableColumns()` is scoped to one schema (`TABLE_SCHEMA = current_schema()`, or the explicit schema in a `schema.table` name): identically named tables in other schemas no longer leak their columns into `Model::columns()` and zero-code CRUD.
+- New SQLite connections now run `PRAGMA foreign_keys = ON;` so `REFERENCES` / `ON DELETE CASCADE` constraints declared in migrations are actually enforced at runtime (SQLite leaves them per-connection opt-in).
+- `Response::addHeader()` appends headers instead of replacing them — several `Set-Cookie` lines can now share one response — and `Response::send()` emits repeat values without wiping the session cookie queued by PHP (`Set-Cookie` is append-only).
+- Query Builder `where()`/`orWhere()` accept a closure for parenthesized condition groups (`AND (... OR ...)`), with correct placeholder numbering across nesting and no-SQL no-op for empty groups.
+
 ## [0.4.0] - 2026-10-27
 
 ### Highlights

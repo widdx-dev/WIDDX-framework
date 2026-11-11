@@ -149,7 +149,17 @@ if (!function_exists('lang_attrs')) {
     function lang_attrs(?string $locale = null): string
     {
         $locale = $locale ?? Lang::locale();
-        return sprintf('lang="%s" dir="%s"', $locale, Lang::isRtl($locale) ? 'rtl' : 'ltr');
+        // A caller may pass a request-derived value (lang_attrs(request('lang'))).
+        // Real locale tags are alnum plus -/_ only (BCP-47 / setlocale style);
+        // strip anything else so the value can never break out of the HTML
+        // attribute, then escape anyway (defense in depth).
+        if (preg_match('/\A[A-Za-z0-9_-]+\z/', $locale) !== 1) {
+            $locale = preg_replace('/[^A-Za-z0-9_-]/', '', $locale) ?? '';
+        }
+        if ($locale === '') {
+            $locale = 'en';
+        }
+        return sprintf('lang="%s" dir="%s"', e($locale), Lang::isRtl($locale) ? 'rtl' : 'ltr');
     }
 }
 

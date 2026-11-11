@@ -34,12 +34,13 @@ class View
      */
     public static function make(string $view, array $data = []): string
     {
-        $file = static::$basePath . '/' . str_replace('.', '/', $view) . '.php';
+        $file = static::resolveTemplate(static::$basePath, $view);
 
-        if (!is_file($file)) {
+        if ($file === null) {
             throw new Exceptions\ViewNotFoundException(
-                "Template [{$view}] not found. Searched in: {$file}. " .
-                "Check the name (dot = subdirectory)."
+                "Template [{$view}] not found. Searched in: " .
+                static::$basePath . '/' . str_replace('.', '/', $view) . '.php. ' .
+                "Check the name (dot = subdirectory); templates must live inside the views directory."
             );
         }
 
@@ -68,10 +69,11 @@ class View
      */
     public static function core(string $view, array $data = []): string
     {
-        $file = static::$corePath . '/' . str_replace('.', '/', $view) . '.php';
-        if (!is_file($file)) {
+        $file = static::resolveTemplate(static::$corePath, $view);
+        if ($file === null) {
             throw new Exceptions\ViewNotFoundException(
-                "Built-in template [{$view}] not found. Searched in: {$file}."
+                "Built-in template [{$view}] not found. Searched in: " .
+                static::$corePath . '/' . str_replace('.', '/', $view) . '.php.'
             );
         }
 
@@ -93,9 +95,35 @@ class View
         return $render($file, $data);
     }
 
-    /** Does the template exist? */
+    /** Does the template exist (inside the views directory)? */
     public static function exists(string $view): bool
     {
-        return is_file(static::$basePath . '/' . str_replace('.', '/', $view) . '.php');
+        return static::resolveTemplate(static::$basePath, $view) !== null;
+    }
+
+    /**
+     * Resolve a dot-notation template name to a real file that provably lives
+     * inside the configured directory — the same containment rule
+     * LocalStorage::fullPath() applies. Dot replacement stops classical
+     * "../.." traversal, but a view name can still carry raw "/" or '\' (or a
+     * symlink inside the views directory can point outside it); realpath()
+     * settles the target for real instead of trusting string munging.
+     * Returns null when the file is missing, unreadable, or escaped the base.
+     */
+    protected static function resolveTemplate(string $base, string $view): ?string
+    {
+        if ($base === '') {
+            return null;
+        }
+        $baseReal = realpath($base);
+        if ($baseReal === false) {
+            return null;
+        }
+        $file = realpath($baseReal . '/' . str_replace('.', '/', $view) . '.php');
+        if ($file === false || !is_file($file)
+            || !str_starts_with($file, $baseReal . DIRECTORY_SEPARATOR)) {
+            return null;
+        }
+        return $file;
     }
 }

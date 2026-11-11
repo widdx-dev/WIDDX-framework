@@ -43,9 +43,36 @@ class Response
         return new self('', $status, ['Location' => $url]);
     }
 
+    /**
+     * Set a header, replacing any earlier value of the same name.
+     * Note: Set-Cookie lines are always appended at send() time (never
+     * replaced), so the session cookie queued by PHP survives every response.
+     */
     public function setHeader(string $name, string $value): self
     {
         $this->headers[$name] = $value;
+        return $this;
+    }
+
+    /**
+     * Append a header value WITHOUT replacing earlier ones — for headers that
+     * may repeat in a single response, most importantly Set-Cookie:
+     *   Response::make('ok')
+     *       ->addHeader('Set-Cookie', 'session=abc; Path=/; HttpOnly')
+     *       ->addHeader('Set-Cookie', 'prefs=dark; Path=/');
+     * Name matching is case-insensitive so "set-cookie" appends to "Set-Cookie".
+     */
+    public function addHeader(string $name, string $value): self
+    {
+        foreach ($this->headers as $key => $existing) {
+            if (strcasecmp((string) $key, $name) === 0) {
+                $values = is_array($existing) ? $existing : [$existing];
+                $values[] = $value;
+                $this->headers[$key] = array_values($values);
+                return $this;
+            }
+        }
+        $this->headers[$name] = [$value];
         return $this;
     }
 
@@ -60,7 +87,7 @@ class Response
         return $this->status;
     }
 
-    /** Get all response headers */
+    /** Get all response headers (a value is a list when addHeader() repeated it) */
     public function getHeaders(): array
     {
         return $this->headers;
@@ -92,7 +119,17 @@ class Response
         if (!headers_sent()) {
             http_response_code($this->status);
             foreach ($this->headers as $name => $value) {
-                header("{$name}: {$value}");
+                // A value may be a list (see addHeader): several Set-Cookie lines
+                // must each reach the client, not overwrite one another.
+                $values = is_array($value) ? array_values($value) : [$value];
+                // Set-Cookie is strictly append-only: header(replace: true) would
+                // also wipe cookies already queued by the session extension.
+                $appendOnly = strcasecmp((string) $name, 'Set-Cookie') === 0;
+                $replace = !$appendOnly;
+                foreach ($values as $single) {
+                    header($name . ': ' . (string) $single, $replace);
+                    $replace = false;
+                }
             }
         }
         echo (string) $this->content;

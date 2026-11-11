@@ -53,7 +53,7 @@ class SmtpMail implements MailInterface
     /** Set the "Reply-To" address */
     public function replyTo(string $email, string $name = ''): static
     {
-        $this->headers['Reply-To'] = $name ? "{$name} <{$email}>" : $email;
+        $this->headers['Reply-To'] = $this->formatAddress($email, $name);
         return $this;
     }
 
@@ -110,7 +110,7 @@ class SmtpMail implements MailInterface
             // Header names are case-insensitive. Normalize standard names before
             // processing Cc/Bcc, so e.g. "bcc" cannot bypass the Bcc stripping.
             $allHeaders = $this->normalizeHeaders(array_merge(
-                ['From' => "{$this->fromName} <{$this->from}>"],
+                ['From' => $this->formatAddress($this->from, $this->fromName)],
                 $this->headers,
                 $headers
             ));
@@ -313,6 +313,55 @@ class SmtpMail implements MailInterface
             return $name . ': ' . $value;
         }
         return $name . ': ' . $value;
+    }
+
+    /**
+     * "Name <address>" header value. A non-ASCII display-name (e.g. an Arabic
+     * sender name in From/Reply-To) is RFC 2047 encoded exactly like the
+     * subject — raw UTF-8 display names are mangled by some clients and
+     * rejected outright by strict SMTP servers.
+     */
+    protected function formatAddress(string $email, string $name = ''): string
+    {
+        if ($name === '') {
+            return $email;
+        }
+        $encoded = $this->encodeWords($name);
+        // A pure-ASCII name containing RFC 5322 specials is quoted instead.
+        // strpbrk list: ( ) < > @ , ; : \ " [ ]  — a phrase with those is not
+        // a valid unquoted atom sequence and must become a quoted-string.
+        if ($encoded === $name && strpbrk($encoded, '()<>@,;:\\"[]') !== false) {
+            $encoded = '"' . strtr($encoded, ['\\' => '\\\\', '"' => '\\"']) . '"';
+        }
+        return $encoded . ' <' . $email . '>';
+    }
+
+    /**
+     * RFC 2047 encode a header phrase, guaranteed single-line: header values
+     * with newlines are refused by sanitize(), so the encoded form must never
+     * fold onto continuation lines.
+     */
+    protected function encodeWords(string $value): string
+    {
+        if (preg_match('/[^\x20-\x7E]/', $value) !== 1) {
+            return $value; // pure ASCII — nothing to encode
+        }
+        if (function_exists('mb_encode_mimeheader')) {
+            // mb_* folds long phrases with CRLF+space; joining the folds leaves
+            // a valid sequence of adjacent encoded-words on a single line.
+            return str_replace("\r\n ", ' ', mb_encode_mimeheader($value, 'UTF-8', 'B', "\r\n"));
+        }
+        // No mbstring: wrap each non-ASCII word as its own =?UTF-8?B?...?= word.
+        $out = [];
+        foreach (preg_split('/\s+/', trim($value)) ?: [] as $word) {
+            if ($word === '') {
+                continue;
+            }
+            $out[] = preg_match('/[^\x20-\x7E]/', $word) === 1
+                ? '=?UTF-8?B?' . base64_encode($word) . '?='
+                : $word;
+        }
+        return implode(' ', $out);
     }
 
     /** Pull bare email addresses out of a header value or address list. */
