@@ -69,6 +69,12 @@ mail('to@site.com', 'Subject', 'welcome-template', ['name' => 'Ali']);
 - Set `MAIL_DRIVER=smtp` + `MAIL_HOST/PORT/USERNAME/PASSWORD/ENCRYPTION` for real delivery.
 - The SMTP client is hand-written (sockets) — no external library, works on shared hosting.
 - `mail()->attach('/path/file.pdf')->raw($to, $subject, $body);`
+- Same on mailables: `Mail::to($to)->attach('/p/f.pdf')->deliver(new InvoiceMail(...))` or
+  `$mailable->attach(...)->send()`. Attachments are one-shot per send — attach BEFORE `deliver()`/`send()`;
+  attaching after the send leaves the file for the NEXT mail on the shared connection.
+- `Mail::to()` overrides only what you set: no `subject()` there keeps the mailable class's own subject.
+- Non-ASCII display names (`from($email, 'متجر ويديكس')`) and subjects are RFC 2047 encoded automatically —
+  whole-phrase, space-safe, pure ASCII on the wire.
 - Header injection into subjects/emails throws a MailException. Good.
 
 ---

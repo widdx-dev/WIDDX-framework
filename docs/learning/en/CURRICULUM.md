@@ -215,7 +215,8 @@ and compare. Put an override in `views/product/index.php`, observe it being igno
 
 **Lessons:**
 1. Smallest conventional model: `make:model Post`, then `$fillable` and `$rules`. No explicit `$table` is needed.
-2. Reading: `all()`, `find()`/`findOrFail()` (404 page), `where()` with `= != < <= > >= IN NOT IN BETWEEN`,
+2. Reading: `all()`, `find()`/`findOrFail()` (404 page), `where()` with `= != < <= > >= IN NOT IN BETWEEN`
+   and closure groups (`->where(fn($q) => $q->where(...)->orWhere(...))` compiles to `AND (... OR ...)`),
    `query()->orderBy()->limit()->get()`, `count()`, and `exists()`.
 3. Writing: `create()` validates `$rules`, respects `$fillable`, and manages timestamps; `$m->fill([...])->save()`,
    `$m->delete()`, and `firstOrCreate()`/`updateOrCreate()` provide other write paths.
@@ -505,8 +506,10 @@ increasing backoff, and failed_jobs; fix the cause, retry, and demonstrate succe
    where development and test output can be inspected.
 2. Production uses `MAIL_DRIVER=smtp` and its configuration keys. The socket-based SMTP client supports STARTTLS, ssl,
    and AUTH LOGIN without external libraries; an empty host uses the shared-hosting `mail()` fallback.
-3. A Mailable exposes `build(): array`. The builder uses `Mail::to()->cc()->replyTo()->subject()->deliver(...)`,
-   or `->send()` on the object. Background delivery uses `Mail::queue(...)`.
+   Non-ASCII display names and subjects are RFC 2047 encoded automatically (whole-phrase, space-safe).
+3. A Mailable exposes `build(): array`. The builder uses `Mail::to()->cc()->replyTo()->subject()->attach('/p/invoice.pdf')->deliver(...)`,
+   or `->send()` on the object (which also accepts `->attach()`); a `subject()` left unset on the builder keeps the
+   mailable's own subject. Background delivery uses `Mail::queue(...)`.
 4. Header values containing CR/LF throw MailException to prevent header injection; this is intentional.
 
 **Lab:** Send welcome mail through `listen('user.registered', ...)`, inspect it in the log, move it into a background job,

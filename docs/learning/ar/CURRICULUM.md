@@ -225,7 +225,8 @@ Widdx لا يُعلَّم كالأطر التقليدية. قيمته ليست �
 
 **الدروس:**
 1. أصغر موديل قانوني: `make:model Post` ثم `$fillable` و`$rules` فقط. لا `$table`، لا تهيئة.
-2. القراءة: `all()`، `find()`/`findOrFail()` (صفحة 404)، `where()` بمعاملاته (`= != < <= > >= IN NOT IN BETWEEN`)،
+2. القراءة: `all()`، `find()`/`findOrFail()` (صفحة 404)، `where()` بمعاملاته (`= != < <= > >= IN NOT IN BETWEEN`)
+   وتجميعها بالإغلاقات (`->where(fn($q) => $q->where(...)->orWhere(...))` ← `AND (... OR ...)`)،
    `query()->orderBy()->limit()->get()`، `count()`، `exists()`.
 3. الكتابة: `create()` (يتحقق من `$rules`، يحترم `$fillable`، يملأ الطوابع)، `$m->fill([...])->save()`،
    `$m->delete()`، واختصارات `firstOrCreate()`/`updateOrCreate()`.
@@ -519,9 +520,11 @@ update للمالك، delete للمدير) + حذف `->public()`. اختبار �
 1. `mail('to@site.com', 'Subject', 'template', ['name' => 'Ali'])` — محرك `log` افتراضياً: اقرأ الرسالة
    في `storage/logs` (مثالي للتطوير والاختبار).
 2. الإنتاج: `MAIL_DRIVER=smtp` + المفاتيح. العميل SMTP مكتوب بالسوكتس بلا مكتبات خارجية: STARTTLS وssl
-   وAUTH LOGIN. بمستضيف فارغ يسقط إلى `mail()` للاستضافة المشتركة.
-3. Mailable: كلاس بدالة `build(): array`، والباني: `Mail::to()->cc()->replyTo()->subject()->deliver(...)`
-   أو `->send()` على الكائن. بريد خلفي عبر الطابور: `Mail::queue(...)`.
+   وAUTH LOGIN. بمستضيف فارغ يسقط إلى `mail()` للاستضافة المشتركة، وأسماء العرض والعناوين غير اللاتينية
+   تُرمَّز RFC 2047 تلقائياً (عبارة كاملة تحفظ الفراغات).
+3. Mailable: كلاس بدالة `build(): array`، والباني: `Mail::to()->cc()->replyTo()->subject()->attach('/p/invoice.pdf')->deliver(...)`
+   أو `->send()` على الكائن (ويقبل `->attach()` أيضاً)؛ وإن لم تُمرَّر `subject()` على الباني بقي عنوان الـMailable
+   نفسه. بريد خلفي عبر الطابور: `Mail::queue(...)`.
 4. الأمن: قيم الترويسات الحاوية CR/LF ترمي MailException (منع حقن الترويسات) — سلوك مقصود.
 
 **المعمل:** بريد ترحيبي يُرسل عبر `listen('user.registered', ...)`، قراءته في السجل، ثم تحويله إلى

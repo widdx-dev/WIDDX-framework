@@ -24,6 +24,7 @@ Reading data:
 - `Post::find(3)` — row id 3 or null.
 - `Post::findOrFail(3)` — row or a 404 page.
 - `Post::where('title', 'like', '%a%')->get()` — filter. (also `!= < <= > >= IN NOT IN BETWEEN`)
+- Group with a closure: `->where(fn($q) => $q->where('a', 1)->orWhere('b', 2))` compiles to `AND ("a" = ? OR "b" = ?)`; an empty closure adds nothing.
 - `Post::query()->orderBy('id', 'DESC')->limit(5)->get()` — chainable.
 - `Post::count()`, `Post::where(...)->exists()`.
 

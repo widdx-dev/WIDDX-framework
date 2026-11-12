@@ -209,6 +209,11 @@ Your application code never changes when switching drivers — the framework ada
 db('users')->where('age', '>', 18)->orderBy('name')->limit(10)->get();
 db('users')->where('id', 5)->first();
 db('users')->where('id', 5)->update(['name' => 'Ali']);
+
+// Closure groups compile to a parenthesized AND/OR group:
+db('users')->where('active', 1)
+    ->where(fn($q) => $q->where('name', 'LIKE', "%$s%")->orWhere('email', 'LIKE', "%$s%"))
+    ->get(); // WHERE "active" = ? AND ("name" LIKE ? OR "email" LIKE ?)
 ```
 
 Named connections (second database):
@@ -739,7 +744,10 @@ Mail::to('user@example.com')->subject('Welcome')->deliver(new WelcomeEmail('Ali'
 Mail::to('a@x.com')
     ->cc('b@x.com')
     ->replyTo('no-reply@x.com')
+    ->attach('/path/invoice.pdf')   // real multipart/mixed attachment
     ->deliver(new WelcomeEmail('Ali'));
+
+// Not setting subject() on Mail::to() keeps the subject the mailable class defines.
 
 // Queue for background delivery:
 Mail::queue('user@example.com', 'Welcome', 'emails.welcome', ['name' => 'Ali']);
@@ -749,7 +757,11 @@ The `smtp` driver is a real SMTP client (sockets): supports STARTTLS (`MAIL_ENCR
 implicit SSL (`ssl`, port 465), `AUTH LOGIN`, and dot-stuffing; header values containing
 CR/LF are rejected to prevent header injection. Set `MAIL_HOST`/`MAIL_PORT`/`MAIL_USERNAME`/
 `MAIL_PASSWORD` in `.env`. With an empty `MAIL_HOST` it falls back to PHP's `mail()`
-(shared-hosting mode). `attach()` is not implemented yet — multipart MIME is on the roadmap.
+(shared-hosting mode). Attachments are real `multipart/mixed` MIME: queue them with `->attach()`
+BEFORE the send so the driver picks them up while building that message (one-shot attachments are
+cleared per message, so the same file never leaks into the next mail). Non-ASCII display names in
+`from()` and subjects are RFC 2047 encoded automatically — whole-phrase UTF-8 base64, spaces
+preserved, pure-ASCII wire.
 
 ## Queues
 
