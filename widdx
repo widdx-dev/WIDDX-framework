@@ -355,6 +355,10 @@ return [
 ];
 PHP);
 
+    // The default DB name is the project folder, not the raw CLI argument:
+    // 'php widdx new /srv/apps/blog' must not write "/srv/apps/blog" here.
+    $dbName = basename($base);
+
     // config/database.php
     write_file("{$base}/config/database.php", <<<PHP
 <?php
@@ -369,7 +373,7 @@ return [
             'driver' => 'mysql',
             'host' => env('DB_HOST', '127.0.0.1'),
             'port' => env('DB_PORT', 3306),
-            'database' => env('DB_DATABASE', '{$name}'),
+            'database' => env('DB_DATABASE', '{$dbName}'),
             'username' => env('DB_USERNAME', 'root'),
             'password' => env('DB_PASSWORD', ''),
             'charset' => 'utf8mb4',
@@ -378,7 +382,7 @@ return [
             'driver' => 'pgsql',
             'host' => env('DB_HOST', '127.0.0.1'),
             'port' => env('DB_PORT', 5432),
-            'database' => env('DB_DATABASE', '{$name}'),
+            'database' => env('DB_DATABASE', '{$dbName}'),
             'username' => env('DB_USERNAME', 'postgres'),
             'password' => env('DB_PASSWORD', ''),
         ],
@@ -1301,6 +1305,7 @@ PHP);
     <p><a href="/{$table}/<?= e(\$item->id) ?>/edit">Edit</a> | <a href="/{$table}">← List</a></p>
     <form method="POST" action="/{$table}/<?= e(\$item->id) ?>" onsubmit="return confirm('Delete?')">
         <input type="hidden" name="_method" value="DELETE">
+        <?= csrf_field() ?>
         <button type="submit">Delete</button>
     </form>
 </body>
@@ -1551,10 +1556,31 @@ PHP;
             'oci', 'oracle' => 'SELECT table_name AS name FROM user_tables',
             default => throw new Widdx\Exceptions\DatabaseException("db:wipe does not support driver [{$driver}] directly."),
         };
-        foreach ($pdo->query($tablesQuery)->fetchAll() as $table) {
-            $name = (string) $table['name'];
-            $pdo->exec("DROP TABLE IF EXISTS \"{$name}\"");
-            echo "Dropped: {$name}\n";
+        // Identifier quoting and FK handling are per-driver: MySQL treats
+        // "..." as a string literal unless ANSI_QUOTES is on (identifiers need
+        // backticks), pgsql needs CASCADE for referenced tables, and dropping
+        // FK-linked tables in any order needs checks paused (mysql/sqlite).
+        $quote = static fn (string $id): string => $driver === 'mysql'
+            ? '`' . str_replace('`', '``', $id) . '`'
+            : '"' . str_replace('"', '""', $id) . '"';
+        $cascade = in_array($driver, ['pgsql', 'postgres', 'postgresql'], true) ? ' CASCADE' : '';
+        try {
+            if ($driver === 'mysql') {
+                $pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
+            } elseif ($driver === 'sqlite') {
+                $pdo->exec('PRAGMA foreign_keys = OFF');
+            }
+            foreach ($pdo->query($tablesQuery)->fetchAll() as $table) {
+                $name = (string) $table['name'];
+                $pdo->exec('DROP TABLE IF EXISTS ' . $quote($name) . $cascade);
+                echo "Dropped: {$name}\n";
+            }
+        } finally {
+            if ($driver === 'mysql') {
+                $pdo->exec('SET FOREIGN_KEY_CHECKS = 1');
+            } elseif ($driver === 'sqlite') {
+                $pdo->exec('PRAGMA foreign_keys = ON');
+            }
         }
         echo "All tables dropped. Run 'php widdx migrate' to recreate.\n";
         break;

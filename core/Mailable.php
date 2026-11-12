@@ -136,15 +136,18 @@ abstract class Mailable
         $result = true;
 
         foreach ($this->to as $recipient) {
-            $sent = $mail->raw($recipient, $this->subject, $body, $headers);
-
-            // Attach files if supported by the driver
-            if ($sent && !empty($this->attachments) && method_exists($mail, 'attach')) {
+            // Attach BEFORE the send: drivers like SmtpMail consume one-shot
+            // attachments while raw() builds the message and clear them
+            // afterwards. Attaching after raw() would silently drop the file
+            // from THIS message and leak it into the next mail sent through
+            // the shared connection.
+            if (!empty($this->attachments) && method_exists($mail, 'attach')) {
                 foreach ($this->attachments as $file) {
                     $mail->attach($file['path'], $file['name']);
                 }
             }
 
+            $sent = $mail->raw($recipient, $this->subject, $body, $headers);
             $result = $sent && $result;
         }
 

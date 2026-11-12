@@ -746,6 +746,258 @@ test('SmtpMail RFC2047-encodes non-ASCII display names in From/Reply-To', functi
     assert_true(preg_match('/[^\x00-\x7F]/', $fromLine) !== 1, 'From line is pure ASCII');
 });
 
+
+// Recording mail driver shared by the Mailable / PendingMailable tests.
+final class RecordingMail implements \Widdx\Contracts\MailInterface
+{
+    /** @var array<int, array{0:string,1:string}> call log: [method, detail] */
+    public array $calls = [];
+
+    /** @var array<int, array{to:string,subject:string,headers:array}> */
+    public array $raws = [];
+
+    public function raw(string $to, string $subject, string $body, array $headers = []): bool
+    {
+        $this->calls[] = ['raw', $to];
+        $this->raws[] = ['to' => $to, 'subject' => $subject, 'headers' => $headers];
+        return true;
+    }
+
+    public function send(string $to, string $subject, string $template, array $data = []): bool
+    {
+        return $this->raw($to, $subject, '');
+    }
+
+    public function queue(string $to, string $subject, string $template, array $data = []): string
+    {
+        return 'queued-id';
+    }
+
+    public function attach(string $path, ?string $name = null): static
+    {
+        $this->calls[] = ['attach', $name ?? $path];
+        return $this;
+    }
+
+    public function cc(array $recipients): static
+    {
+        return $this;
+    }
+
+    public function bcc(array $recipients): static
+    {
+        return $this;
+    }
+
+    public function replyTo(string $email): static
+    {
+        return $this;
+    }
+}
+
+/**
+ * Run $fn with View pointed at a throwaway views tree and the given driver
+ * swapped in, then restore both no matter what.
+ *
+ * @param callable(\Widdx\Contracts\MailInterface):void $fn
+ */
+function with_mail_sandbox(RecordingMail $driver, callable $fn): void
+{
+    $tmpViews = sys_get_temp_dir() . '/widdx-mailable-views-' . bin2hex(random_bytes(4));
+    mkdir($tmpViews . '/emails', 0775, true);
+    file_put_contents($tmpViews . '/emails/plain.php', 'Hi <?= e($name ?? \'\') ?>');
+
+    $viewsProp = new \ReflectionProperty(\Widdx\View::class, 'basePath');
+    $viewsProp->setAccessible(true);
+    $previousViews = (string) $viewsProp->getValue();
+    $previousMail = \Widdx\Mail::connection();
+
+    try {
+        \Widdx\View::setBasePath($tmpViews);
+        \Widdx\Mail::setConnection($driver);
+        $fn($driver);
+    } finally {
+        \Widdx\Mail::setConnection($previousMail);
+        $viewsProp->setValue(null, $previousViews);
+        unlink($tmpViews . '/emails/plain.php');
+        rmdir($tmpViews . '/emails');
+        rmdir($tmpViews);
+    }
+}
+
+test('Mailable attaches files BEFORE each raw() send (no drop, no leak)', function () {
+    with_mail_sandbox(new RecordingMail(), function (RecordingMail $fake): void {
+        $mailable = new class extends \Widdx\Mailable {
+            public function build(): array
+            {
+                return ['template' => 'emails.plain', 'data' => ['name' => 'Ali']];
+            }
+        };
+        // Drivers consume one-shot attachments while raw() builds the message
+        // and clear them afterwards (SmtpMail does so in a finally block).
+        // Attaching after raw() dropped the file from the FIRST message and
+        // leaked it into the next mail on the shared connection.
+        $mailable->to(['one@example.test', 'two@example.test'])
+            ->subject('Hi Ali')
+            ->attach('/tmp/report.pdf', 'report.pdf')
+            ->send();
+
+        assert_equals(
+            [
+                ['attach', 'report.pdf'],
+                ['raw', 'one@example.test'],
+                ['attach', 'report.pdf'],
+                ['raw', 'two@example.test'],
+            ],
+            $fake->calls,
+            'every recipient: attach() must be queued before raw() consumes it'
+        );
+    });
+});
+
+test('PendingMailable keeps the mailable subject unless the caller overrides it', function () {
+    with_mail_sandbox(new RecordingMail(), function (RecordingMail $fake): void {
+        $own = new class extends \Widdx\Mailable {
+            public function __construct()
+            {
+                $this->subject('Own class subject');
+            }
+
+            public function build(): array
+            {
+                return ['template' => 'emails.plain', 'data' => []];
+            }
+        };
+
+        // Caller set no subject on the pending mailable — the class subject survives.
+        \Widdx\Mail::to('dest@example.test')->deliver($own);
+        assert_equals('Own class subject', $fake->raws[0]['subject'] ?? null, 'empty pending subject must not wipe the mailable subject');
+
+        // An explicit caller subject still wins.
+        \Widdx\Mail::to('dest@example.test')->subject('Caller wins')->deliver($own);
+        assert_equals('Caller wins', $fake->raws[1]['subject'] ?? null, 'explicit caller subject keeps overriding');
+
+        // A fresh mailable is never touched by a previous caller's subject.
+        $fresh = new class extends \Widdx\Mailable {
+            public function __construct()
+            {
+                $this->subject('Another own subject');
+            }
+
+            public function build(): array
+            {
+                return ['template' => 'emails.plain', 'data' => []];
+            }
+        };
+        \Widdx\Mail::to('dest@example.test')->deliver($fresh);
+        assert_equals('Another own subject', $fake->raws[2]['subject'] ?? null, 'unadorned deliver keeps the mailable subject');
+    });
+});
+
+test('SmtpMail raw() RFC2047-encodes display names in caller-supplied address headers', function () {
+    $mail = new class extends \Widdx\SmtpMail {
+        /** @var array<int, string> captured full messages */
+        public array $messages = [];
+
+        protected function smtpSend(array $recipients, string $message): void
+        {
+            $this->messages[] = $message;
+        }
+    };
+    // raw() only reaches smtpSend() when a host is configured — the override
+    // above performs no I/O, it just captures the wire message.
+    $host = new \ReflectionProperty(\Widdx\SmtpMail::class, 'host');
+    $host->setAccessible(true);
+    $host->setValue($mail, 'smtp.example.test');
+
+    // Headers composed upstream (e.g. by Mailable::headers()) carry raw
+    // non-ASCII display names — raw() must encode their display-name parts.
+    $mail->raw('dest@example.test', 'Hello', 'body', [
+        'From' => 'متجر ويديكس (Support) <sender@example.test>',
+        'Reply-To' => 'قسم الدعم <support@example.test>',
+    ]);
+
+    $message = $mail->messages[0] ?? '';
+    assert_true($message !== '', 'capture stub must have recorded a message');
+    [$headerBlock] = explode("\r\n\r\n", $message, 2);
+    assert_true(preg_match('/[^\x00-\x7F]/', $headerBlock) !== 1, 'caller-supplied address headers must ship pure ASCII: ' . $headerBlock);
+
+    $lines = [];
+    foreach (explode("\r\n", $headerBlock) as $line) {
+        [$n, $v] = array_pad(explode(': ', $line, 2), 2, '');
+        $lines[$n] = $v;
+    }
+    assert_true(
+        preg_match('/\A(=\?UTF-8\?B\?[A-Za-z0-9+\/=]+\?= ?)+ <sender@example\.test>\z/', $lines['From'] ?? '') === 1,
+        'From must be encoded words + bare address only: ' . ($lines['From'] ?? '<missing>')
+    );
+    assert_true(
+        preg_match('/\A(=\?UTF-8\?B\?[A-Za-z0-9+\/=]+\?= ?)+ <support@example\.test>\z/', $lines['Reply-To'] ?? '') === 1,
+        'Reply-To must be encoded words + bare address only: ' . ($lines['Reply-To'] ?? '<missing>')
+    );
+    preg_match_all('/=\?UTF-8\?B\?([A-Za-z0-9+\/=]+)\?=/', $lines['From'] ?? '', $fm);
+    assert_equals('متجر ويديكس (Support)', implode('', array_map('base64_decode', $fm[1])), 'From display name round-trips');
+    preg_match_all('/=\?UTF-8\?B\?([A-Za-z0-9+\/=]+)\?=/', $lines['Reply-To'] ?? '', $rm);
+    assert_equals('قسم الدعم', implode('', array_map('base64_decode', $rm[1])), 'Reply-To display name round-trips');
+
+    // The encoder itself: quoted ASCII names pass through; partial lists work.
+    $encode = new \ReflectionMethod(\Widdx\SmtpMail::class, 'encodeAddressHeader');
+    $encode->setAccessible(true);
+    assert_equals(
+        '"Sales, Inc" <sales@example.test>',
+        $encode->invoke($mail, '"Sales, Inc" <sales@example.test>'),
+        'quoted pure-ASCII names are not re-encoded'
+    );
+    $list = $encode->invoke($mail, 'Team <a@example.test>, قسم المبيعات <b@example.test>');
+    assert_true(str_contains($list, 'Team <a@example.test>'), 'ASCII list segment untouched');
+    preg_match_all('/=\?UTF-8\?B\?([A-Za-z0-9+\/=]+)\?=/', $list, $mm);
+    assert_equals('قسم المبيعات', implode('', array_map('base64_decode', $mm[1])), 'only the non-ASCII list segment is encoded');
+    assert_true(str_contains($list, '<b@example.test>'), 'encoded segment keeps its address');
+});
+
+test('Lang refuses path-traversal locales before require (LFI guard)', function () {
+    $lookup = new \ReflectionMethod(\Widdx\Lang::class, 'lookup');
+    $lookup->setAccessible(true);
+
+    // Sanity: a real locale loads; legal-but-missing tags (with - or _) miss.
+    assert_true($lookup->invoke(null, 'validation.required', 'en') !== null, 'framework en file loads');
+    assert_true($lookup->invoke(null, 'validation.required', 'pt-BR') === null, 'hyphenated tag is legal, file absent');
+    assert_true($lookup->invoke(null, 'validation.required', 'en_US') === null, 'underscored tag is legal, file absent');
+
+    // '../core/App' points at a REAL PHP file next to lang/ — pre-guard this
+    // reached require; now it must resolve to null without any filesystem hit.
+    assert_true($lookup->invoke(null, 'anything', '../core/App') === null, 'traversal locale rejected');
+    assert_true($lookup->invoke(null, 'anything', '../../etc/passwd') === null, 'absolute traversal rejected');
+    assert_true($lookup->invoke(null, 'anything', 'en.php') === null, 'dots rejected');
+});
+
+test('CLI stubs carry csrf_field in the delete form and db:wipe is driver-aware', function () {
+    $cli = (string) file_get_contents(\Widdx\App::basePath('') . '/widdx');
+
+    // make:resource show.php: a DELETE post without the CSRF token 419s.
+    $pos = strpos($cli, 'value="DELETE"');
+    assert_true($pos !== false, 'make:resource delete stub exists');
+    assert_true(
+        str_contains(substr($cli, $pos, 200), 'csrf_field()'),
+        'delete form must emit csrf_field() right after the method override'
+    );
+
+    // db:wipe: backtick quoting for MySQL (no ANSI_QUOTES), CASCADE for pgsql,
+    // FK checks paused around the drops.
+    assert_true(str_contains($cli, "str_replace('`', '``'"), 'mysql identifiers are backtick-quoted');
+    assert_true(str_contains($cli, "FOREIGN_KEY_CHECKS = 0"), 'mysql FK checks paused');
+    assert_true(str_contains($cli, "FOREIGN_KEY_CHECKS = 1"), 'mysql FK checks restored');
+    assert_true(str_contains($cli, "' CASCADE'"), 'pgsql drops cascade');
+    assert_true(str_contains($cli, "PRAGMA foreign_keys = OFF"), 'sqlite FK checks paused');
+    assert_true(!str_contains($cli, "DROP TABLE IF EXISTS \\"), 'no more double-quoted DROP TABLE');
+
+    // create_project: default DB name comes from the folder basename, never
+    // from the raw (possibly absolute-path) CLI argument.
+    assert_true(!str_contains($cli, "env('DB_DATABASE', '{\$name}')"), 'raw argument must not be the default DB name');
+    assert_equals(2, substr_count($cli, "env('DB_DATABASE', '{\$dbName}')"), 'mysql+pgsql defaults use the folder basename');
+    assert_true(str_contains($cli, '$dbName = basename($base);'), 'basename extraction present');
+});
+
 // Cache tests
 test('FileCache stores and retrieves', function () {
     $cache = new \Widdx\FileCache();
