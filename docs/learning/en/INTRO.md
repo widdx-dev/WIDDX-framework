@@ -7,7 +7,7 @@
 > continue to [CURRICULUM.md](CURRICULUM.md). The binding sources of truth remain [AGENTS.md](../../../AGENTS.md)
 > and [`.agents/`](../../../.agents) — this page is an introduction, not a replacement for them.
 >
-> Based on **Widdx v0.3.8**. The framework test suite (`php widdx test`) is the reference for measured behavior.
+> Based on **Widdx v0.5.0**. The framework test suite (`php widdx test`) is the reference for measured behavior.
 
 ---
 

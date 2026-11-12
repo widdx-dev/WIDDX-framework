@@ -2,6 +2,12 @@
 
 All notable changes to Widdx are documented here.
 
+## Unreleased
+
+### Documentation
+
+- Version references synchronized repo-wide: the handbook (`AGENTS.md`, `.agents/00`), README baseline, and the ar/en learning curriculum now all say v0.5.0, the curriculum maintenance footers no longer wait for a v0.4.0 that already shipped, and README gained `v0.4.0 → v0.5.0` upgrade notes (sqlite FK enforcement, `addHeader()` append semantics, `.htaccess` blocking). Historical "from vX" markers in lessons stay — they record when a behavior was introduced.
+
 ## [0.5.0] - 2026-11-12
 
 ### Security

@@ -3,7 +3,7 @@
 [العربية](../ar/AI_GUIDE.md)
 
 > A practical guide for programmers: preparing an assistant, dividing work, writing prompts, reviewing changes, and verifying results.
-> Based on the Widdx v0.3.8 references in this repository. Read the instructions for **your application's version** if it differs.
+> Based on the Widdx v0.5.0 references in this repository. Read the instructions for **your application's version** if it differs.
 > These prompts are working templates, not guarantees of correct output from any tool; they have not been tested here across all tools or versions.
 
 This guide explains **using AI to build applications with Widdx**, not adding an AI model to an application.

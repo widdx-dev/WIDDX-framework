@@ -41,6 +41,14 @@ For programmers learning Widdx; basic programming knowledge is assumed.
 - Composer — **optional** (`public/index.php` has a built-in fallback autoloader)
 - SQLite (default, zero config) or MySQL/PostgreSQL/SQL Server/Oracle
 
+## Upgrade notes: v0.4.0 → v0.5.0
+
+No breaking changes; the review-round fixes apply silently. Two hardened behaviors may be observable in edge-case code:
+
+- **SQLite now enforces foreign keys** (`PRAGMA foreign_keys = ON` per connection, matching MySQL/PostgreSQL): migrations or seeds that silently violated `REFERENCES` constraints will now fail loudly, as they should.
+- **`Response::addHeader()` appends** instead of replacing — code that relied on a later `addHeader()` call discarding an earlier same-name header now emits both, which is the RFC-correct behavior.
+- **Apache:** the shipped root `.htaccess` now 403s direct hits on `lang/` and on real files under `storage/` (public uploads flow through the `storageRoutes()` endpoint). Mirror the rule on nginx if you bypass Apache.
+
 ## Upgrade notes: v0.3.8 → v0.4.0
 
 Read the full [v0.4.0 changelog](CHANGELOG.md#040---2026-10-27) before upgrading an existing application. The following changes may affect existing projects:
@@ -908,7 +916,7 @@ composer run phpstan          # static analysis (needs composer install first)
 ## Release & License
 
 Widdx is licensed under the **MIT license** (see `LICENSE`) and follows
-[semantic versioning](https://semver.org). The current baseline is **v0.3.8**.
+[semantic versioning](https://semver.org). The current baseline is **v0.5.0**.
 
 Two ways to start a project:
 
