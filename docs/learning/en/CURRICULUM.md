@@ -2,7 +2,7 @@
 
 [العربية](../ar/CURRICULUM.md)
 
-> **Framework:** Widdx v0.3.8 · **Size:** approximately 65 training hours (12–14 weeks at 5 hours per week, or an intensive track) ·
+> **Framework:** Widdx v0.5.0 · **Size:** approximately 65 training hours (12–14 weeks at 5 hours per week, or an intensive track) ·
 > **Audience:** Programmers who know the basics of PHP or another programming language · **Language:** English.
 >
 > The framework test suite (`php widdx test`) is the reference for measured behavior. Each module points to its
@@ -800,5 +800,5 @@ Assign M15, M16, M18, M19, and M21 as guided reading with exercises.
 - `core/helpers.php`: internally documented global helpers.
 - `routes/web.php`: study the small working application first.
 
-> **Maintenance:** Based on Widdx v0.3.8 (2026-10-17). When v0.4.0 is released, update the affected modules
-> for version/update management and authRoutes using the new `.agents/` references. The curriculum follows the handbook, not the reverse.
+> **Maintenance:** Based on Widdx v0.5.0 (2026-11-12). When a new version is released, update the affected modules
+> using the new `.agents/` references. The curriculum follows the handbook, not the reverse.
