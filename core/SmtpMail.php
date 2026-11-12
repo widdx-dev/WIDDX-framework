@@ -116,6 +116,17 @@ class SmtpMail implements MailInterface
             ));
             unset($allHeaders['Subject']); // The $subject argument is authoritative.
 
+            // Caller-supplied address headers (Mailable::headers(), ->header())
+            // arrive pre-composed as "Name <addr>". A non-ASCII display name in
+            // them needs the same RFC 2047 treatment formatAddress() gives the
+            // config default From — otherwise it ships as raw 8-bit UTF-8 and
+            // strict relays mangle or reject the message.
+            foreach (['From', 'Reply-To', 'Cc', 'Bcc'] as $addressHeader) {
+                if (isset($allHeaders[$addressHeader])) {
+                    $allHeaders[$addressHeader] = $this->encodeAddressHeader($allHeaders[$addressHeader]);
+                }
+            }
+
             // The envelope includes To, Cc and Bcc; only Bcc is omitted from message DATA.
             $recipients = $this->envelopeRecipients($to, $allHeaders);
             if ($recipients === []) {
@@ -334,6 +345,33 @@ class SmtpMail implements MailInterface
             $encoded = '"' . strtr($encoded, ['\\' => '\\\\', '"' => '\\"']) . '"';
         }
         return $encoded . ' <' . $email . '>';
+    }
+
+    /**
+     * RFC 2047-encode display names inside a pre-composed address header
+     * value ("Name <addr>, Other <addr2>"). Pure-ASCII phrases and already
+     * encoded words are untouched (encodeWords() is only called on non-ASCII
+     * input); quoted-string names pass through as-is.
+     */
+    protected function encodeAddressHeader(string $value): string
+    {
+        if (preg_match('/[^\x20-\x7E]/', $value) !== 1) {
+            return $value; // pure ASCII — nothing to encode
+        }
+        $parts = explode(',', $value);
+        foreach ($parts as $i => $part) {
+            $part = trim($part);
+            if (str_contains($part, '"') || preg_match('/[^\x20-\x7E]/', $part) !== 1) {
+                continue; // quoted strings and ASCII segments need nothing
+            }
+            if (preg_match('/\A(.*?)\s*(<[^<>]+>)\z/', $part, $m) === 1 && trim($m[1]) !== '') {
+                $parts[$i] = $this->encodeWords(trim($m[1])) . ' ' . $m[2];
+            } elseif (!str_contains($part, '<') && !str_contains($part, '>')) {
+                // A bare non-ASCII phrase with no address — encode it whole.
+                $parts[$i] = $this->encodeWords($part);
+            }
+        }
+        return implode(', ', $parts);
     }
 
     /**

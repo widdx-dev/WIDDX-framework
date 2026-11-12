@@ -54,8 +54,14 @@ class Lang
     protected static function lookup(string $key, string $locale): ?string
     {
         if (!isset(static::$loaded[$locale])) {
+            // A locale name becomes a filename here. Only plain language tags
+            // ("en", "pt-BR", "en_US") may pass: anything else risks being a
+            // request-derived path traversal ("../config/app") ending in an
+            // arbitrary require — refuse it before is_file() ever runs.
             $file = App::basePath('') . '/lang/' . $locale . '.php';
-            $data = is_file($file) ? require $file : [];
+            $data = (preg_match('/\A[A-Za-z0-9_-]+\z/', $locale) === 1 && is_file($file))
+                ? require $file
+                : [];
             static::$loaded[$locale] = is_array($data) ? $data : [];
         }
         $segments = explode('.', $key);

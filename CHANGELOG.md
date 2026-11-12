@@ -10,6 +10,7 @@ All notable changes to Widdx are documented here.
 - `View::make()`, `View::core()` and `View::exists()` now resolve templates with `realpath()` and prove the result stays inside the configured views directory — the same containment rule as `LocalStorage::fullPath()` — so raw separators or a symlink planted in `views/` can no longer render files outside it.
 - SMTP `From` and `Reply-To` display names are RFC 2047 encoded when non-ASCII (and quoted when they contain RFC 5322 specials), so Arabic sender names are no longer mangled or rejected by strict SMTP servers; the encoded form stays single-line and ASCII-only.
 - The root `.htaccess` (and the one `widdx new` generates) also blocks the `lang/` directory, and forbids direct hits on real files under `storage/` (logs, sessions, cache, uploaded payloads) while still letting the PHP-guarded `storageRoutes()` endpoint serve public uploads — nothing under `storage/` is ever served raw.
+- `Lang` translation lookups refuse locale names outside `[A-Za-z0-9_-]` before `require` sees them — a request-derived locale like `../config/app` can no longer traverse out of `lang/` into an arbitrary file include (defense-in-depth LFI guard; tags like `pt-BR` and `en_US` stay legal).
 
 ### Fixes and reliability
 
@@ -19,6 +20,12 @@ All notable changes to Widdx are documented here.
 - Query Builder `where()`/`orWhere()` accept a closure for parenthesized condition groups (`AND (... OR ...)`), with correct placeholder numbering across nesting and no-SQL no-op for empty groups.
 - SMTP phrase encoding is now whole-phrase base64 UTF-8 — per RFC 2047 §6.2 conformant clients drop whitespace between adjacent encoded-words (a per-word encoding of "متجر ويديكس" would render "متجرويديكس"), so spaces now live inside the payload. It also wraps RFC 5322 specials of mixed names, works without mbstring, and covers the Subject line too.
 - `View` template resolution rejects null-byte names before `realpath()`/`is_file()` can see them (PHP 8.1+ throws `ValueError` on null bytes; lookups now answer `ViewNotFoundException`).
+- `Mailable::send()` queues attachments BEFORE each `raw()` call: drivers consume one-shot attachments while sending (SmtpMail clears them in a `finally` block), so attaching after the send silently dropped the file from that message and leaked it into the next mail sent through the shared connection.
+- `SmtpMail::raw()` RFC 2047-encodes display names inside caller-supplied `From`/`Reply-To`/`Cc`/`Bcc` values (`Name <addr>`): a non-ASCII name set via `Mailable::from()` or `->header()` no longer ships as raw 8-bit UTF-8, while quoted pure-ASCII names pass through untouched.
+- `PendingMailable::deliver()`/`queue()` only override the subject when the caller actually set one — an empty pending subject no longer wipes the subject a mailable class defines for itself.
+- CLI `make:resource`: the generated `show.php` delete form now includes `csrf_field()`, so generated apps no longer answer 419 on Delete.
+- CLI `db:wipe` is driver-aware: backtick identifier quoting on MySQL (double quotes are string literals without ANSI_QUOTES), `CASCADE` on pgsql, and foreign-key checks paused/restored around the drops (`FOREIGN_KEY_CHECKS` on MySQL, `PRAGMA foreign_keys` on sqlite).
+- CLI `new` given an absolute path (`php widdx new /srv/apps/blog`) writes the folder `basename()` as the default MySQL/pgsql database name instead of the raw path.
 
 ## [0.4.0] - 2026-10-27
 

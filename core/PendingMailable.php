@@ -79,8 +79,12 @@ class PendingMailable
     /** Deliver the actual mailable using these settings */
     public function deliver(Mailable $mailable): bool
     {
-        $mailable->to($this->to)
-            ->subject($this->subject);
+        $mailable->to($this->to);
+        // Only override when the caller set a subject here — an empty one
+        // must not wipe the subject the mailable class defined for itself.
+        if ($this->subject !== '') {
+            $mailable->subject($this->subject);
+        }
 
         if (!empty($this->cc)) {
             $mailable->cc($this->cc);
@@ -104,7 +108,10 @@ class PendingMailable
     /** Queue the actual mailable using these settings */
     public function queue(Mailable $mailable): string
     {
-        $mailable->to($this->to)->subject($this->subject);
+        $mailable->to($this->to);
+        if ($this->subject !== '') {
+            $mailable->subject($this->subject);
+        }
         return $mailable->queue();
     }
 
