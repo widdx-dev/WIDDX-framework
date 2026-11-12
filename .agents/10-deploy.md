@@ -18,6 +18,9 @@ Part of the Widdx agent handbook. The binding laws and the routing table live in
 Notes:
 - Composer is NOT required for the framework fallback autoloader, but use Composer and commit `composer.lock` for application dependency reproducibility when possible.
 - `storage/` and its subfolders must be writable by PHP but should not be publicly accessible as raw files.
+  The shipped `.htaccess` already enforces this on Apache (and blocks `lang/` too): real files under `storage/`
+  403, while the PHP-guarded `storageRoutes()` endpoint still serves public uploads. Mirror the same rules
+  on nginx: deny `^/storage/` and `^/lang/` except the storage-routes endpoint.
 - The root `.htaccess` fallback requires Apache `mod_rewrite` and appropriate `AllowOverride`; test it on the target host. Prefer a document root pointing directly at `public/`.
 - Cron: same `php widdx …` commands work from cPanel Cron Jobs.
 
